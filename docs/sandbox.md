@@ -45,7 +45,7 @@ The compose service is read-only, drops all capabilities, runs as a non-root use
 - **TLS** is terminated by Render's load balancer, so the container sees plain http: `SANDBOX_TRUST_PROXY=1` makes invites use `https://` and your `onrender.com` host.
 
 **Steps**
-1. Put this folder at the root of a GitHub repo and create a Blueprint from it (or create a Docker web service with the same settings).
+1. Create a Blueprint from the repo (`render.yaml` uses `Dockerfile.sandbox`, which starts `sandbox.py` by default). If you create the service by hand in the dashboard instead, set **Dockerfile Path** to `./Dockerfile.sandbox` (the plain `./Dockerfile` is the hub and exits with "refusing to start without auth"), **Health Check Path** to `/healthz`, and add the environment variables listed in `render.yaml`. A hand-made service ignores `render.yaml`.
 2. After the first deploy open `https://<your-service>.onrender.com/_ip` from two different networks (for example your phone on mobile data). `derived_ip` must be your own address and must differ between the two. Render does not document its forwarding headers and reports conflict, so check rather than assume.
    - If `derived_ip` is a Render or Cloudflare address (the same for everyone), raise `SANDBOX_TRUST_PROXY_HOPS` to 2, or set `SANDBOX_CLIENT_IP_HEADER=cf-connecting-ip` if that header appears in the output.
    - If a visitor could change `derived_ip` by sending their own `X-Forwarded-For`, the hop count is too low.

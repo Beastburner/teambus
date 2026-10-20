@@ -26,13 +26,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build the image (the same one Render and docker-compose build)
-        run: docker build -t teambus-hub:ci .
-      - name: Smoke test the sandbox entrypoint
+      - name: Build the hub image (Dockerfile) and the sandbox image (Dockerfile.sandbox, what Render builds)
         run: |
-          docker run -d --name sbx -p 8780:8780 -e HOST=0.0.0.0 -e PORT=8780 teambus-hub:ci python sandbox.py
-          for i in $(seq 1 40); do curl -fs localhost:8780/healthz && break; sleep 1; done
-          curl -fs localhost:8780/healthz
-          curl -fs -o /dev/null -w "landing page %{http_code}\n" localhost:8780/
-          curl -fs -o /dev/null -w "font %{content_type}\n" localhost:8780/assets/InstrumentSerif-Regular.woff2
+          docker build -t teambus-hub:ci .
+          docker build -f Dockerfile.sandbox -t teambus-sandbox:ci .
+      - name: Smoke test the sandbox image exactly as Render runs it (no command override, PORT injected)
+        run: |
+          docker run -d --name sbx -p 10000:10000 -e PORT=10000 teambus-sandbox:ci
+          for i in $(seq 1 40); do curl -fs localhost:10000/healthz && break; sleep 1; done
+          curl -fs localhost:10000/healthz
+          curl -fs -o /dev/null -w "landing page %{http_code}\n" localhost:10000/
+          curl -fs -o /dev/null -w "font %{content_type}\n" localhost:10000/assets/InstrumentSerif-Regular.woff2
+          curl -fs -X POST -o /dev/null -w "create sandbox %{http_code}\n" localhost:10000/new
           docker rm -f sbx

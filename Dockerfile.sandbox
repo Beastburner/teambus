@@ -1,0 +1,15 @@
+# The public sandbox (sandbox.py) as the image's default command, for hosts like Render where you cannot easily override the start command.
+# The hub image is ./Dockerfile (python server.py). Render sets PORT itself (default 10000) and routes to it.
+ARG BASE=python:3.13-slim
+FROM ${BASE}
+ENV SANDBOX_DIR=/tmp/sandboxes PYTHONUNBUFFERED=1 HOST=0.0.0.0 PORT=10000
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY server.py sandbox.py ./
+COPY web ./web
+RUN useradd -r -u 10001 teambus && mkdir -p /tmp/sandboxes && chown teambus /tmp/sandboxes
+USER teambus
+EXPOSE 10000
+HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:%s/healthz'%os.environ['PORT'])"
+CMD ["python", "sandbox.py"]
