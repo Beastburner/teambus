@@ -5,10 +5,10 @@
 set -euo pipefail
 HERE="$(python3 -c 'import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]}")"   # follows symlinks; works on macOS without readlink -f
 die() { echo "teambus-join: $*" >&2; exit 1; }
+[ $# -ge 8 ] || die "usage: teambus-join --hub URL --agent-id ID --role ROLE --token TOKEN"
 command -v python3 >/dev/null || die "python3 is required"
 command -v claude  >/dev/null || die "the 'claude' CLI is required (https://claude.com/claude-code)"
 [ "$(uname -s)" != "Linux" ] && [ "$(uname -s)" != "Darwin" ] && die "Linux/macOS only (hooks use python3 and POSIX paths)"
-[ $# -ge 8 ] || die "usage: teambus-join --hub URL --agent-id ID --role ROLE --token TOKEN"
 hub=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--hub" ] && { j=$((i+1)); hub="${!j}"; }; done
 [ -n "$hub" ] || die "missing --hub"
 echo "checking the hub at $hub ..."
