@@ -348,7 +348,10 @@ async def lifespan(app):
     global REG, REG_ERRORS, REG_ERROR
     try: REG = registry.make_registry(client)
     except Exception as e: REG, REG_ERRORS, REG_ERROR = registry.MemoryRegistry(), REG_ERRORS + 1, f"registry disabled, using memory: {type(e).__name__}: {e}"[:160]
-    track(REG.mark_lost(BOOT_ID, time.time()))                       # sandboxes of earlier runs that were still 'active' died with them
+    async def startup_registry():
+        await REG.check()                                           # surfaces "API disabled / no database / missing role" in /healthz right away, with Google's wording
+        await REG.mark_lost(BOOT_ID, time.time())                   # sandboxes of earlier runs that were still 'active' died with them
+    track(startup_registry())
     task = asyncio.create_task(reaper()); kick()
     yield
     task.cancel()

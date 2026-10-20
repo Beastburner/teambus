@@ -283,7 +283,7 @@ class FakeFirestore:
     def __init__(self):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(); self.pub = key.public_key()
-        self.docs, self.token_requests, self.bad_auth, self.down, self.requests = {}, 0, 0, False, []
+        self.docs, self.token_requests, self.bad_auth, self.down, self.requests, self.mode = {}, 0, 0, False, [], None
         fs = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -302,6 +302,9 @@ class FakeFirestore:
                     except Exception as e: return self.reply(400, {"error": "invalid_grant", "detail": str(e)})
                     return self.reply(200, {"access_token": "tok-1", "expires_in": 3600})
                 if self.headers.get("Authorization") != "Bearer tok-1": fs.bad_auth += 1; return self.reply(401, {"error": "unauthenticated"})
+                if fs.mode == "disabled": return self.reply(403, {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Cloud Firestore API has not been used in project proj before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/firestore.googleapis.com/overview?project=proj then retry.",
+                                                                              "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED", "domain": "googleapis.com"}]}})
+                if fs.mode == "nodb": return self.reply(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": "The database (default) does not exist for project proj. Please visit https://console.cloud.google.com/datastore/setup?project=proj to add a Cloud Datastore or Cloud Firestore database."}})
                 pre = "/v1/projects/proj/databases/(default)/documents"
                 if u.path == pre + ":runQuery" and method == "POST":
                     f = json.loads(self.body())["structuredQuery"]["where"]["fieldFilter"]; assert f["op"] == "EQUAL" and f["field"]["fieldPath"] == "state"
@@ -402,3 +405,16 @@ def test_registry_trouble_never_breaks_sandboxes(mgr, fake):
     assert wait_for(lambda: json.loads(req(m.url + "/healthz")[1])["registry_errors"] >= 1), "the failure is visible in /healthz"
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[0] == 200 and call("GET", m.url + "/status/" + sb["id"])[1]["state"] == "active"   # live state needs no registry
     fake.down = False; assert call("DELETE", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[0] == 200
+
+
+@pytest.mark.parametrize("mode, expect", [("disabled", ["SERVICE_DISABLED", "Cloud Firestore API has not been used", "PERMISSION_DENIED"]), ("nodb", ["does not exist for project", "NOT_FOUND"])])
+def test_healthz_reports_googles_own_reason_when_firestore_cannot_be_used(mgr, fake, mode, expect):
+    fake.mode = mode; m = mgr(**fake.env())
+    h = wait_for(lambda: (lambda j: j if j.get("registry_errors") else None)(json.loads(req(m.url + "/healthz")[1])), 15)
+    assert h and h["registry"] == "firestore" and all(x in h["registry_last_error"] for x in expect), h      # the startup probe says WHY, so nobody has to guess from a bare 403
+    st, sb = call("POST", m.url + "/new"); assert st == 201 and call("GET", m.url + "/status/" + sb["id"])[1]["state"] == "active"     # and sandboxes carry on regardless
+
+
+def test_an_ordinary_missing_document_is_not_reported_as_an_error(mgr, fake):
+    m = mgr(**fake.env()); st, s = call("GET", m.url + "/status/0123456789ab")
+    assert st == 404 and s["state"] == "unknown" and json.loads(req(m.url + "/healthz")[1])["registry_errors"] == 0               # "no such sandbox" is an answer, not a failure
