@@ -1,0 +1,38 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt pytest
+      # hub + hooks + CLI + git hook (test_teambus.py) and the public sandbox: isolation, limits, expiry, proxy headers (test_sandbox.py)
+      - run: pytest -q test_teambus.py test_sandbox.py
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image (the same one Render and docker-compose build)
+        run: docker build -t teambus-hub:ci .
+      - name: Smoke test the sandbox entrypoint
+        run: |
+          docker run -d --name sbx -p 8780:8780 -e HOST=0.0.0.0 -e PORT=8780 teambus-hub:ci python sandbox.py
+          for i in $(seq 1 40); do curl -fs localhost:8780/healthz && break; sleep 1; done
+          curl -fs localhost:8780/healthz
+          curl -fs -o /dev/null -w "landing page %{http_code}\n" localhost:8780/
+          curl -fs -o /dev/null -w "font %{content_type}\n" localhost:8780/assets/InstrumentSerif-Regular.woff2
+          docker rm -f sbx
