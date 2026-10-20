@@ -172,3 +172,11 @@ def test_capacity_counts_only_claimed_sandboxes_not_the_spare(mgr):
     for _ in range(3):
         codes.append(jreq(m.url + "/new", "POST")[0]); time.sleep(.5)
     assert codes == [201, 201, 503]
+
+def test_missing_custom_ip_header_falls_back_to_forwarded_for_hops(mgr):
+    # the Render chain is "client, cloudflare, render-internal": with CF-Connecting-IP absent, the client is 3rd from the right
+    m = mgr(SANDBOX_TRUST_PROXY=1, SANDBOX_CLIENT_IP_HEADER="cf-connecting-ip", SANDBOX_TRUST_PROXY_HOPS=3, SANDBOX_NEW_PER_IP_HOUR=1, SANDBOX_MAX=9)
+    chain = lambda c: {"X-Forwarded-For": f"junk, {c}, 162.159.114.99, 10.25.213.21"}
+    assert [_post(m.url + "/new", chain(c))[0] for c in ("49.36.72.231", "49.36.72.231", "203.0.113.5")] == [201, 429, 201]
+    # and each visitor behind the same Render-internal hop is no longer lumped together
+    assert _post(m.url + "/new", {"CF-Connecting-IP": "198.51.100.9", "X-Forwarded-For": "x, 198.51.100.9, 162.159.114.99, 10.25.213.21"})[0] == 201

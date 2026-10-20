@@ -26,12 +26,17 @@ SBX: dict[str, dict] = {}                              # id -> sandbox
 NEW_LOG: dict[str, collections.deque] = {}             # ip -> creation timestamps
 client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5))
 
+def _pick(value, hops):
+    parts = [x.strip() for x in value.split(",") if x.strip()]
+    return (parts[-hops] if len(parts) >= hops else parts[0]) if parts else ""
+
 def ip_of(r: Request):
-    """Client address for rate limiting. Behind a trusted proxy (SANDBOX_TRUST_PROXY=1) take the Nth entry from the RIGHT of the chosen header
-    (SANDBOX_CLIENT_IP_HEADER, default x-forwarded-for; SANDBOX_TRUST_PROXY_HOPS = how many proxies of yours sit in front). Entries further left are client-supplied."""
-    v = r.headers.get(IP_HEADER, "") if TRUST_PROXY else ""
-    parts = [x.strip() for x in v.split(",") if x.strip()]
-    if parts: return parts[-TRUST_HOPS] if len(parts) >= TRUST_HOPS else parts[0]
+    """Client address for rate limiting. Behind a trusted proxy (SANDBOX_TRUST_PROXY=1) use SANDBOX_CLIENT_IP_HEADER (default x-forwarded-for) and take the
+    Nth entry from the RIGHT (SANDBOX_TRUST_PROXY_HOPS = how many proxies of yours sit in front; entries further left are client-supplied).
+    If a custom header (e.g. cf-connecting-ip) is configured but missing, fall back to x-forwarded-for with the same hop count."""
+    if TRUST_PROXY:
+        ip = _pick(r.headers.get(IP_HEADER, ""), TRUST_HOPS) or (_pick(r.headers.get("x-forwarded-for", ""), TRUST_HOPS) if IP_HEADER != "x-forwarded-for" else "")
+        if ip: return ip
     return r.client.host if r.client else "?"
 
 def public_base(r: Request):
