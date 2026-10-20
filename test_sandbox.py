@@ -258,3 +258,147 @@ def test_custom_agents_on_the_warm_spare_are_instant_and_replace_the_default_tok
     t = time.time(); st, sb = call("POST", m.url + "/new", {"agents": AG2}); assert st == 201 and time.time() - t < 2
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[1]["agent_id"] == "dana-web"
     status = call("GET", sb["hub_url"] + "/api/status", token=sb["web_view"].split("token=")[1])[1]; assert sorted(a["agent_id"] for a in status["agents"]) == ["dana-web", "eli-api"]
+
+
+# ---- registry: what happened to a sandbox, who joined, and survival of restarts ----
+import http.server, threading, signal, urllib.parse
+import jwt as pyjwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+sys.path.insert(0, str(HERE)); import registry as registry_mod
+
+
+def wait_for(fn, timeout=20, step=.25):
+    end = time.time() + timeout
+    while time.time() < end:
+        v = fn()
+        if v: return v
+        time.sleep(step)
+    return fn()
+
+
+class FakeFirestore:
+    """A strict stand-in for Google Firestore's REST API: verifies the service-account JWT (RS256), requires a bearer token on every call,
+    and implements document PATCH (replace, or merge with updateMask), GET and a structured runQuery with a state equality filter."""
+    def __init__(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(); self.pub = key.public_key()
+        self.docs, self.token_requests, self.bad_auth, self.down, self.requests = {}, 0, 0, False, []
+        fs = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def reply(self, code, obj):
+                b = json.dumps(obj).encode(); self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def body(self): return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            def route(self, method):
+                if fs.down: return self.reply(503, {"error": "down"})
+                u = urllib.parse.urlparse(self.path); fs.requests.append((method, u.path))
+                if u.path == "/token" and method == "POST":
+                    form = urllib.parse.parse_qs(self.body().decode()); fs.token_requests += 1
+                    try:
+                        c = pyjwt.decode(form["assertion"][0], fs.pub, algorithms=["RS256"], audience=f"http://127.0.0.1:{fs.port}/token")
+                        assert c["iss"] == "svc@proj.iam.gserviceaccount.com" and c["scope"] == "https://www.googleapis.com/auth/datastore" and form["grant_type"][0].endswith("jwt-bearer")
+                    except Exception as e: return self.reply(400, {"error": "invalid_grant", "detail": str(e)})
+                    return self.reply(200, {"access_token": "tok-1", "expires_in": 3600})
+                if self.headers.get("Authorization") != "Bearer tok-1": fs.bad_auth += 1; return self.reply(401, {"error": "unauthenticated"})
+                pre = "/v1/projects/proj/databases/(default)/documents"
+                if u.path == pre + ":runQuery" and method == "POST":
+                    f = json.loads(self.body())["structuredQuery"]["where"]["fieldFilter"]; assert f["op"] == "EQUAL" and f["field"]["fieldPath"] == "state"
+                    rows = [{"document": {"name": f"{pre}/sandboxes/{i}", "fields": d}} for i, d in fs.docs.items() if d.get("state") == f["value"]]
+                    return self.reply(200, rows or [{"readTime": "2026-01-01T00:00:00Z"}])
+                if u.path.startswith(pre + "/sandboxes/"):
+                    sid = u.path.rsplit("/", 1)[1]
+                    if method == "GET": return self.reply(200, {"name": u.path, "fields": fs.docs[sid]}) if sid in fs.docs else self.reply(404, {"error": {"code": 404}})
+                    if method == "PATCH":
+                        fields = json.loads(self.body())["fields"]; masks = urllib.parse.parse_qs(u.query).get("updateMask.fieldPaths")
+                        if masks: fs.docs.setdefault(sid, {}).update({k: fields[k] for k in masks})
+                        else: fs.docs[sid] = fields
+                        return self.reply(200, {"name": u.path, "fields": fs.docs[sid]})
+                self.reply(404, {"error": "no such route " + u.path})
+            def do_GET(self): self.route("GET")
+            def do_POST(self): self.route("POST")
+            def do_PATCH(self): self.route("PATCH")
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); self.port = self.srv.server_address[1]; threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def env(self):
+        return {"FIREBASE_SERVICE_ACCOUNT": json.dumps({"type": "service_account", "project_id": "proj", "client_email": "svc@proj.iam.gserviceaccount.com", "private_key": self.pem, "token_uri": f"http://127.0.0.1:{self.port}/token"}),
+                "FIRESTORE_BASE_URL": f"http://127.0.0.1:{self.port}"}
+    def doc(self, sid): return {k: registry_mod.from_fs(v) for k, v in self.docs[sid].items()} if sid in self.docs else None
+    def stop(self): self.srv.shutdown()
+
+
+@pytest.fixture
+def fake():
+    f = FakeFirestore(); yield f; f.stop()
+
+
+def test_firestore_value_encoding_round_trips():
+    rec = {"id": "a1", "n": 7, "f": 1.5, "t": True, "none": None, "agents": [{"agent_id": "x", "role": "y"}], "joined": {}, "empty": [], "m": {"k": 3}}
+    assert registry_mod.from_fs({"mapValue": {"fields": {k: registry_mod.to_fs(v) for k, v in rec.items()}}}) == rec
+    assert registry_mod.to_fs(5) == {"integerValue": "5"} and registry_mod.to_fs([]) == {"arrayValue": {}}
+
+
+def test_status_tracks_joins_and_never_leaks_secrets(mgr):
+    m = mgr(); sb = call("POST", m.url + "/new", {"label": "j", "agents": AG2})[1]
+    st, s = call("GET", m.url + "/status/" + sb["id"]); assert st == 200 and s["state"] == "active" and s["label"] == "j" and [a["joined"] for a in s["agents"]] == [False, False]
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][1]["token"])[0] == 200            # what teambus-join's doctor step does
+    s = call("GET", m.url + "/status/" + sb["id"])[1]; assert [(a["agent_id"], a["joined"]) for a in s["agents"]] == [("dana-web", False), ("eli-api", True)] and s["agents"][1]["joined_at"]
+    blob = json.dumps(s); assert not any(t in blob for t in [a["token"] for a in sb["agents"]] + [sb["manage_token"], sb["web_view"].split("token=")[1]])    # public, so no secrets
+    d = call("GET", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[1]; assert [a["joined"] for a in d["agents"]] == [False, True]    # the owner's view says the same
+
+
+def test_status_explains_deleted_expired_and_unknown(mgr):
+    m = mgr(SANDBOX_TTL=3, SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9)
+    a = call("POST", m.url + "/new")[1]; b = call("POST", m.url + "/new")[1]
+    call("DELETE", m.url + "/manage/" + a["id"], token=a["manage_token"])
+    st, s = call("GET", m.url + "/status/" + a["id"]); assert st == 404 and s["state"] == "deleted" and "deleted" in s["message"] and "Create a new one at" in s["message"]
+    st, p = call("GET", a["hub_url"] + "/healthz"); assert st == 404 and p["state"] == "deleted" and p["error"] == p["message"]            # the hub URL itself explains, which is what teambus-join prints
+    wait_for(lambda: call("GET", m.url + "/status/" + b["id"])[1].get("state") == "expired", 15)
+    s = call("GET", m.url + "/status/" + b["id"])[1]; assert s["state"] == "expired" and "lifetime" in s["reason"] and "Sandboxes last" in s["message"]
+    st, u = call("GET", m.url + "/status/0123456789ab"); assert st == 404 and u["state"] == "unknown" and "restarted" in u["message"]       # in-memory registry: an unknown id usually means a restart
+    assert json.loads(req(m.url + "/healthz")[1])["registry"] == "memory"
+
+
+def test_firestore_registry_records_the_lifecycle_without_secrets(mgr, fake):
+    m = mgr(**fake.env()); assert json.loads(req(m.url + "/healthz")[1])["registry"] == "firestore"
+    sb = call("POST", m.url + "/new", {"label": "fs", "agents": AG2})[1]; sid = sb["id"]
+    d = wait_for(lambda: fake.doc(sid)); assert d and d["state"] == "active" and d["label"] == "fs" and d["agents"] == [{"agent_id": "dana-web", "role": "web"}, {"agent_id": "eli-api", "role": "api"}] and d["joined"] == {} and d["boot_id"]
+    raw = json.dumps(fake.docs[sid]); assert not any(t in raw for t in [a["token"] for a in sb["agents"]] + [sb["manage_token"], sb["web_view"].split("token=")[1]])     # nothing secret is ever stored
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[0] == 200; call("GET", m.url + "/status/" + sid)
+    assert wait_for(lambda: "dana-web" in (fake.doc(sid) or {}).get("joined", {})), "the join was recorded"
+    call("POST", m.url + "/manage/" + sid + "/agents", {"agent_id": "frank-ops", "role": "ops"}, sb["manage_token"])
+    assert wait_for(lambda: len((fake.doc(sid) or {}).get("agents", [])) == 3)
+    call("DELETE", m.url + "/manage/" + sid, token=sb["manage_token"])
+    d = wait_for(lambda: (fake.doc(sid) or {}).get("state") == "deleted" and fake.doc(sid)); assert d["reason"] == "deleted by its owner" and d["ended_at"] and "dana-web" in d["joined"]   # joins survive the end
+    assert fake.token_requests == 1 and fake.bad_auth == 0                          # one JWT exchange, reused for every call
+
+
+def test_firestore_registry_survives_restarts_and_the_join_script_explains_it(mgr, fake, tmp_path):
+    m1 = mgr(**fake.env()); sb = call("POST", m1.url + "/new", {"label": "before restart"})[1]; sid = sb["id"]
+    assert wait_for(lambda: (fake.doc(sid) or {}).get("state") == "active")
+    kids = m1.children(); m1.proc.kill(); m1.proc.wait(10)                          # a crash or redeploy: no shutdown hook runs, the record still says "active"
+    for k in kids:
+        try: os.kill(k, signal.SIGTERM)
+        except OSError: pass
+    assert fake.doc(sid)["state"] == "active"
+    m2 = mgr(**fake.env())                                                          # the replacement instance (a new boot) cleans up after the old one
+    assert wait_for(lambda: fake.doc(sid)["state"] == "lost"), fake.docs[sid]
+    assert "restarted" in fake.doc(sid)["reason"] and fake.doc(sid)["ended_at"]
+    st, s = call("GET", m2.url + "/status/" + sid); assert st == 404 and s["state"] == "lost" and s["label"] == "before restart" and "restarted" in s["message"]
+    st, p = call("GET", f"{m2.url}/s/{sid}/healthz"); assert st == 404 and p["state"] == "lost"
+    stub = tmp_path / "bin"; stub.mkdir(); (stub / "claude").write_text("#!/bin/sh\nexit 0\n"); (stub / "claude").chmod(0o755)
+    r = subprocess.run([f"{HERE}/teambus-join", "--hub", f"{m2.url}/s/{sid}", "--agent-id", "a", "--role", "r", "--token", "t"], capture_output=True, text=True, env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}", "HOME": str(tmp_path)})
+    assert r.returncode == 1 and "was lost" in r.stderr and "restarted" in r.stderr and "Create a new one at" in r.stderr     # the person joining sees WHY
+    assert not (tmp_path / ".claude").exists()                                       # and nothing was changed on their machine
+
+
+def test_registry_trouble_never_breaks_sandboxes(mgr, fake):
+    bad = mgr(FIREBASE_SERVICE_ACCOUNT="{not json"); h = json.loads(req(bad.url + "/healthz")[1])
+    assert h["registry"] == "memory" and "registry disabled" in h["registry_last_error"] and call("POST", bad.url + "/new")[0] == 201      # misconfigured: falls back, still serves
+    m = mgr(**fake.env()); fake.down = True; t = time.time()
+    st, sb = call("POST", m.url + "/new"); assert st == 201 and time.time() - t < 3                                     # Firestore down: creating is not slowed
+    assert wait_for(lambda: json.loads(req(m.url + "/healthz")[1])["registry_errors"] >= 1), "the failure is visible in /healthz"
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[0] == 200 and call("GET", m.url + "/status/" + sb["id"])[1]["state"] == "active"   # live state needs no registry
+    fake.down = False; assert call("DELETE", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[0] == 200

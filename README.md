@@ -41,7 +41,7 @@ docker compose run --rm --no-deps hub python server.py add-agent alice-frontend 
 
 **Try it without installing a hub:** a hosted sandbox hands every visitor a private, throwaway hub (3 agents, deleted after an hour): `docs/sandbox.md`.
 
-Deploying the public sandbox on Render's free tier: `render.yaml` and `docs/sandbox.md` (read the limits there first).
+Deploying the public sandbox on Render's free tier (and `docs/firebase.md` to keep a Firestore record of every sandbox so dead links explain themselves): `render.yaml` and `docs/sandbox.md` (read the limits there first).
 
 Local dev without Docker: `pip install 'mcp<2'`, then `TEAMBUS_TOKENS=tokens.json python server.py` (or `TEAMBUS_NOAUTH=1` for a throwaway local hub).
 

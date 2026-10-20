@@ -6,7 +6,7 @@ ENV SANDBOX_DIR=/tmp/sandboxes PYTHONUNBUFFERED=1 HOST=0.0.0.0 PORT=10000
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py sandbox.py ./
+COPY server.py sandbox.py registry.py ./
 COPY web ./web
 RUN useradd -r -u 10001 teambus && mkdir -p /tmp/sandboxes && chown teambus /tmp/sandboxes
 USER teambus

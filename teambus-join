@@ -12,7 +12,14 @@ command -v claude  >/dev/null || die "the 'claude' CLI is required (https://clau
 hub=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--hub" ] && { j=$((i+1)); hub="${!j}"; }; done
 [ -n "$hub" ] || die "missing --hub"
 echo "checking the hub at $hub ..."
-curl -fsS -m 5 "$hub/healthz" >/dev/null || die "cannot reach $hub (are you on the VPN / same network as the hub?)"
+tmp="$(mktemp)"; trap 'rm -f "$tmp" "$tmp.err"' EXIT
+code="$(curl -sS -m 10 -o "$tmp" -w '%{http_code}' "$hub/healthz" 2>"$tmp.err")" || die "cannot reach $hub ($(tr '\n' ' ' < "$tmp.err")). Are you on the VPN / same network as the hub?"
+if [ "$code" != "200" ]; then   # a sandbox hub explains itself (expired, deleted, server restarted, never existed); show that instead of a bare status code
+  msg="$(python3 -c 'import json,sys
+try: d = json.load(open(sys.argv[1])); print(d.get("message") or d.get("error") or "")
+except Exception: pass' "$tmp")"
+  die "${msg:-the hub answered HTTP $code at $hub/healthz}"
+fi
 python3 "$HERE/teambus" init "$@"
 echo; python3 "$HERE/teambus" doctor
 echo; echo "Done. Start 'claude' in this folder as usual; try: python3 $HERE/teambus status"

@@ -6,6 +6,7 @@ import asyncio, collections, json, mimetypes, os, re, shlex, secrets, shutil, so
 from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx, uvicorn
+import registry
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
@@ -97,14 +98,55 @@ def destroy_sb(sb):
     except Exception: sb["proc"].kill()
     shutil.rmtree(sb["dir"], ignore_errors=True)
 
-def destroy(sid):
+def destroy(sid, state="deleted", reason="deleted by its owner"):
     sb = SBX.pop(sid, None)
-    if sb: destroy_sb(sb)
+    if sb: end(sb, state, reason); destroy_sb(sb)
 
 SPARE = None                    # a pre-started sandbox waiting for the next visitor (SANDBOX_WARM=1): on a slow, CPU-starved host a hub takes ~15 s to import
 REFILLING = False
 BG = set()                      # keep references to background tasks
 SPAWN_SEM = None
+
+# ---- registry: a secret-free record of every sandbox that outlives the process (see registry.py) ----
+BOOT_ID = secrets.token_hex(4)
+REG = registry.MemoryRegistry(); REG_ERRORS = 0; REG_ERROR = ""
+STATUS_HITS: dict[str, collections.deque] = {}
+
+def track(coro):
+    """Run a registry write in the background; it must never slow down or break the service."""
+    async def run():
+        global REG_ERRORS, REG_ERROR
+        try: await asyncio.wait_for(coro, 10)
+        except Exception as e: REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:160]
+    t = asyncio.create_task(run()); BG.add(t); t.add_done_callback(BG.discard)
+
+async def reg_get(sid):
+    global REG_ERRORS, REG_ERROR
+    try: return await asyncio.wait_for(REG.get(sid), 6)
+    except Exception as e: REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:160]; return None
+
+def record(sb, state="active", reason="", ended=0):
+    return {"id": sb["id"], "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "state": state, "reason": reason, "ended_at": int(ended),
+            "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {}))}
+
+async def hub_agents(sb):
+    """{agent_id: seconds since that agent last used the hub, or None if never} straight from the sandbox's own hub."""
+    try:
+        r = await client.get(f"http://127.0.0.1:{sb['port']}/api/status", headers={"Authorization": "Bearer " + sb["viewer"]}, timeout=3)
+        return {a["agent_id"]: a.get("last_seen_ago") for a in r.json().get("agents", [])}
+    except Exception: return {}
+
+async def observe_joins(sb):
+    """An agent has 'joined' the first time it authenticates against the hub (teambus-join's doctor step does exactly that). Remember when."""
+    seen = await hub_agents(sb); joined = sb.setdefault("joined", {}); now = time.time(); new = False
+    for aid, ago in seen.items():
+        if ago is not None and aid not in joined: joined[aid] = int(now - ago); new = True
+    if new: track(REG.update(sb["id"], joined=dict(joined)))
+    return seen
+
+def end(sb, state, reason):
+    """Record how a sandbox ended (best effort) and remove it."""
+    track(REG.update(sb["id"], state=state, reason=reason, ended_at=int(time.time()), joined=dict(sb.get("joined", {})), agents=record(sb)["agents"]))
 
 async def spawn():
     """Start one hub process with its own DB and tokens; returns it once /healthz answers, or None."""
@@ -148,8 +190,8 @@ async def create(ip, agents=None, label=""):
     else: sb = await spawn()
     if not sb: return None, JSONResponse({"error": "could not start sandbox"}, 500)
     if agents is not None and [(v["agent_id"], v["role"]) for v in sb["tokens"].values()] != agents: write_tokens(sb, agents)
-    sb.update(expires=time.time() + TTL, ip=ip, label=label, manage=secrets.token_urlsafe(24), created=time.time()); SBX[sb["id"]] = sb
-    kick(); return sb, None
+    sb.update(expires=time.time() + TTL, ip=ip, label=label, manage=secrets.token_urlsafe(24), created=time.time(), joined={}); SBX[sb["id"]] = sb
+    track(REG.put(record(sb))); kick(); return sb, None
 
 def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
 
@@ -192,14 +234,20 @@ def managed(request: Request):
     if len(h) >= RPM: return None, JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
     h.append(now); return sb, None
 
+async def describe_live(sb, base):
+    """describe() plus whether each agent has joined, from the hub's own presence data."""
+    d = describe(sb, base); seen = await observe_joins(sb)
+    for a in d["agents"]: a["joined"] = a["agent_id"] in sb["joined"]; a["joined_at"] = sb["joined"].get(a["agent_id"]); a["last_seen_ago"] = seen.get(a["agent_id"])
+    return d
+
 async def manage_get(request: Request):
     sb, err = managed(request)
-    return err or JSONResponse(describe(sb, public_base(request)))
+    return err or JSONResponse(await describe_live(sb, public_base(request)))
 
 async def manage_delete(request: Request):
     sb, err = managed(request)
     if err: return err
-    destroy(sb["id"]); kick(); return JSONResponse({"deleted": sb["id"]})
+    await observe_joins(sb); destroy(sb["id"], "deleted", "deleted by its owner"); kick(); return JSONResponse({"deleted": sb["id"]})
 
 async def manage_add_agent(request: Request):
     sb, err = managed(request)
@@ -211,12 +259,47 @@ async def manage_add_agent(request: Request):
     cur = [(v["agent_id"], v["role"]) for v in sb["tokens"].values()]
     if len(cur) >= MAX_AGENTS: return JSONResponse({"error": f"a sandbox can have at most {MAX_AGENTS} agents"}, 400)
     if any(a == c[0] for a, _ in cur): return JSONResponse({"error": f"agent name {c[0]!r} already exists in this sandbox"}, 400)
-    add_token(sb, *c); d = describe(sb, public_base(request))
+    add_token(sb, *c); track(REG.update(sb["id"], agents=record(sb)["agents"])); d = describe(sb, public_base(request))
     return JSONResponse(next(a for a in d["agents"] if a["agent_id"] == c[0]), 201)
+
+def when(ts): return time.strftime("%H:%M UTC", time.gmtime(ts)) if ts else "an unknown time"
+
+def ended_view(rec, base):
+    st, reason = rec.get("state", "unknown"), rec.get("reason", "")
+    if st == "active": st, reason = "lost", "the server restarted"                     # still 'active' in the record but not running here: it died with an earlier run
+    msg = {"expired": f"This sandbox expired at {when(rec.get('expires_at'))}. Sandboxes last {TTL // 60} minutes.",
+           "deleted": f"This sandbox was deleted at {when(rec.get('ended_at'))} ({reason}).",
+           "evicted": f"This sandbox was removed at {when(rec.get('ended_at'))}: {reason}."}.get(st, f"This sandbox was lost: {reason}.")
+    j = rec.get("joined") or {}
+    return {"id": rec.get("id"), "state": st, "reason": reason, "label": rec.get("label", ""), "created_at": rec.get("created_at"), "expires_at": rec.get("expires_at"), "ended_at": rec.get("ended_at"),
+            "agents": [{"agent_id": a["agent_id"], "role": a["role"], "joined": a["agent_id"] in j, "joined_at": j.get(a["agent_id"])} for a in rec.get("agents", [])],
+            "error": f"{msg} Create a new one at {base}", "message": f"{msg} Create a new one at {base}"}
+
+async def gone_response(request: Request, sid: str):
+    """404 for a sandbox that is not running here, saying why when the registry knows."""
+    base = public_base(request); live = SBX.get(sid)
+    rec = record(live, "expired", f"its {TTL // 60}-minute lifetime ran out", live["expires"]) if live else await reg_get(sid)     # expired a moment ago, not swept yet
+    if rec: return JSONResponse(ended_view(rec, base), 404)
+    note = "" if REG.kind != "memory" else " This server keeps no record across restarts, so an old link usually means it restarted (free instances sleep after 15 idle minutes and are replaced on every deploy)."
+    m = f"This server has no record of a sandbox with that id.{note} Create a new one at {base}"
+    return JSONResponse({"state": "unknown", "error": m, "message": m}, 404)
+
+async def status(request: Request):
+    """Public, secret-free: what happened to this sandbox, and which agents have joined. The id is unguessable, like the hub URL."""
+    ip = ip_of(request); now = time.time(); h = STATUS_HITS.setdefault(ip, collections.deque())
+    while h and now - h[0] > 60: h.popleft()
+    if len(h) >= 120: return JSONResponse({"error": "too many status requests"}, 429, headers={"Retry-After": "10"})
+    h.append(now); sid = request.path_params["sid"]; sb = SBX.get(sid)
+    if sb and sb["expires"] >= now:
+        seen = await observe_joins(sb)
+        return JSONResponse({"id": sid, "state": "active", "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "expires_in_seconds": int(sb["expires"] - now),
+                             "agents": [{"agent_id": v["agent_id"], "role": v["role"], "joined": v["agent_id"] in sb["joined"], "joined_at": sb["joined"].get(v["agent_id"]), "last_seen_ago": seen.get(v["agent_id"])} for v in sb["tokens"].values()],
+                             "registry": REG.kind})
+    return await gone_response(request, sid)
 
 async def proxy(request: Request):
     sb = SBX.get(request.path_params["sid"])
-    if not sb or sb["expires"] < time.time(): return JSONResponse({"error": "sandbox not found or expired"}, 404)
+    if not sb or sb["expires"] < time.time(): return await gone_response(request, request.path_params["sid"])
     if not request.path_params.get("rest", "") and not request.url.path.endswith("/"): return RedirectResponse(request.url.path + "/" + (f"?{request.url.query}" if request.url.query else ""))
     now = time.time(); h = sb["hits"]
     while h and now - h[0] > 60: h.popleft()
@@ -242,7 +325,7 @@ async def asset(request):
     p = ASSETS.get(request.path_params["name"])
     if not p: return JSONResponse({"error": "not found"}, 404)
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})
-async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None})
+async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
 async def debug_ip(request):   # enabled only with SANDBOX_DEBUG_IP=1: shows what the proxy sends, to pick SANDBOX_CLIENT_IP_HEADER / SANDBOX_TRUST_PROXY_HOPS
     h = request.headers
     return JSONResponse({"derived_ip": ip_of(request), "peer": request.client.host if request.client else None, "x-forwarded-for": h.get("x-forwarded-for"), "cf-connecting-ip": h.get("cf-connecting-ip"), "true-client-ip": h.get("true-client-ip"), "x-forwarded-proto": h.get("x-forwarded-proto"), "public_base": public_base(request)})
@@ -251,7 +334,9 @@ async def reaper():
     while True:
         await asyncio.sleep(float(E("SANDBOX_REAP_SECS", 5))); now = time.time()
         for sid, sb in list(SBX.items()):
-            if sb["expires"] < now or sb["proc"].poll() is not None or db_bytes(sb) > MAX_DB: destroy(sid)
+            why = ("expired", f"its {TTL // 60}-minute lifetime ran out") if sb["expires"] < now else ("lost", "its process stopped unexpectedly") if sb["proc"].poll() is not None else \
+                  ("evicted", f"it grew past the {MAX_DB / 1e6:g} MB data limit") if db_bytes(sb) > MAX_DB else None
+            if why: await observe_joins(sb); destroy(sid, *why)
         global SPARE
         if SPARE and SPARE["proc"].poll() is not None: destroy_sb(SPARE); SPARE = None
         kick()
@@ -260,16 +345,24 @@ async def reaper():
 async def lifespan(app):
     DIR.mkdir(parents=True, exist_ok=True)
     for old in DIR.glob("sb-*"): shutil.rmtree(old, ignore_errors=True)   # leftovers from a crashed run
+    global REG, REG_ERRORS, REG_ERROR
+    try: REG = registry.make_registry(client)
+    except Exception as e: REG, REG_ERRORS, REG_ERROR = registry.MemoryRegistry(), REG_ERRORS + 1, f"registry disabled, using memory: {type(e).__name__}: {e}"[:160]
+    track(REG.mark_lost(BOOT_ID, time.time()))                       # sandboxes of earlier runs that were still 'active' died with them
     task = asyncio.create_task(reaper()); kick()
     yield
     task.cancel()
     global SPARE
-    for sid in list(SBX): destroy(sid)
+    for sid in list(SBX):
+        sb = SBX[sid]
+        try: await asyncio.wait_for(REG.update(sid, state="lost", reason="the server stopped", ended_at=int(time.time()), joined=dict(sb.get("joined", {}))), 4)
+        except Exception: pass
+        destroy_sb(SBX.pop(sid))
     if SPARE: destroy_sb(SPARE); SPARE = None
     await client.aclose()
 
 app = Starlette(routes=[Route("/", home), Route("/healthz", healthz), *([Route("/_ip", debug_ip)] if DEBUG_IP else []), Route("/assets/{name}", asset), Route("/new", new, methods=["POST"]),
-                        Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]),
+                        Route("/status/{sid}", status, methods=["GET"]), Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]),
                         Route("/s/{sid}/{rest:path}", proxy, methods=["GET", "POST", "DELETE", "OPTIONS"]), Route("/s/{sid}", proxy, methods=["GET"], name="bare")], lifespan=lifespan)
 
 if __name__ == "__main__":

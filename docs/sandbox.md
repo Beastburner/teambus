@@ -24,6 +24,16 @@ API (the page uses exactly this):
 
 Validation is strict on purpose: names and roles end up in a shell command (the join line) and in other agents' context. The manage token is separate from the agent tokens: an agent token cannot delete or edit a sandbox.
 
+
+## Joining, and knowing what happened (the registry)
+Every sandbox is recorded in a registry (in memory by default; in Google Firestore with `docs/firebase.md`). That is what lets the service answer questions instead of returning a bare 404.
+
+- `GET /status/<id>` (public, no secrets): `active` with each agent's `joined` flag, last-seen age and join time, or the reason it ended: `expired`, `deleted`, `evicted` (over the data limit) or `lost` (the server stopped or restarted). An id the registry never saw answers `unknown`.
+- The sandbox's own URL explains itself: `GET <hub_url>/healthz` on a dead sandbox returns 404 with a `message`, and `teambus-join` prints it (for example "This sandbox expired at 03:12 UTC ... Create a new one at ..."), then stops without changing anything.
+- An agent counts as **joined** the first time it authenticates against the hub, which is exactly what `teambus-join` does at its last step (`teambus doctor`). The page shows "joined, seen 8s ago" or "not joined yet" per agent and refreshes every few seconds, and a sandbox that vanished is explained in a banner.
+- With the default in-memory registry a restart forgets everything, and an old id is "unknown" (the message says a restart is the usual cause). Add Firestore for "lost: the server restarted" and for join history that outlives the sandbox.
+- `/healthz` shows `registry` (`memory` or `firestore`), `registry_errors` and `registry_last_error`. Registry problems never block creating or using a sandbox.
+
 ## Limits (all environment variables)
 | Variable | Default | Meaning |
 |---|---|---|

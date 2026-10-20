@@ -111,7 +111,8 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.tab{font:700 13px var(--sans);color:var(--ink);background:var(--cream-2);border:2px solid var(--ink);border-radius:10px;height:34px;padding:0 11px;cursor:pointer;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tab[aria-selected="true"]{background:var(--red);color:#fff4ea}.tab.new{background:transparent}
 .addag{margin:12px 0 4px;padding-top:6px;border-top:2px dashed rgba(42,31,27,.35)}.addag .agrow{grid-template-columns:1.35fr 1fr auto}
-.exp{margin:0 0 10px;font-size:14px;font-weight:500}.inst{margin:10px 0 2px}.inst .fl{margin-top:4px}
+.exp{margin:0 0 10px;font-size:14px;font-weight:500}.jn{margin-left:8px;font-weight:600;color:var(--red-ink)}.jn.ok{color:#1f6b3a}
+.endnote{display:flex;gap:10px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border:2px solid var(--red);border-radius:12px;background:#fff1e6;font:600 13.5px/1.35 var(--sans)}.endnote span{flex:1}.endnote button{font:700 12px var(--sans);background:transparent;border:2px solid var(--ink);border-radius:8px;height:26px;padding:0 8px;cursor:pointer}.inst{margin:10px 0 2px}.inst .fl{margin-top:4px}
 @media (max-width:860px){.linkbtn{margin:10px 0 0;display:block}}
 .ribbon{height:0}.rib{display:block;width:calc(100% + 40px);margin:-10px -20px 0;height:34px;color:var(--red);transform:rotate(-1.2deg);position:relative;top:-6px}.hlsvg{width:100%;height:100%;display:block}.scrib+*{}</style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="rough" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency=".03" numOctaves="2" seed="4" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="3"/></filter></svg>
@@ -184,6 +185,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 
 <aside class="panel" id="panel" role="dialog" aria-labelledby="ptitle" hidden>
  <div class="panel-head"><h2 id="ptitle">New sandbox</h2><button class="x" id="close" type="button">Close</button></div>
+ <div id="ended" aria-live="polite"></div>
  <div id="view-new">
   <label class="fl" for="lbl">Name <span class="hint">optional</span></label>
   <input class="in" id="lbl" maxlength="40" placeholder="for example: checkout rewrite" autocomplete="off">
@@ -217,6 +219,22 @@ function showView(v){$("view-new").hidden=v!=="new";$("view-list").hidden=v!=="l
 function openPanel(v){const p=$("panel"),wasHidden=p.hidden;p.hidden=false;showView(v);if(wasHidden)animIn(p);(v==="new"?$("lbl"):$("close")).focus({preventScroll:true})}
 const hidePanel=()=>{$("panel").hidden=true};
 
+/* join status and ended sandboxes */
+const agoText=(s)=>s<5?"just now":s<90?Math.round(s)+"s ago":Math.round(s/60)+"m ago";
+function setJoin(el,g){const ok=!!g.joined;el.className="jn"+(ok?" ok":"");el.textContent=ok?"joined"+(g.last_seen_ago!=null?", seen "+agoText(g.last_seen_ago):""):"not joined yet"}
+let notes=[];
+function renderEnded(){const box=$("ended");box.replaceChildren();notes.forEach((n,i)=>{const d=mk("div","endnote"),s=mk("span","",(n.label?n.label+": ":"")+n.message),x=mk("button","","Dismiss");x.type="button";x.onclick=()=>{notes.splice(i,1);renderEnded()};d.append(s,x);box.append(d)})}
+async function ended(b){   /* a sandbox the server no longer runs: ask it why, tell the user, drop it from the list */
+ let message="This sandbox is no longer running.";try{const r=await fetch("status/"+b.id);const d=await r.json();message=d.message||d.error||message}catch(e){}
+ notes.push({label:b.label||"Sandbox",message});boxes=boxes.filter((x)=>x.id!==b.id);save();if(sel===b.id)sel=null;renderEnded();refreshMine();$("msg").textContent=(b.label||"A sandbox of yours")+" has ended. "+message}
+async function pollSelected(){   /* every few seconds while the list is open: has anyone joined yet? */
+ if($("panel").hidden||$("view-list").hidden||creating)return;const b=boxes.find((x)=>x.id===sel);if(!b)return;
+ try{const r=await fetch("manage/"+b.id,{headers:auth(b)});
+  if(r.status===404||r.status===401){await ended(b);renderList();return}
+  if(!r.ok)return;const d=await r.json();b.agents=d.agents;b.expires_at=d.expires_at;save();
+  d.agents.forEach((g)=>{const el=document.querySelector('.jn[data-agent="'+g.agent_id+'"]');if(el)setJoin(el,g)})}catch(e){}}
+setInterval(pollSelected,4000);
+
 /* builder */
 function addRow(name="",role=""){const rows=$("agrows");if(rows.children.length>=MAXA)return;const r=mk("div","agrow"),n=mk("input","in"),o=mk("input","in"),x=mk("button","ghost sq","x");
  n.placeholder="agent-name";n.value=name;n.maxLength=31;n.autocomplete="off";n.setAttribute("aria-label","Agent name");o.placeholder="role";o.value=role;o.maxLength=24;o.autocomplete="off";o.setAttribute("aria-label","Role");
@@ -247,7 +265,7 @@ function renderList(){
  const list=mk("div","list");
  for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join),c=mk("button","copy","Copy");c.type="button";
   c.onclick=async()=>{try{await navigator.clipboard.writeText(g.join);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
-  line.append(pre,c);row.append(mk("div","who",g.agent_id+" ("+g.role+")"),line);list.append(row)}
+  line.append(pre,c);const who=mk("div","who",g.agent_id+" ("+g.role+")"),jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);row.append(who,line);list.append(row)}
  const inst=mk("div","inst"),il=mk("div","line"),ip=mk("pre","",INSTALL),ic=mk("button","copy","Copy");ic.type="button";
  ic.onclick=async()=>{try{await navigator.clipboard.writeText(INSTALL);ic.textContent="Copied"}catch(e){ic.textContent="Select"}setTimeout(()=>ic.textContent="Copy",1500)};
  il.append(ip,ic);inst.append(mk("span","fl","First time on this machine? Install TeamBus once:"),il);
@@ -263,10 +281,12 @@ function renderList(){
   del.disabled=true;try{const rs=await fetch("manage/"+b.id,{method:"DELETE",headers:auth(b)});if(rs.ok||rs.status===404||rs.status===401){boxes=boxes.filter((x)=>x.id!==b.id);save();delArmed=false;sel=null;renderList()}}catch(e){del.disabled=false;del.textContent="Could not reach the service, try again"}};
  acts.append(del);parts.push(acts);o.replaceChildren(...parts);
 }
-async function verify(){   /* drop sandboxes the server no longer has (expired, evicted, or the free instance slept) and pick up agents added elsewhere */
- await Promise.all(boxes.map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)b._gone=true;else if(r.ok){const d=await r.json();b.agents=d.agents;b.expires_at=d.expires_at}}catch(e){}}));
- boxes=boxes.filter((b)=>!b._gone);save();refreshMine()}
-async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden&&!$("view-list").hidden)renderList()}
+async function verify(){   /* drop sandboxes the server no longer has (expired, evicted, or the free instance slept) WITH the reason, and pick up joins and agents added elsewhere */
+ const gone=[];
+ await Promise.all(boxes.map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)gone.push(b);else if(r.ok){const d=await r.json();b.agents=d.agents;b.expires_at=d.expires_at}}catch(e){}}));
+ for(const b of gone)await ended(b);
+ save();refreshMine()}
+async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden){if(boxes.length)renderList();else{resetBuilder();showView("new")}}}
 runs.forEach((b)=>b.onclick=()=>{resetBuilder();openPanel("new")});
 $("mine").onclick=openList;$("backlist").onclick=()=>{renderList();showView("list")};$("addrow").onclick=()=>addRow();$("docreate").onclick=doCreate;$("close").onclick=hidePanel;
 $("agrows").addEventListener("keydown",(e)=>{if(e.key==="Enter")doCreate()});

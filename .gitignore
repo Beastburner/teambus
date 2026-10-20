@@ -13,3 +13,9 @@ sandboxes/
 # raw session recordings stay local; the condensed versions in docs/proof-summaries/ are published
 docs/transcripts/
 docs/transcripts-*/
+# service-account keys and local secrets must never be committed
+*service-account*.json
+*serviceAccount*.json
+firebase*.json
+*-firebase-adminsdk-*.json
+render.env
