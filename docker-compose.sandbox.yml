@@ -1,0 +1,44 @@
+# Public TeamBus sandbox: visitors click a button and get a private, throwaway hub (alice/bob/carol) that is deleted after an hour.
+# Separate from docker-compose.yml (do not run both on one host: both want ports 80/443).
+#   echo "SANDBOX_DOMAIN=sandbox.example.com" > .env && docker compose -f docker-compose.sandbox.yml up -d --build
+services:
+  sandbox:
+    image: ${TEAMBUS_IMAGE:-teambus-hub:local}
+    build:
+      context: .
+      args: {BASE: "${PYTHON_BASE:-python:3.13-slim}"}
+    command: ["python", "sandbox.py"]
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8780"
+      SANDBOX_DIR: /sandboxes
+      SANDBOX_PUBLIC_URL: https://${SANDBOX_DOMAIN:?set SANDBOX_DOMAIN in .env}
+      SANDBOX_TRUST_PROXY: "1"               # Caddy is the only thing that can reach this container, and it sets X-Forwarded-For itself
+      SANDBOX_TTL: ${SANDBOX_TTL:-3600}
+      SANDBOX_MAX: ${SANDBOX_MAX:-20}
+      SANDBOX_NEW_PER_IP_HOUR: ${SANDBOX_NEW_PER_IP_HOUR:-3}
+      SANDBOX_RPM: ${SANDBOX_RPM:-600}
+      SANDBOX_MAX_DB_MB: ${SANDBOX_MAX_DB_MB:-5}
+      SANDBOX_WARM: ${SANDBOX_WARM:-1}            # one pre-started hub, so a visitor never waits for the import
+    tmpfs: ["/sandboxes:size=256m,uid=10001"]  # all sandbox data is RAM-backed and disappears on restart
+    mem_limit: ${SANDBOX_MEM:-2g}              # ~one small Python process per sandbox: size SANDBOX_MAX to this
+    pids_limit: 400
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    expose: ["8780"]
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [sandbox]
+    ports: ["80:80", "443:443"]
+    environment:
+      SANDBOX_DOMAIN: ${SANDBOX_DOMAIN:?set SANDBOX_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile.sandbox:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

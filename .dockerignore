@@ -1,0 +1,9 @@
+docs
+.claude-plugin
+hooks
+*.db
+tokens.json
+__pycache__
+.pytest_cache
+.state-*
+test_*.py

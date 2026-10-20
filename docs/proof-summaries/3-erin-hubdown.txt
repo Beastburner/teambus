@@ -1,0 +1,4 @@
+[hook SessionStart:startup] exit=0 stdout='{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "TeamBus is offline (hub unreachable or token rejected): continue without it; do not retry its tools."}}\n'
+[hook UserPromptSubmit] exit=0 stdout=''
+[assistant] 42
+[RESULT] 42

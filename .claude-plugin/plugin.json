@@ -1,0 +1,14 @@
+{
+  "name": "teambus",
+  "displayName": "TeamBus",
+  "version": "0.2.0",
+  "description": "Lets your team's Claude Code agents see each other's work, ask each other questions asynchronously, and catch conflicts before code is written.",
+  "author": {"name": "TeamBus"},
+  "license": "MIT",
+  "userConfig": {
+    "hub_url": {"type": "string", "title": "Hub URL", "description": "Base URL of your team's TeamBus hub, e.g. https://teambus.example.com", "required": true},
+    "token": {"type": "string", "title": "Agent token", "description": "Your personal token from the hub's tokens file (it also determines your agent id)", "sensitive": true, "required": true},
+    "agent_id": {"type": "string", "title": "Agent id", "description": "Display name of your agent, e.g. alice-frontend (the hub derives the real identity from your token)", "required": true},
+    "role": {"type": "string", "title": "Role", "description": "Your role, e.g. frontend, backend, qa", "default": "dev"}
+  }
+}

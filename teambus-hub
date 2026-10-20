@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# teambus-hub: run a TeamBus hub on this machine and invite teammates (Tailscale / VPN / LAN).
+#   ./teambus-hub start              first run sets everything up (venv, tokens, viewer token), then starts the hub in the background
+#   ./teambus-hub add NAME ROLE      create a token for a teammate and print their one-line invite   (e.g. add alice-frontend frontend)
+#   ./teambus-hub invite NAME        reprint an existing teammate's invite
+#   ./teambus-hub list | status | logs | stop | url
+# State lives in $TEAMBUS_HUB_DIR (default ~/.teambus-hub): venv, tokens.json, hub.db, hub.env, hub.log.
+# Address teammates use: $TEAMBUS_HOST, else this machine's Tailscale IP, else its first LAN IP. Port: $TEAMBUS_PORT (default 8765).
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+STATE="${TEAMBUS_HUB_DIR:-$HOME/.teambus-hub}"; VENV="$STATE/venv"; TOKENS="$STATE/tokens.json"; ENVF="$STATE/hub.env"; PIDF="$STATE/hub.pid"
+mkdir -p "$STATE"; chmod 700 "$STATE"
+
+die() { echo "teambus-hub: $*" >&2; exit 1; }
+running() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; }
+
+ensure_venv() {
+  if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c 'import mcp' 2>/dev/null; then return; fi
+  command -v python3 >/dev/null || die "python3 not found"
+  echo "setting up Python environment in $VENV (one time)..."
+  if ! python3 -m venv "$VENV" >/dev/null 2>&1; then   # Debian/Ubuntu without python3-venv (no sudo needed): create it without pip, then bootstrap pip
+    echo "  (python3-venv is not installed; using the pip bootstrap instead, ~10 s, no sudo needed)"
+    rm -rf "$VENV"; python3 -m venv --without-pip "$VENV"
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$STATE/get-pip.py" || die "could not download pip (or: sudo apt install python3-venv)"
+    "$VENV/bin/python" -I "$STATE/get-pip.py" -q
+  fi
+  echo "  installing dependencies..."
+  "$VENV/bin/pip" install -q -r "$HERE/requirements.txt"
+  echo "  done."
+}
+
+detect_host() {
+  if [ -n "${TEAMBUS_HOST:-}" ]; then echo "$TEAMBUS_HOST"; return; fi
+  if command -v tailscale >/dev/null && ip=$(tailscale ip -4 2>/dev/null | head -1) && [ -n "$ip" ]; then echo "$ip"; return; fi
+  hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | grep -v '^127\.' | head -1
+}
+
+load_env() {   # hub.env: PORT, VIEWER, HOST_ADDR (created on first use)
+  if [ ! -f "$ENVF" ]; then
+    printf 'PORT=%s\nVIEWER=%s\n' "${TEAMBUS_PORT:-8765}" "$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')" > "$ENVF"; chmod 600 "$ENVF"
+  fi
+  # shellcheck disable=SC1090
+  . "$ENVF"; HOST_ADDR="$(detect_host)"; [ -n "$HOST_ADDR" ] || die "could not detect this machine's address; set TEAMBUS_HOST=<ip-or-name>"
+  HUB_URL="http://$HOST_ADDR:$PORT"
+}
+
+server() { TEAMBUS_TOKENS="$TOKENS" TEAMBUS_DB="$STATE/hub.db" "$VENV/bin/python" "$HERE/server.py" "$@"; }
+
+invite() {   # NAME -> one-line invite
+  local name="$1" tok role
+  read -r tok role < <("$VENV/bin/python" - "$TOKENS" "$name" <<'PY'
+import json, sys
+for t, v in json.load(open(sys.argv[1])).items():
+    if v["agent_id"] == sys.argv[2]: print(t, v["role"]); break
+PY
+) || true
+  [ -n "${tok:-}" ] || die "no agent named '$name' (see: ./teambus-hub list)"
+  echo "In your project folder, run:"
+  echo "  $HERE/teambus-join --hub $HUB_URL --agent-id $name --role $role --token $tok"
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  start)
+    running && { load_env; echo "already running (pid $(cat "$PIDF")) at $HUB_URL"; exit 0; }
+    ensure_venv; load_env; [ -f "$TOKENS" ] || { echo '{}' > "$TOKENS"; chmod 600 "$TOKENS"; }
+    cd "$HERE"; HOST=0.0.0.0 PORT="$PORT" TEAMBUS_TOKEN="$VIEWER" TEAMBUS_TOKENS="$TOKENS" TEAMBUS_DB="$STATE/hub.db" \
+      nohup "$VENV/bin/python" server.py >> "$STATE/hub.log" 2>&1 < /dev/null &
+    echo $! > "$PIDF"
+    for _ in $(seq 1 20); do curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
+    curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 || die "hub did not come up; see $STATE/hub.log"
+    echo "TeamBus hub running (pid $(cat "$PIDF")) at $HUB_URL"
+    echo "Web view: $HUB_URL/?token=$VIEWER"
+    echo "Next: ./teambus-hub add alice-frontend frontend   (prints the invite to send)"
+    echo "Only run this on a VPN (Tailscale) or trusted LAN: traffic is plain HTTP and the port has no rate limiting." ;;
+  add)
+    [ $# -eq 2 ] || die "usage: add NAME ROLE"; ensure_venv; load_env
+    [ -f "$TOKENS" ] || echo '{}' > "$TOKENS"
+    grep -q "\"agent_id\": *\"$1\"" "$TOKENS" && die "'$1' already exists; use: ./teambus-hub invite $1"
+    server add-agent "$1" "$2" >/dev/null; echo "added $1 ($2). Send this to them privately (it contains their token):"; echo; invite "$1"
+    running || echo; running || echo "(hub is not running: ./teambus-hub start)" ;;
+  invite) [ $# -eq 1 ] || die "usage: invite NAME"; ensure_venv; load_env; invite "$1" ;;
+  list)   ensure_venv; "$VENV/bin/python" - "$TOKENS" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); print(f"{len(d)} agent(s)")
+for t, v in d.items(): print(f"  {v['agent_id']:<22} {v['role']:<12} token {t[:4]}…")
+PY
+  ;;
+  status) load_env; if running; then echo "running (pid $(cat "$PIDF")) at $HUB_URL"; curl -fs "http://127.0.0.1:$PORT/healthz" && echo; else echo "stopped"; fi ;;
+  url)    load_env; echo "$HUB_URL"; echo "$HUB_URL/?token=$VIEWER" ;;
+  logs)   tail -n 50 -f "$STATE/hub.log" ;;
+  stop)   if running; then kill "$(cat "$PIDF")"; rm -f "$PIDF"; echo "stopped"; else echo "not running"; fi ;;
+  *) sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+esac

@@ -1,0 +1,6 @@
+{$SANDBOX_DOMAIN} {
+	reverse_proxy sandbox:8780 {
+		flush_interval -1   # MCP streamable HTTP: never buffer
+	}
+	encode zstd gzip
+}

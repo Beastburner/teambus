@@ -1,0 +1,6 @@
+{$TEAMBUS_DOMAIN} {
+	reverse_proxy hub:8765 {
+		flush_interval -1   # MCP streamable HTTP streams server events: never buffer them
+	}
+	encode zstd gzip
+}

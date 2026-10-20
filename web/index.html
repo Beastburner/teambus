@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>TeamBus</title>
+<style>
+/* Graphite surfaces, hairline borders, one accent (signal orange) reserved for blocked/warning states. Shape rule: panels 14px, controls 8px. */
+:root{color-scheme:light dark;
+  --bg:#f3f4f6;--panel:#ffffff;--line:rgba(15,20,26,.10);--fg:#14181d;--mut:#586270;--accent:#c4461a;--ok:#1f7a52;--chip:rgba(15,20,26,.05);--bar:rgba(243,244,246,.78)}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0f11;--panel:#14171a;--line:rgba(255,255,255,.09);--fg:#e9ebee;--mut:#8f97a2;--accent:#f26b38;--ok:#5fb88c;--chip:rgba(255,255,255,.06);--bar:rgba(13,15,17,.72)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,-apple-system,"SF Pro Text","Segoe UI",system-ui,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:0 max(16px,calc((100% - 1200px)/2));height:56px;background:var(--bar);border-bottom:1px solid var(--line);-webkit-backdrop-filter:blur(16px) saturate(140%);backdrop-filter:blur(16px) saturate(140%)}
+h1{font-size:15px;font-weight:650;letter-spacing:-.01em;margin:0}
+header .m{font-size:13px}
+#upd{margin-left:auto;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}
+main{display:grid;gap:12px;padding:20px 16px 32px;max-width:1232px;margin:auto;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr))}
+section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 18px 8px;min-width:0}
+section.wide{grid-column:1/-1}
+h2{font-size:13px;font-weight:500;color:var(--mut);margin:0 0 4px}
+ul{list-style:none;margin:0;padding:0}
+li{padding:10px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}li:first-child{border-top:0}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);opacity:.55;margin-right:9px}.dot.on{background:var(--ok);opacity:1}
+.m{color:var(--mut)}
+.tag{display:inline-block;font:500 11px/1 ui-monospace,"SF Mono",Menlo,Consolas,monospace;padding:4px 7px;border-radius:6px;background:var(--chip);color:var(--mut);margin-left:7px;vertical-align:1px}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--accent);font-weight:600}.warn{color:var(--accent);font-weight:600}
+pre{margin:6px 0 0;padding:9px 11px;white-space:pre-wrap;color:var(--mut);font:12px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace;max-height:8.5em;overflow:hidden;border-radius:8px;background:var(--chip)}
+.empty{color:var(--mut)}
+#err{display:none;margin:16px auto 0;width:min(1200px,calc(100% - 32px));padding:11px 14px;border-radius:10px;color:var(--accent);font-weight:500;background:var(--panel);border:1px solid var(--accent)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:520px){header>.m{display:none}main{padding-inline:12px}}
+</style></head><body>
+<header><h1>TeamBus</h1><span class="m">read-only team view</span><span id="upd"></span></header>
+<div id="err"></div>
+<main>
+ <section><h2>Team</h2><ul id="agents"></ul></section>
+ <section><h2>Open questions</h2><ul id="questions"></ul></section>
+ <section><h2>Working on now</h2><ul id="intents"></ul></section>
+ <section><h2>Contracts (breaking changes)</h2><ul id="contracts"></ul></section>
+ <section><h2>Recent builds</h2><ul id="builds"></ul></section>
+ <section class="wide"><h2>Live feed</h2><ul id="feed"></ul></section>
+</main>
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+const $ = (id) => document.getElementById(id);
+const ago = (t, now) => { const s = Math.max(0, now - t); return s < 90 ? Math.round(s) + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : s < 129600 ? Math.round(s / 3600) + "h ago" : Math.round(s / 86400) + "d ago"; };
+function fill(id, rows, render) {  // textContent only: nothing from the hub is ever parsed as HTML
+  const ul = $(id); ul.replaceChildren();
+  if (!rows.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = "nothing yet"; ul.append(li); return; }
+  for (const r of rows) { const li = document.createElement("li"); render(li, r); ul.append(li); }
+}
+const span = (cls, text) => { const s = document.createElement("span"); if (cls) s.className = cls; s.textContent = text; return s; };
+const pre = (text) => { const p = document.createElement("pre"); p.textContent = text; return p; };
+async function load() {
+  try {
+    const r = await fetch("api/status", { headers: { Authorization: "Bearer " + token } });
+    if (!r.ok) throw new Error(r.status === 401 ? "401: missing or wrong token (open this page as /?token=YOUR_TOKEN)" : "hub returned " + r.status);
+    const d = await r.json(); $("err").style.display = "none"; const n = d.now;
+    fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); li.append(dot, span("", a.agent_id), span("tag", a.role || "-"), span("m", "  " + (a.last_seen_ago == null ? "never seen" : a.active ? "active · " + ago(n - a.last_seen_ago, n) : "last seen " + ago(n - a.last_seen_ago, n)))); });
+    fill("questions", d.questions.filter((q) => !q.answered), (li, q) => { li.append(span("", q.from_agent + " → " + q.to_agent), span("m", "  " + ago(q.ts, n)), pre(q.body)); });
+    fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
+    fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });
+    fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok) li.append(pre(b.log_tail || "")); });
+    fill("feed", d.feed, (li, f) => { li.append(span("m", f.type + " "), span("", f.agent_id + " "), span("m", f.text), f.status ? span("tag", f.status) : "", span("m", "  " + ago(f.ts, n))); });
+    $("upd").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
+}
+load(); setInterval(load, 4000);
+</script></body></html>

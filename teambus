@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""teambus: install, check and inspect TeamBus in a project.
+  teambus init --hub URL --agent-id ID --role ROLE --token T   wire hooks + MCP + CLAUDE.md + git hook (merges, never clobbers)
+  teambus doctor                                               pass/fail checklist
+  teambus status                                               team feed, presence and your inbox in the terminal
+  teambus resolve [--committed]                                mark your open intents done (used by the git post-commit hook)
+  teambus git-hook                                             install the post-commit hook only"""
+import argparse, json, os, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+HOOK = HERE / "hooks" / "hook.py"
+SNIPPET = HERE / "CLAUDE.snippet.md"
+EVENTS = {"SessionStart": (None, "start"), "UserPromptSubmit": (None, "prompt"), "PreToolUse": ("Edit|Write|MultiEdit", "pre"),
+          "PostToolUse": ("Edit|Write|MultiEdit|Bash", "post"), "PostToolUseFailure": ("Bash", "fail")}
+GIT_MARK = "# teambus-post-commit"
+
+def jload(p):
+    try: return json.loads(Path(p).read_text())
+    except (OSError, ValueError): return {}
+
+def cfg(root):
+    """Hub settings: environment first, then the project's .claude/settings.local.json / settings.json env blocks."""
+    env = {**jload(root / ".claude" / "settings.json").get("env", {}), **jload(root / ".claude" / "settings.local.json").get("env", {}), **{k: v for k, v in os.environ.items() if k.startswith(("TEAMBUS_", "AGENT_"))}}
+    return {"url": env.get("TEAMBUS_URL", "").rstrip("/"), "token": env.get("TEAMBUS_TOKEN", ""), "agent": env.get("AGENT_ID", ""), "role": env.get("AGENT_ROLE", "")}
+
+def call(c, name, body=None, method="POST", timeout=5):
+    r = urllib.request.Request(f"{c['url']}/{name}", json.dumps(body or {}).encode() if method == "POST" else None, {"Content-Type": "application/json", "Authorization": f"Bearer {c['token']}"}, method=method)
+    return json.load(urllib.request.urlopen(r, timeout=timeout))
+
+def hook_cmd(mode): return f"python3 {HOOK} {mode}"
+def has_hook(entries): return any("hooks/hook.py" in h.get("command", "") for e in entries for h in e.get("hooks", []))
+
+def init(a):
+    root = Path(a.dir).resolve(); (root / ".claude").mkdir(exist_ok=True); done = []
+    sp = root / ".claude" / "settings.local.json"; s = jload(sp)  # personal + machine-specific (hook path, token) -> the local, uncommitted settings file
+    if sp.exists(): shutil.copy(sp, str(sp) + ".bak")
+    for ev, (matcher, mode) in EVENTS.items():
+        lst = s.setdefault("hooks", {}).setdefault(ev, [])
+        if not has_hook(lst): lst.append(({"matcher": matcher} if matcher else {}) | {"hooks": [{"type": "command", "command": hook_cmd(mode)}]}); done.append(f"hook {ev}")
+    s.setdefault("env", {}).update({"TEAMBUS_URL": a.hub.rstrip("/"), "TEAMBUS_TOKEN": a.token, "AGENT_ID": a.agent_id, "AGENT_ROLE": a.role})
+    if "teambus" not in s.setdefault("enabledMcpjsonServers", []): s["enabledMcpjsonServers"].append("teambus")
+    sp.write_text(json.dumps(s, indent=2)); done.append("env + enabledMcpjsonServers in .claude/settings.local.json")
+    mj = jload(root / ".mcp.json")
+    if "teambus" not in mj.get("mcpServers", {}):
+        if shutil.which("claude"):  # project scope writes .mcp.json (shareable: the hub URL isn't secret; the token stays a ${TEAMBUS_TOKEN} placeholder — a ${VAR} inside `url` is rejected by Claude Code)
+            r = subprocess.run(["claude", "mcp", "add", "--scope", "project", "--transport", "http", "teambus", a.hub.rstrip("/") + "/mcp", "--header", "Authorization: Bearer ${TEAMBUS_TOKEN}"], cwd=root, capture_output=True, text=True)
+            done.append("claude mcp add (project scope)" if r.returncode == 0 else f"claude mcp add FAILED: {(r.stderr or r.stdout).strip()[:200]}")
+        else: done.append("claude CLI not found: skipped `claude mcp add`")
+    md = root / "CLAUDE.md"
+    if "## TeamBus" not in (md.read_text() if md.exists() else ""): md.open("a").write(("\n" if md.exists() else "") + SNIPPET.read_text()); done.append("CLAUDE.md snippet")
+    if (root / ".git").exists(): done.append(git_hook(root)); done.append(git_exclude(root))
+    print("teambus init:\n  " + "\n  ".join(done or ["nothing to do (already set up)"]) + "\nNext: `teambus doctor`")
+
+def git_exclude(root):
+    """Keep the token-bearing, machine-specific files out of `git add -A` (per-clone .git/info/exclude, nothing to commit)."""
+    ex = Path(subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=root, capture_output=True, text=True).stdout.strip() or ".git/info/exclude")
+    ex = ex if ex.is_absolute() else root / ex
+    have = ex.read_text() if ex.exists() else ""
+    new = [p for p in (".claude/settings.local.json", ".claude/settings.local.json.bak", ".claude/teambus-state.json") if p not in have.splitlines()]
+    if new: ex.parent.mkdir(parents=True, exist_ok=True); ex.write_text(have.rstrip("\n") + ("\n" if have else "") + "# teambus (token + local state)\n" + "\n".join(new) + "\n")
+    return "git exclude for local token/state files" if new else "git exclude (already set)"
+
+def git_hook(root):
+    hp = Path(subprocess.run(["git", "rev-parse", "--git-path", "hooks/post-commit"], cwd=root, capture_output=True, text=True).stdout.strip() or ".git/hooks/post-commit")
+    hp = hp if hp.is_absolute() else root / hp
+    if hp.exists() and GIT_MARK in hp.read_text(): return "git post-commit hook (already installed)"
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    body = f'{GIT_MARK}\npython3 "{Path(__file__).resolve()}" resolve --committed --dir "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 || true\n'
+    hp.write_text((hp.read_text().rstrip("\n") + "\n" if hp.exists() else "#!/bin/sh\n") + body); hp.chmod(0o755); return "git post-commit hook"
+
+def resolve(a):
+    root = Path(a.dir).resolve(); c = cfg(root); files = []
+    if a.committed: files = subprocess.run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "--relative", "HEAD"], cwd=root, capture_output=True, text=True).stdout.split()
+    try: print(call(c, "api/resolve", {"files": files, "committed": a.committed}))
+    except Exception as e: print(f"hub unreachable: {e}", file=sys.stderr); sys.exit(0 if a.committed else 1)
+
+def ago(s): return "never" if s is None else f"{int(s)}s ago" if s < 120 else f"{int(s / 60)}m ago" if s < 7200 else f"{int(s / 3600)}h ago"
+
+def status(a):
+    c = cfg(Path(a.dir).resolve())
+    try: f = call(c, "api/feed", {"since": 0}); inbox = call(c, "api/inbox", {"peek": True}); me = call(c, "api/whoami")
+    except Exception as e: sys.exit(f"cannot reach hub {c['url']}: {e}")
+    print(f"you: {me['agent_id']}  hub: {c['url']}\n\nTEAM")
+    for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<20} {p['role']:<10} last seen {ago(p['last_seen_ago'])}")
+    print(f"\nINBOX ({len(inbox)} unread)")
+    for m in inbox: print(f"  #{m['id']} from {m['from_agent']}" + (f" (reply to #{m['reply_to']})" if m["reply_to"] else "") + f": {m['body']}")
+    print("\nRECENT ACTIVITY")
+    for x in f["items"][-15:]: print(f"  {time.strftime('%H:%M:%S', time.localtime(x['ts']))} [{x['type']}] {x['agent_id']}: " + (x.get("summary") or x.get("name") or ("build ok" if x.get("ok") else "build FAILED")) + (f"  ({x['status']})" if x.get("status") == "resolved" else ""))
+
+def why(e, what="request failed"):
+    """Say what actually went wrong: a refused token, an untrusted TLS certificate, or a network problem (they need different fixes)."""
+    if isinstance(e, urllib.error.HTTPError): return f"hub answered HTTP {e.code} ({'token rejected' if e.code in (401, 403) else what})"
+    r = getattr(e, "reason", e)
+    if isinstance(r, ssl.SSLError): return f"TLS problem, not the token: {r}. If the hub uses a private CA, point SSL_CERT_FILE at its root certificate."
+    return f"{what}: {r}"
+
+def doctor(a):
+    root = Path(a.dir).resolve(); c = cfg(root); res = []
+    def chk(name, ok, fix="", warn=False): res.append(("PASS" if ok else "WARN" if warn else "FAIL", name, "" if ok else fix))
+    chk("config (hub URL, token, agent id)", all(c[k] for k in ("url", "token", "agent")), "run: teambus init --hub URL --agent-id X --role Y --token T")
+    if not (c["url"] and c["token"]): chk("hub reachable / token / MCP endpoint", False, "skipped: no hub config yet")
+    else:
+        try: chk("hub reachable", json.load(urllib.request.urlopen(c["url"] + "/healthz", timeout=4)).get("ok"), "")
+        except Exception as e: chk("hub reachable", False, f"{c['url']}/healthz: {e}")
+        try:
+            w = call(c, "api/whoami"); chk(f"token accepted (hub says you are {w['agent_id']})", bool(w.get("agent_id")), "token not in the hub's tokens file")
+            chk("token matches AGENT_ID", w.get("agent_id") == c["agent"], f"AGENT_ID={c['agent']} but token belongs to {w.get('agent_id')}", warn=True)
+        except Exception as e: chk("token accepted", False, why(e, "could not reach the hub"))
+        try:
+            r = urllib.request.Request(c["url"] + "/mcp", json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "doctor", "version": "0"}}}).encode(),
+                                       {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Authorization": f"Bearer {c['token']}"})
+            chk("MCP endpoint /mcp accepts the token", urllib.request.urlopen(r, timeout=5).status == 200, "")
+        except Exception as e: chk("MCP endpoint /mcp accepts the token", False, why(e, "could not reach /mcp"))
+    allh = {}
+    for p in (root / ".claude" / "settings.json", root / ".claude" / "settings.local.json"):
+        for ev, lst in jload(p).get("hooks", {}).items(): allh.setdefault(ev, []).extend(lst)
+    missing = [ev for ev in EVENTS if not has_hook(allh.get(ev, []))]
+    chk("hooks wired for " + ", ".join(EVENTS), not missing, f"missing: {missing}; run teambus init")
+    chk(f"hook script exists ({HOOK})", HOOK.exists(), "reinstall teambus")
+    chk(".mcp.json registers `teambus`", "teambus" in jload(root / ".mcp.json").get("mcpServers", {}), "run teambus init (needs the claude CLI)")
+    mu = jload(root / ".mcp.json").get("mcpServers", {}).get("teambus", {}).get("url", "")
+    if mu: chk(".mcp.json url is a literal http(s) URL", mu.startswith("http") and "${" not in mu, "Claude Code rejects ${VAR} inside url; rerun teambus init after deleting the teambus entry from .mcp.json")
+    chk("claude CLI on PATH", bool(shutil.which("claude")), "install Claude Code", warn=True)
+    md = root / "CLAUDE.md"; chk("CLAUDE.md has the TeamBus protocol", md.exists() and "## TeamBus" in md.read_text(), "run teambus init")
+    gh = subprocess.run(["git", "rev-parse", "--git-path", "hooks/post-commit"], cwd=root, capture_output=True, text=True).stdout.strip()
+    gp = (root / gh) if gh else None; chk("git post-commit hook resolves intents", bool(gp and gp.exists() and GIT_MARK in gp.read_text()), "run: teambus git-hook", warn=True)
+    for st, name, fix in res: print(f"[{st}] {name}" + (f"  -> {fix}" if fix else ""))
+    bad = sum(r[0] == "FAIL" for r in res); print(f"\n{len(res) - bad - sum(r[0] == 'WARN' for r in res)} passed, {sum(r[0] == 'WARN' for r in res)} warnings, {bad} failed"); sys.exit(1 if bad else 0)
+
+def main():
+    ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+        p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
+        if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
+        if n == "resolve": p.add_argument("--committed", action="store_true")
+    a = ap.parse_args(); a.f(a)
+
+if __name__ == "__main__": main()

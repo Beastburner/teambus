@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hub": {
+      "type": "http",
+      "url": "${user_config.hub_url}/mcp",
+      "headers": {"Authorization": "Bearer ${user_config.token}"}
+    }
+  }
+}

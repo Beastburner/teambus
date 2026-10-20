@@ -1,0 +1,28 @@
+[hook SessionStart:startup] exit=0 stdout='{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "TeamBus: the hub identifies you as agent \'bob-backend\' (from your token), so agent_id arguments are optional. Protocol: if an edit is blocked with a TEAMBUS CONFLICT, call ask_teammate_agent to the named teammate (exact agent_id), then retry the edit. Before changing an API/schema/shared interface call publish_contract(name, spec, files=consumers, source_files=yours). Answer inbox messages with ask_teammate_agent(reply_to=<id>, question=<answer>). Never guess a teammate\'s code: ask. Call resolve_intent when a piece of work is done."}}\n'
+[hook UserPromptSubmit] exit=0 stdout=''
+[tool_use] Grep {"pattern": "name", "path": "/tmp/claude-0/-home-user-prism-gui/26689e0f-c502-5314-b99e-da1636f8d375/scratchpad/demo2/bob/backend/app.py", "output_mode": "content", "-n": "true"}
+[tool_result] <tool_use_error>Error: No such tool available: Grep. Grep is not available in this session — search file contents with `grep` via the Bash tool instead.</tool_use_error>
+[tool_use] ToolSearch {"query": "select:mcp__teambus__publish_contract", "max_results": 1}
+[tool_result] [{'type': 'tool_reference', 'tool_name': 'mcp__teambus__publish_contract'}]
+[tool_use] Read {"file_path": "/tmp/claude-0/-home-user-prism-gui/26689e0f-c502-5314-b99e-da1636f8d375/scratchpad/demo2/bob/backend/app.py"}
+[tool_result] 1	from flask import Flask, jsonify
+2	
+3	app = Flask(__name__)
+4	USERS = [{"id": 1, "name": "Ada Lovelace"}, {"id": 2, "name": "Alan Turing"}]
+5	
+6	@app.get("/users")
+7	def users():
+8	    return jsonify(USERS)
+9	
+[tool_use] Edit {"replace_all": false, "file_path": "/tmp/claude-0/-home-user-prism-gui/26689e0f-c502-5314-b99e-da1636f8d375/scratchpad/demo2/bob/backend/app.py", "old_string": "USERS = [{\"id\": 1, \"name\": \"Ada Lovelace\"}, {\"id\": 2, \"name\": \"Alan Turing\"}]", "new_string": "USERS = [{\"id\": 1, \"fullName
+[hook PreToolUse:Edit] exit=0 stdout=''
+[hook PostToolUse:Edit] exit=0 stdout=''
+[tool_result] The file /tmp/claude-0/-home-user-prism-gui/26689e0f-c502-5314-b99e-da1636f8d375/scratchpad/demo2/bob/backend/app.py has been updated successfully. (file state is current in your context — no need to Read it back)
+[tool_use] mcp__teambus__publish_contract {"name": "GET /users", "spec": "Breaking change: in each user object returned by GET /users, the key `name` is renamed to `fullName`. Response shape is now [{\"id\": int, \"fullName\": str}, ...].", "files": ["frontend/src/format.js"], "source_files": ["backend/app.py"]}
+[tool_result] [{'type': 'text', 'text': '{\n  "id": 1\n}'}]
+[assistant] I renamed `name` to `fullName` in both `USERS` entries in `backend/app.py`. I then published the `GET /users` contract, and the hub returned id 1.
+
+The contract describes the rename. Its `files` list is exactly `["frontend/src/format.js"]` and its `source_files` is `["backend/app.py"]`. I didn't run any build or tests, and I didn't call `resolve_intent`, since you said to do nothing else.
+[RESULT] I renamed `name` to `fullName` in both `USERS` entries in `backend/app.py`. I then published the `GET /users` contract, and the hub returned id 1.
+
+The contract describes the rename. Its `files` list is exactly `["frontend/src/format.js"]` and its `source_files` is `["backend/app.py"]`. I didn't run any build or tests, and I didn't call `resolve_intent`, since you said to do nothing else.

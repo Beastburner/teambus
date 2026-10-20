@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
+*.db
+*.db-*
+tokens.json
+sandboxes/
+.claude/
+.state-*
+# raw session recordings stay local; the condensed versions in docs/proof-summaries/ are published
+docs/transcripts/
+docs/transcripts-*/

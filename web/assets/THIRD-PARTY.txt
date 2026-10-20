@@ -1,0 +1,12 @@
+Vendored front-end libraries and fonts used by the sandbox landing page (web/sandbox.html).
+
+three.js r170 (three.module.min.js)
+  MIT License, Copyright 2010-2024 three.js authors. https://github.com/mrdoob/three.js
+
+GSAP 3.13.0 (gsap.min.js, ScrollTrigger.min.js)
+  Copyright 2025 GreenSock. Subject to the GSAP Standard License: https://gsap.com/standard-license
+  Review those terms before redistributing this folder commercially.
+
+Geist and Geist Mono (Geist-Variable.woff2, GeistMono-Variable.woff2): SIL OFL 1.1, see Geist-OFL-LICENSE.txt
+Instrument Serif (InstrumentSerif-Regular.woff2, InstrumentSerif-Italic.woff2): SIL OFL 1.1, see InstrumentSerif-OFL-LICENSE.txt
+Caveat (Caveat-SemiBold.woff2, Caveat-Bold.woff2): SIL OFL 1.1, see Caveat-OFL-LICENSE.txt

@@ -1,0 +1,14 @@
+{
+  "name": "teambus-local",
+  "owner": {
+    "name": "TeamBus"
+  },
+  "plugins": [
+    {
+      "name": "teambus",
+      "source": "./",
+      "description": "TeamBus: shared coordination for your team's Claude Code agents"
+    }
+  ],
+  "description": "TeamBus: coordination for your team's Claude Code agents"
+}

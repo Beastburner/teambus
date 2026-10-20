@@ -1,0 +1,23 @@
+# Render Blueprint for the public TeamBus sandbox (sandbox.py), on the free instance type.
+# Push this folder as the repo root, then Render -> New -> Blueprint. Read docs/sandbox.md ("Deploy on Render") first:
+# free instances sleep after 15 min idle (every sandbox is lost then), have 512 MB RAM / 0.1 CPU, and no persistent disk.
+services:
+  - type: web
+    name: teambus-sandbox
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python sandbox.py
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - {key: PORT, value: "10000"}
+      - {key: SANDBOX_TRUST_PROXY, value: "1"}        # TLS is terminated by Render's load balancer
+      - {key: SANDBOX_TRUST_PROXY_HOPS, value: "1"}   # verify with /_ip after the first deploy (see docs/sandbox.md)
+      - {key: SANDBOX_DEBUG_IP, value: "1"}           # turn OFF once the per-visitor address looks right
+      - {key: SANDBOX_WARM, value: "1"}               # keep one hub pre-started: a hub takes ~15 s to import at 0.1 CPU
+      - {key: SANDBOX_START_TIMEOUT, value: "90"}
+      - {key: SANDBOX_MAX, value: "6"}                # ~40 MiB each: measured 230 MiB with 4 sandboxes + a spare under a 512 MB / 0.1 CPU limit
+      - {key: SANDBOX_TTL, value: "1800"}
+      - {key: SANDBOX_NEW_PER_IP_HOUR, value: "2"}

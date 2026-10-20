@@ -1,0 +1,29 @@
+# Hub + Caddy (automatic HTTPS). Put TEAMBUS_DOMAIN (and optionally TEAMBUS_TOKEN, the read-only web-view token) in .env next to this file.
+services:
+  hub:
+    image: ${TEAMBUS_IMAGE:-teambus-hub:local}
+    build:
+      context: .
+      args: {BASE: "${PYTHON_BASE:-python:3.13-slim}"}   # e.g. mirror.gcr.io/library/python:3.13-slim if Docker Hub rate-limits you
+    restart: unless-stopped
+    environment:
+      TEAMBUS_TOKEN: ${TEAMBUS_TOKEN:-}          # shared read-only token for the web view; empty = web view needs an agent token
+      TEAMBUS_INTENT_TTL: ${TEAMBUS_INTENT_TTL:-14400}
+    volumes:
+      - teambus-data:/data                       # SQLite DB + tokens.json live here
+    expose: ["8765"]                             # not published: only Caddy reaches it
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [hub]
+    ports: ["80:80", "443:443"]
+    environment:
+      TEAMBUS_DOMAIN: ${TEAMBUS_DOMAIN:?set TEAMBUS_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  teambus-data:
+  caddy-data:
+  caddy-config:

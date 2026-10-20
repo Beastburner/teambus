@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# teambus-join: connect the project in the CURRENT folder to a TeamBus hub. Run once per project; safe to re-run.
+#   /path/to/teambus/teambus-join --hub http://IP:8765 --agent-id alice-frontend --role frontend --token TOKEN
+# (the hub owner's `./teambus-hub add ...` prints this exact line for you)
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+die() { echo "teambus-join: $*" >&2; exit 1; }
+command -v python3 >/dev/null || die "python3 is required"
+command -v claude  >/dev/null || die "the 'claude' CLI is required (https://claude.com/claude-code)"
+[ "$(uname -s)" != "Linux" ] && [ "$(uname -s)" != "Darwin" ] && die "Linux/macOS only (hooks use python3 and POSIX paths)"
+[ $# -ge 8 ] || die "usage: teambus-join --hub URL --agent-id ID --role ROLE --token TOKEN"
+hub=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--hub" ] && { j=$((i+1)); hub="${!j}"; }; done
+[ -n "$hub" ] || die "missing --hub"
+echo "checking the hub at $hub ..."
+curl -fsS -m 5 "$hub/healthz" >/dev/null || die "cannot reach $hub (are you on the VPN / same network as the hub?)"
+python3 "$HERE/teambus" init "$@"
+echo; python3 "$HERE/teambus" doctor
+echo; echo "Done. Start 'claude' in this folder as usual; try: python3 $HERE/teambus status"

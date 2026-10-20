@@ -1,0 +1,55 @@
+# Public sandbox
+
+`sandbox.py` lets anyone get a **private, throwaway hub** (alice-frontend / bob-backend / carol-fullstack) from a web page, so they can try TeamBus without hosting anything. Each visitor gets their own `server.py` process and SQLite file, so visitors never see each other's data and agents cannot prompt-inject strangers.
+
+## Run it
+```bash
+echo "SANDBOX_DOMAIN=sandbox.example.com" > .env     # DNS A record -> this host; ports 80/443 open
+docker compose -f docker-compose.sandbox.yml up -d --build
+```
+(Separate from `docker-compose.yml`; both use ports 80/443, so run one per host.) Without Docker: `python sandbox.py` (listens on 127.0.0.1:8780; put your own TLS proxy in front and set `SANDBOX_PUBLIC_URL`, `SANDBOX_TRUST_PROXY=1`).
+
+Visitors open `https://sandbox.example.com/`, click **Create my sandbox**, and get a `teambus-join …` line per agent plus a web-view link. `curl -X POST https://sandbox.example.com/new` returns the same as JSON.
+
+## Limits (all environment variables)
+| Variable | Default | Meaning |
+|---|---|---|
+| `SANDBOX_TTL` | 3600 | seconds until a sandbox and its data are deleted |
+| `SANDBOX_MAX` | 20 | concurrent sandboxes (503 when full) |
+| `SANDBOX_NEW_PER_IP_HOUR` | 3 | creations per client IP per hour (429) |
+| `SANDBOX_RPM` | 600 | requests per minute per sandbox (429) |
+| `SANDBOX_MAX_BODY` | 65536 | bytes per request (413) |
+| `SANDBOX_MAX_DB_MB` | 5 | a sandbox whose DB exceeds this is deleted |
+| `SANDBOX_WARM` | off | `1` keeps one hub pre-started, so a visitor gets theirs instantly (matters on slow hosts) |
+| `SANDBOX_START_TIMEOUT` | 45 | seconds to wait for a new hub to answer before giving up |
+| `SANDBOX_SPAWN_CONCURRENCY` | 2 | hubs started at the same time (they starve each other on a small CPU) |
+| `SANDBOX_TRUST_PROXY` | off | `1` behind a reverse proxy you control: the client address and the https scheme/host come from its headers |
+| `SANDBOX_CLIENT_IP_HEADER` | `x-forwarded-for` | header holding the client address, e.g. `cf-connecting-ip` behind Cloudflare |
+| `SANDBOX_TRUST_PROXY_HOPS` | 1 | how many of your proxies are in front; the Nth entry from the RIGHT is the client (anything left of that is client-supplied) |
+| `SANDBOX_DEBUG_IP` | off | `1` adds `GET /_ip`, which echoes what the proxy sends; turn it off again afterwards |
+| `SANDBOX_MEM` (compose) | 2g | container memory; each sandbox is one small Python process, so set `SANDBOX_MAX` from a measurement |
+
+The compose service is read-only, drops all capabilities, runs as a non-root user and keeps sandbox data on a RAM-backed tmpfs (gone on restart).
+
+## Tested
+`pytest test_sandbox.py` (isolation, every limit, expiry cleanup, DB-cap eviction, shutdown cleanup, MCP through the proxy, `X-Forwarded-For` spoofing) and, in Docker with Caddy's local CA: creation over https, quota not resettable via a spoofed header, a real `claude -p` session over https, expiry inside the container, clean teardown.
+**Not tested:** a real public domain / Let's Encrypt certificate, load, or many distinct client IPs. Many IPs can still exhaust `SANDBOX_MAX`; size it, watch the logs, and consider Caddy-level rules.
+
+## Deploy on Render (free instance)
+`render.yaml` is a Blueprint for it. Nothing here has been deployed or tested on Render itself; the numbers below come from running the same image in Docker with Render's documented free limits (`--memory 512m --cpus 0.1`).
+
+**What the free instance means for this service**
+- **512 MB RAM, 0.1 CPU.** Measured: about 40 MiB per sandbox (230 MiB with 4 sandboxes and a spare), so `SANDBOX_MAX=6` is the blueprint's default. Starting a hub takes about 15 s of wall time at 0.1 CPU, which is why `SANDBOX_WARM=1` keeps one ready (visitors then get theirs instantly; the next one warms in 7 to 11 s).
+- **Sleeps after 15 minutes without requests, about a minute to wake.** Every sandbox disappears when it sleeps or restarts, and invite commands stop working. For throwaway sandboxes that is acceptable; say so on the page if it matters.
+- **Ephemeral disk, 750 free instance hours a month.** Fine for data that is deleted anyway; the service stops for the month when the hours run out.
+- **TLS** is terminated by Render's load balancer, so the container sees plain http: `SANDBOX_TRUST_PROXY=1` makes invites use `https://` and your `onrender.com` host.
+
+**Steps**
+1. Put this folder at the root of a GitHub repo and create a Blueprint from it (or create a Docker web service with the same settings).
+2. After the first deploy open `https://<your-service>.onrender.com/_ip` from two different networks (for example your phone on mobile data). `derived_ip` must be your own address and must differ between the two. Render does not document its forwarding headers and reports conflict, so check rather than assume.
+   - If `derived_ip` is a Render or Cloudflare address (the same for everyone), raise `SANDBOX_TRUST_PROXY_HOPS` to 2, or set `SANDBOX_CLIENT_IP_HEADER=cf-connecting-ip` if that header appears in the output.
+   - If a visitor could change `derived_ip` by sending their own `X-Forwarded-For`, the hop count is too low.
+3. Create a sandbox from the page and check the invite starts with `https://` and your host. If it shows `http://`, set `SANDBOX_PUBLIC_URL=https://<your-service>.onrender.com`.
+4. Set `SANDBOX_DEBUG_IP` to `0` (or delete it).
+
+**Not verified on Render:** whether its proxy keeps the long-lived streaming connection a Claude Code session holds open (MCP over streamable HTTP) for as long as a session needs. Test one real `claude` session through the deployed URL before announcing it.

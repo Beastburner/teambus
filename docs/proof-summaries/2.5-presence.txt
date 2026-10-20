@@ -1,0 +1,28 @@
+[hook SessionStart:startup] exit=0 stdout='{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "TeamBus: the hub identifies you as agent \'alice-frontend\' (from your token), so agent_id arguments are optional."}}\n'
+[hook UserPromptSubmit] exit=0 stdout=''
+[tool_use] ToolSearch {"query": "select:mcp__teambus__ask_teammate_agent,mcp__teambus__team_feed", "max_results": 5}
+[tool_result] [{'type': 'tool_reference', 'tool_name': 'mcp__teambus__ask_teammate_agent'}, {'type': 'tool_reference', 'tool_name': 'mcp__teambus__team_feed'}]
+[tool_use] mcp__teambus__ask_teammate_agent {"to_agent": "dave-ops", "question": "Is staging up?"}
+[tool_result] [{'type': 'text', 'text': '{\n  "id": 2,\n  "to": "dave-ops",\n  "warning": "dave-ops has never connected; the answer may take a while. Continue other work and check_inbox later."\n}'}]
+[tool_use] mcp__teambus__ask_teammate_agent {"to_agent": "bob-backend", "question": "Any news on the API?"}
+[tool_result] [{'type': 'text', 'text': '{\n  "id": 3,\n  "to": "bob-backend",\n  "warning": "bob-backend has been offline 30h; the answer may take a while. Continue other work and check_inbox later."\n}'}]
+[tool_use] mcp__teambus__team_feed {}
+[tool_result] [{'type': 'text', 'text': '{\n  "now": 1792520631.773237,\n  "agents": [\n    {\n      "agent_id": "alice-frontend",\n      "role": "frontend",\n      "last_seen_ago": 0.006044626235961914,\n      "active": true\n    },\n    {\n      "agent_id": "bob-backend",\n      "role": "backend",\n      "last_
+[assistant] Both questions are sent, but neither teammate has answered. Both tools returned a warning that the answer may take a while.
+
+**Warnings from the tools**
+- dave-ops (message id 2): "dave-ops has never connected; the answer may take a while. Continue other work and check_inbox later."
+- bob-backend (message id 3): "bob-backend has been offline 30h; the answer may take a while. Continue other work and check_inbox later."
+
+**Who is active (from `team_feed`)**
+- **alice-frontend** (you, frontend): ac
+[RESULT] Both questions are sent, but neither teammate has answered. Both tools returned a warning that the answer may take a while.
+
+**Warnings from the tools**
+- dave-ops (message id 2): "dave-ops has never connected; the answer may take a while. Continue other work and check_inbox later."
+- bob-backend (message id 3): "bob-backend has been offline 30h; the answer may take a while. Continue other work and check_inbox later."
+
+**Who is active (from `team_feed`)**
+- **alice-frontend** (you, frontend): active.
+- **carol-fullstack** (fullstack): active, last seen about 35 seconds ago.
+- **bob-backend** (
