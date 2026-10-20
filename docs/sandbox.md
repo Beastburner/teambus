@@ -44,6 +44,8 @@ The compose service is read-only, drops all capabilities, runs as a non-root use
 - **Ephemeral disk, 750 free instance hours a month.** Fine for data that is deleted anyway; the service stops for the month when the hours run out.
 - **TLS** is terminated by Render's load balancer, so the container sees plain http: `SANDBOX_TRUST_PROXY=1` makes invites use `https://` and your `onrender.com` host.
 
+**Zero-configuration deploy.** The default `Dockerfile` starts the hub, but on Render (the platform sets `RENDER` itself) with no hub auth configured, `start.sh` starts the sandbox instead, with defaults sized for a free instance. So a service created by hand with the default settings works without changing the Dockerfile path, the start command or any environment variable; anything you do set overrides those defaults. A hub on Render (with `TEAMBUS_TOKEN` or a tokens file) still starts as the hub, and `TEAMBUS_MODE=hub` or `sandbox` forces either.
+
 **Steps**
 1. Create a Blueprint from the repo (`render.yaml` uses `Dockerfile.sandbox`, which starts `sandbox.py` by default). If you create the service by hand in the dashboard instead, set **Dockerfile Path** to `./Dockerfile.sandbox` (the plain `./Dockerfile` is the hub and exits with "refusing to start without auth"), **Health Check Path** to `/healthz`, and add the environment variables listed in `render.yaml`. A hand-made service ignores `render.yaml`.
 2. After the first deploy open `https://<your-service>.onrender.com/_ip` from two different networks (for example your phone on mobile data). `derived_ip` must be your own address and must differ between the two. Render does not document its forwarding headers and reports conflict, so check rather than assume.

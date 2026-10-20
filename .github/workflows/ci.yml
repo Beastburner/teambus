@@ -39,3 +39,12 @@ jobs:
           curl -fs -o /dev/null -w "font %{content_type}\n" localhost:10000/assets/InstrumentSerif-Regular.woff2
           curl -fs -X POST -o /dev/null -w "create sandbox %{http_code}\n" localhost:10000/new
           docker rm -f sbx
+      - name: The default image on Render (RENDER set, no auth) starts the sandbox, and elsewhere the hub still refuses without auth
+        run: |
+          docker run -d --name onrender -p 10001:10000 -e RENDER=true -e PORT=10000 teambus-hub:ci
+          for i in $(seq 1 40); do curl -fs localhost:10001/healthz && break; sleep 1; done
+          body=$(curl -fs localhost:10001/healthz); echo "$body"; echo "$body" | grep -q '"sandboxes"'
+          docker rm -f onrender
+          out=$(docker run --rm teambus-hub:ci 2>&1 || true)       # the hub exits 1 here by design
+          echo "$out"; echo "$out" | grep -q "refusing to start without auth"
+          echo "hub refuses without auth: ok"
