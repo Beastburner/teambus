@@ -115,9 +115,9 @@ def test_forwarded_header_honoured_when_trusted(mgr):
     assert out == [201, 201, 429]
 
 def test_landing_page_is_served_with_live_limits(mgr):
-    m = mgr(SANDBOX_TTL=5400, SANDBOX_NEW_PER_IP_HOUR=7, SANDBOX_MAX_DB_MB=2); st, html = req(m.url + "/")
+    m = mgr(SANDBOX_TTL=5400, SANDBOX_NEW_PER_IP_HOUR=7, SANDBOX_MAX_DB_MB=2, SANDBOX_MAX_ACTIVE_PER_IP=4, SANDBOX_MAX_AGENTS=6, SANDBOX_INSTALL_CMD="curl -fsSL https://example.test/i.sh | sh"); st, html = req(m.url + "/")
     assert st == 200 and b"TeamBus sandbox" in html and b'id="b"' in html
-    assert b"90 minutes" in html and b"7 sandboxes per hour" in html and b"2 MB" in html and b"__" not in html.replace(b"__proto__", b"")   # every placeholder filled from the real config
+    assert b"90 minutes" in html and b"7 new sandboxes per hour, 4 at once" in html and b"Up to 6 agents each" in html and b"2 MB" in html and b"https://example.test/i.sh" in html and b",MAXA=6;" in html and b"__" not in html.replace(b"__proto__", b"")   # every placeholder filled from the real config
 
 def test_assets_served_from_a_fixed_whitelist(mgr):
     m = mgr()
@@ -180,3 +180,81 @@ def test_missing_custom_ip_header_falls_back_to_forwarded_for_hops(mgr):
     assert [_post(m.url + "/new", chain(c))[0] for c in ("49.36.72.231", "49.36.72.231", "203.0.113.5")] == [201, 429, 201]
     # and each visitor behind the same Render-internal hop is no longer lumped together
     assert _post(m.url + "/new", {"CF-Connecting-IP": "198.51.100.9", "X-Forwarded-For": "x, 198.51.100.9, 162.159.114.99, 10.25.213.21"})[0] == 201
+
+
+# ---- custom agents and roles, several sandboxes per visitor, manage endpoints ----
+def call(method, url, body=None, token=None, raw=None):
+    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+    r = urllib.request.Request(url, data, {"Content-Type": "application/json", **({"Authorization": "Bearer " + token} if token else {})}, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=15) as x: return x.status, json.loads(x.read() or b"null")
+    except urllib.error.HTTPError as e:
+        try: j = json.loads(e.read())
+        except Exception: j = None
+        return e.code, j
+
+AG2 = [{"agent_id": "dana-web", "role": "web"}, {"agent_id": "eli-api", "role": "api"}]
+
+def test_custom_agents_roles_and_label(mgr):
+    m = mgr(); st, sb = call("POST", m.url + "/new", {"label": "demo run", "agents": AG2}); assert st == 201
+    assert [(a["agent_id"], a["role"]) for a in sb["agents"]] == [("dana-web", "web"), ("eli-api", "api")] and sb["label"] == "demo run" and sb["manage_token"]
+    assert "--agent-id dana-web --role web --token " in sb["agents"][0]["join"] and sb["expires_at"] > time.time()
+    st, me = call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][1]["token"]); assert (st, me) == (200, {"agent_id": "eli-api", "role": "api"})
+    st, status = call("GET", sb["hub_url"] + "/api/status", token=sb["web_view"].split("token=")[1]); assert sorted(a["agent_id"] for a in status["agents"]) == ["dana-web", "eli-api"]   # no alice/bob/carol left over
+
+def test_default_agents_when_no_body_or_no_agents_key(mgr):
+    m = mgr(); assert [a["agent_id"] for a in call("POST", m.url + "/new")[1]["agents"]] == ["alice-frontend", "bob-backend", "carol-fullstack"]
+    assert [a["role"] for a in call("POST", m.url + "/new", {"label": "x"})[1]["agents"]] == ["frontend", "backend", "fullstack"]
+
+@pytest.mark.parametrize("body", [
+    {"agents": [AG2[0]]}, {"agents": [{"agent_id": f"agent-{i}", "role": "r"} for i in range(6)]}, {"agents": "alice"}, {"agents": [AG2[0], AG2[0]]},
+    {"agents": [{"agent_id": "Bad Id", "role": "r"}, AG2[1]]}, {"agents": [{"agent_id": "a; rm -rf ~", "role": "r"}, AG2[1]]}, {"agents": [{"agent_id": "$(id)", "role": "r"}, AG2[1]]},
+    {"agents": [{"agent_id": "dana-web", "role": "my role"}, AG2[1]]}, {"agents": [{"agent_id": "dana-web", "role": "x" * 25}, AG2[1]]}, {"agents": [{"agent_id": "d", "role": "r"}, AG2[1]]},
+    {"agents": [{"role": "r"}, AG2[1]]}, {"label": "x" * 41}, {"label": "tab\there"}, [1, 2]])
+def test_invalid_requests_are_rejected_before_anything_starts(mgr, body):
+    m = mgr(); st, j = call("POST", m.url + "/new", body); assert st == 400 and j["error"] and m.sandbox_dirs() == []
+
+def test_non_json_body_is_a_400(mgr):
+    m = mgr(); assert call("POST", m.url + "/new", raw=b"not json")[0] == 400
+
+def test_active_limit_per_visitor_and_delete_frees_the_slot(mgr):
+    m = mgr(SANDBOX_MAX_ACTIVE_PER_IP=2, SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX=9)
+    a = call("POST", m.url + "/new")[1]; b = call("POST", m.url + "/new")[1]; st, j = call("POST", m.url + "/new")
+    assert st == 429 and "2 active sandboxes" in j["error"] and len(m.children()) == 2
+    assert call("DELETE", m.url + "/manage/" + a["id"], token=a["manage_token"])[0] == 200
+    assert call("POST", sb_url := m.url + "/new")[0] == 201                                  # the freed slot is usable again
+    assert call("POST", a["hub_url"] + "/api/whoami", {}, a["agents"][0]["token"])[0] == 404  # the deleted one is really gone
+    assert b["id"] in [p.name[3:] for p in m.sandbox_dirs()] and a["id"] not in [p.name[3:] for p in m.sandbox_dirs()]
+
+def test_manage_endpoints_require_that_sandboxes_own_token(mgr):
+    m = mgr(); a = call("POST", m.url + "/new")[1]; b = call("POST", m.url + "/new")[1]
+    assert call("GET", m.url + "/manage/" + a["id"])[0] == 401                                              # no token
+    assert call("GET", m.url + "/manage/" + a["id"], token="nope")[0] == 401
+    assert call("GET", m.url + "/manage/" + a["id"], token=b["manage_token"])[0] == 401                     # another sandbox's token
+    assert call("GET", m.url + "/manage/" + a["id"], token=a["agents"][0]["token"])[0] == 401               # an agent token is not a manage token
+    assert call("DELETE", m.url + "/manage/" + a["id"], token=b["manage_token"])[0] == 401 and len(m.children()) == 2
+    assert call("GET", m.url + "/manage/doesnotexist", token=a["manage_token"])[0] == 404
+    st, d = call("GET", m.url + "/manage/" + a["id"], token=a["manage_token"]); assert st == 200 and d["id"] == a["id"] and len(d["agents"]) == 3
+
+def test_add_an_agent_to_a_running_sandbox(mgr):
+    m = mgr(); sb = call("POST", m.url + "/new", {"agents": AG2})[1]
+    st, ag = call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "frank-ops", "role": "ops"}, sb["manage_token"])
+    assert st == 201 and ag["agent_id"] == "frank-ops" and "--agent-id frank-ops --role ops" in ag["join"]
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, ag["token"])[1] == {"agent_id": "frank-ops", "role": "ops"}          # live, no restart
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[0] == 200                                    # existing tokens still work
+    assert call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "frank-ops", "role": "x"}, sb["manage_token"])[0] == 400   # duplicate name
+    assert call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "Bad Name", "role": "x"}, sb["manage_token"])[0] == 400
+    assert call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "gus-qa", "role": "qa"})[0] == 401                        # no manage token
+
+def test_agent_count_is_capped_when_adding(mgr):
+    m = mgr(SANDBOX_MAX_AGENTS=3); sb = call("POST", m.url + "/new")[1]       # already 3
+    st, j = call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "extra-one", "role": "x"}, sb["manage_token"]); assert st == 400 and "at most 3" in j["error"]
+
+def test_custom_agents_on_the_warm_spare_are_instant_and_replace_the_default_tokens(mgr):
+    m = mgr(SANDBOX_WARM=1, SANDBOX_MAX=4, SANDBOX_NEW_PER_IP_HOUR=9)
+    for _ in range(60):
+        if json.loads(req(m.url + "/healthz")[1])["spare"]: break
+        time.sleep(.5)
+    t = time.time(); st, sb = call("POST", m.url + "/new", {"agents": AG2}); assert st == 201 and time.time() - t < 2
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[1]["agent_id"] == "dana-web"
+    status = call("GET", sb["hub_url"] + "/api/status", token=sb["web_view"].split("token=")[1])[1]; assert sorted(a["agent_id"] for a in status["agents"]) == ["dana-web", "eli-api"]

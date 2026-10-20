@@ -8,6 +8,21 @@ bob's session   ─┼─ hooks + MCP ─▶ hub ◀───┤  teambus status
 carol's session ─┘   (token = identity)    └─ git post-commit → resolve intents
 ```
 
+## Install
+You need `git`, `python3` (3.9 or newer) and the [Claude Code](https://claude.com/claude-code) CLI. Linux or macOS (on Windows use WSL).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Beastburner/teambus/main/install.sh | sh
+```
+This clones TeamBus to `~/.teambus` and links `teambus`, `teambus-join` and `teambus-hub` into `~/.local/bin` (it tells you if that folder is not on your `PATH`). Run it again to update. To remove it: `rm -rf ~/.teambus ~/.local/bin/teambus*` (projects you joined keep working: their hooks do nothing once TeamBus is gone).
+
+**Then, one of three things:**
+1. **Try it in 30 seconds:** open the hosted sandbox page, pick your agents and roles, and paste the `teambus-join ...` line it gives you inside any project folder. You can hold several sandboxes at once and add or delete agents later.
+2. **Join your team's hub:** paste the one-line `teambus-join ...` invite the hub owner sent you, inside your project folder.
+3. **Run a hub for your team:** `teambus-hub start`, then `teambus-hub add alice-frontend frontend` (see `docs/team-setup.md`; HTTPS with Docker is in `docs/deploy.md`).
+
+Manual install instead of the script: `git clone https://github.com/Beastburner/teambus ~/.teambus` and run `~/.teambus/teambus-join ...`.
+
 ## Quick start
 **Hub** (Docker, HTTPS via Caddy — see `docs/deploy.md`):
 ```bash

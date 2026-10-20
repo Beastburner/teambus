@@ -99,6 +99,20 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 @media (max-width:1000px){.tiles{display:none}.col{width:calc(100% - 28px)}.stage{border-radius:16px}}
 @media (max-width:860px){.hero{grid-template-columns:1fr}.hero-art{max-height:300px}nav{gap:22px;padding-top:72px;font-size:24px}.nv .dd,.nv .lab{display:none}.paper{grid-template-columns:1fr}.board{min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:34px 14px 18px;align-content:start}.fr{position:relative;left:auto!important;top:auto!important;width:auto!important}.rows{display:none}.dd2{display:none}}
 @media (prefers-reduced-motion:reduce){.aura{animation:none}}
+
+.linkbtn{font:700 clamp(20px,1.8vw,24px)/1 var(--hand);color:var(--red-ink);background:none;border:0;margin-left:18px;cursor:pointer;text-decoration:underline wavy;text-underline-offset:5px;padding:6px 2px}.linkbtn:hover{color:var(--red)}
+.fl{display:block;font:600 13px var(--sans);margin:14px 0 5px}.hint{font-weight:500;color:var(--red-ink);margin-left:6px}
+.in{width:100%;font:500 14px var(--sans);color:var(--ink);background:#fff9f1;border:2px solid var(--ink);border-radius:10px;padding:9px 11px;min-width:0}.in:focus-visible{outline:2px dashed var(--red);outline-offset:2px}
+.agrow{display:grid;grid-template-columns:1.35fr 1fr 36px;gap:8px;margin-bottom:8px}
+.ghost{font:700 13px var(--sans);color:var(--ink);background:transparent;border:2px solid var(--ink);border-radius:10px;height:36px;padding:0 13px;cursor:pointer}.ghost:hover{background:var(--cream-2)}.ghost.danger{color:var(--red-ink);border-color:var(--red)}.ghost.danger:hover{background:var(--red);color:#fff4ea}
+.ghost.sq{padding:0;width:36px}
+.err{min-height:1.3em;margin:8px 0 0;font:600 14px/1.3 var(--sans);color:var(--red-ink)}
+.acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:6px 0 10px}.btn.sm{height:44px;font-size:15px;padding:0 20px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.tab{font:700 13px var(--sans);color:var(--ink);background:var(--cream-2);border:2px solid var(--ink);border-radius:10px;height:34px;padding:0 11px;cursor:pointer;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab[aria-selected="true"]{background:var(--red);color:#fff4ea}.tab.new{background:transparent}
+.addag{margin:12px 0 4px;padding-top:6px;border-top:2px dashed rgba(42,31,27,.35)}.addag .agrow{grid-template-columns:1.35fr 1fr auto}
+.exp{margin:0 0 10px;font-size:14px;font-weight:500}.inst{margin:10px 0 2px}.inst .fl{margin-top:4px}
+@media (max-width:860px){.linkbtn{margin:10px 0 0;display:block}}
 .ribbon{height:0}.rib{display:block;width:calc(100% + 40px);margin:-10px -20px 0;height:34px;color:var(--red);transform:rotate(-1.2deg);position:relative;top:-6px}.hlsvg{width:100%;height:100%;display:block}.scrib+*{}</style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="rough" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency=".03" numOctaves="2" seed="4" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="3"/></filter></svg>
 <div class="aura" aria-hidden="true"></div><canvas id="gl" aria-hidden="true"></canvas>
@@ -118,7 +132,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
      <p class="role">Claude Code coordination</p>
      <h1 id="h1" aria-label="Agents should never collide."><span class="l"><span class="a">Agents should</span></span><span class="l"><span class="a">never <span class="rot"><span class="rw" id="rw">collide</span><svg class="scrib" viewBox="0 0 200 18" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><g filter="url(#rough)"><path class="ink" d="M4 12 C30 3 60 16 100 8 S158 13 196 5"/></g></svg></span>.</span></span></h1>
      <p class="sub">It blocks conflicting edits across Claude Code sessions. Try it in a private sandbox.</p>
-     <button class="btn" id="b" type="button" data-run>Create sandbox</button>
+     <button class="btn" id="b" type="button" data-run>Create sandbox</button><button class="linkbtn" id="mine" type="button" hidden>Your sandboxes (<span id="mn">0</span>)</button>
      <p class="msg" id="msg" role="status"></p>
      <p class="cap">Private hub. Deleted in __MINS__ minutes.</p>
     </div>
@@ -128,7 +142,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
    <div class="part how" id="how">
     <h2>How it works<svg class="scribble" viewBox="0 0 200 14" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><g filter="url(#rough)"><path class="ink" d="M4 8 C40 2 90 12 130 6 S180 8 196 5"/></g></svg></h2>
     <div class="notes">
-     <div class="nw" style="--r:-3deg"><div class="note kraft"><span class="tape"></span><b>Create.</b> One click gives you a private hub and a join command for alice, bob and carol.</div></div>
+     <div class="nw" style="--r:-3deg"><div class="note kraft"><span class="tape"></span><b>Create.</b> Name your agents and pick their roles, and get a private hub with a join command for each.</div></div>
      <div class="nw" style="--r:2.5deg"><div class="note graph"><span class="tape"></span><b>Join.</b> Run each command in a project folder. You need python3 and the Claude Code CLI.</div></div>
      <div class="nw" style="--r:-1.5deg"><div class="note kraft"><span class="tape"></span><b>Watch.</b> When two agents touch related files, the second waits until it has asked the first.</div></div>
     </div>
@@ -152,10 +166,10 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
     <div>
      <h2>What to expect</h2>
      <ul class="checks" id="checks">
-      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__PER_IP__ sandboxes per hour</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
+      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__PER_IP__ new sandboxes per hour, __MAX_ACTIVE__ at once</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
       <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__MINS__ minutes, then it is deleted</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
-      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>Up to __MAX_DB_MB__ MB of data</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
-      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>Isolated from every other visitor</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
+      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>Up to __MAX_AGENTS__ agents each, with roles you choose</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
+      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__MAX_DB_MB__ MB of data, isolated from every other visitor</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
      </ul>
      <button class="btn" type="button" data-run>Create sandbox</button>
      <p class="fine">Please don't put real secrets in it.</p>
@@ -169,35 +183,96 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 </div></div></div>
 
 <aside class="panel" id="panel" role="dialog" aria-labelledby="ptitle" hidden>
- <div class="panel-head"><h2 id="ptitle">Sandbox ready</h2><button class="x" id="close" type="button">Close</button></div>
- <div id="o" aria-live="polite"></div>
+ <div class="panel-head"><h2 id="ptitle">New sandbox</h2><button class="x" id="close" type="button">Close</button></div>
+ <div id="view-new">
+  <label class="fl" for="lbl">Name <span class="hint">optional</span></label>
+  <input class="in" id="lbl" maxlength="40" placeholder="for example: checkout rewrite" autocomplete="off">
+  <span class="fl">Agents <span class="hint">2 to __MAX_AGENTS__. Names: lowercase letters, numbers, dashes. Roles: letters, numbers, dashes.</span></span>
+  <div id="agrows"></div>
+  <button class="ghost" id="addrow" type="button">Add agent</button>
+  <p class="err" id="nerr" role="alert"></p>
+  <div class="acts"><button class="btn sm" id="docreate" type="button">Create sandbox</button><button class="ghost" id="backlist" type="button" hidden>Back to my sandboxes</button></div>
+ </div>
+ <div id="view-list" hidden>
+  <div class="tabs" id="tabs" role="tablist" aria-label="Your sandboxes"></div>
+  <div id="o" aria-live="polite"></div>
+ </div>
 </aside>
 
 <script>
-/* Create flow. Plain script: it works even if WebGL or GSAP are unavailable. */
+/* Sandboxes. Plain script: it works even if WebGL or GSAP are unavailable. A visitor can hold several sandboxes (kept in this browser), choose each one's agents and roles,
+   add agents later and delete a sandbox to free its slot. */
 const $=(i)=>document.getElementById(i),mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
-const runs=[...document.querySelectorAll("[data-run]")];let created=false,busy=false;
-const label=(t)=>runs.forEach((b)=>{b.textContent=b.id==="navcta"?t.toLowerCase():t});
-const dis=(v)=>runs.forEach((b)=>{b.disabled=v});
-const showPanel=()=>{const p=$("panel");p.hidden=false;if(window.gsap&&!matchMedia("(prefers-reduced-motion: reduce)").matches)gsap.fromTo(p,{opacity:0,y:-26,rotate:2.5,scale:.96},{opacity:1,y:0,rotate:0,scale:1,duration:.6,ease:"back.out(1.6)"});$("close").focus({preventScroll:true})};
+const INSTALL=__INSTALL__,LS="tb.sandboxes",DEFAULTS=[["alice-frontend","frontend"],["bob-backend","backend"],["carol-fullstack","fullstack"]],MAXA=__MAX_AGENTS__;
+const nowS=()=>Date.now()/1000;
+let boxes=[],sel=null,creating=false,delArmed=false;
+const load=()=>{try{const v=JSON.parse(localStorage.getItem(LS)||"[]");return Array.isArray(v)?v.filter((b)=>b&&b.id&&b.manage_token&&b.expires_at>nowS()):[]}catch(e){return[]}};
+const save=()=>{try{localStorage.setItem(LS,JSON.stringify(boxes))}catch(e){}};
+boxes=load();
+const runs=[...document.querySelectorAll("[data-run]")];
+const animIn=(el)=>{if(window.gsap&&!matchMedia("(prefers-reduced-motion: reduce)").matches)gsap.fromTo(el,{opacity:0,y:-26,rotate:2.5,scale:.96},{opacity:1,y:0,rotate:0,scale:1,duration:.6,ease:"back.out(1.6)"})};
+const minsLeft=(b)=>Math.max(0,Math.round((b.expires_at-nowS())/60));
+function refreshMine(){boxes=boxes.filter((b)=>b.expires_at>nowS());$("mn").textContent=boxes.length;$("mine").hidden=boxes.length===0}
+function showView(v){$("view-new").hidden=v!=="new";$("view-list").hidden=v!=="list";$("ptitle").textContent=v==="new"?"New sandbox":"Your sandboxes";$("backlist").hidden=!boxes.length}
+function openPanel(v){const p=$("panel"),wasHidden=p.hidden;p.hidden=false;showView(v);if(wasHidden)animIn(p);(v==="new"?$("lbl"):$("close")).focus({preventScroll:true})}
 const hidePanel=()=>{$("panel").hidden=true};
-async function run(){
- if(created){showPanel();return}
- if(busy)return;busy=true;dis(true);label("Creating");$("msg").textContent="";
- let r,d;try{r=await fetch("new",{method:"POST"});d=await r.json()}catch(e){fail("Could not reach the sandbox service.");return}
- if(!r.ok){fail(d.error||"Something went wrong.");return}
- const meta=mk("div","meta"),hub=mk("span","chip"),code=mk("code","",d.hub_url);hub.append("Hub ",code);
- const view=mk("span","chip"),a=mk("a","","Open web view");a.href=d.web_view;a.target="_blank";a.rel="noopener";view.append(a);meta.append(hub,view);
- const list=mk("div","list");
- for(const g of d.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join),c=mk("button","copy","Copy");c.type="button";
-  c.onclick=async()=>{try{await navigator.clipboard.writeText(g.join);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
-  line.append(pre,c);row.append(mk("div","who",g.agent_id),line);list.append(row)}
- $("o").replaceChildren(meta,mk("p","note2","Expires in "+Math.round(d.expires_in_seconds/60)+" minutes. Run one command in each of three project folders:"),list);
- created=true;busy=false;dis(false);label("Show my sandbox");showPanel();
+
+/* builder */
+function addRow(name="",role=""){const rows=$("agrows");if(rows.children.length>=MAXA)return;const r=mk("div","agrow"),n=mk("input","in"),o=mk("input","in"),x=mk("button","ghost sq","x");
+ n.placeholder="agent-name";n.value=name;n.maxLength=31;n.autocomplete="off";n.setAttribute("aria-label","Agent name");o.placeholder="role";o.value=role;o.maxLength=24;o.autocomplete="off";o.setAttribute("aria-label","Role");
+ x.type="button";x.setAttribute("aria-label","Remove this agent");x.onclick=()=>{if(rows.children.length>2){r.remove();syncRows()}};r.append(n,o,x);rows.append(r);syncRows()}
+function syncRows(){const rows=$("agrows"),n=rows.children.length;$("addrow").disabled=n>=MAXA;[...rows.querySelectorAll(".sq")].forEach((b)=>{b.disabled=n<=2})}
+function resetBuilder(){$("lbl").value="";$("agrows").replaceChildren();DEFAULTS.forEach(([n,r])=>addRow(n,r));$("nerr").textContent=""}
+async function doCreate(){
+ if(creating)return;const agents=[...$("agrows").children].map((r)=>({agent_id:r.children[0].value.trim(),role:r.children[1].value.trim()}));
+ const btn=$("docreate");creating=true;btn.disabled=true;btn.textContent="Creating";$("nerr").textContent="";
+ try{
+  const r=await fetch("new",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({label:$("lbl").value.trim(),agents})});let d={};try{d=await r.json()}catch(e){}
+  if(!r.ok){$("nerr").textContent=d.error||"Something went wrong.";return}
+  boxes.unshift(d);save();sel=d.id;delArmed=false;refreshMine();renderList();showView("list");(btn.blur(),$("close").focus({preventScroll:true}))
+ }catch(e){$("nerr").textContent="Could not reach the sandbox service."}
+ finally{creating=false;btn.disabled=false;btn.textContent="Create sandbox"}
 }
-function fail(m){$("msg").textContent=m;busy=false;dis(false);label("Create sandbox")}
-runs.forEach((b)=>b.onclick=run);$("close").onclick=hidePanel;
+
+/* list + details */
+const auth=(b)=>({Authorization:"Bearer "+b.manage_token});
+function renderList(){
+ refreshMine();const tabs=$("tabs"),o=$("o");tabs.replaceChildren();
+ if(!boxes.length){o.replaceChildren();resetBuilder();showView("new");return}
+ if(!boxes.find((b)=>b.id===sel))sel=boxes[0].id;
+ boxes.forEach((b,i)=>{const t=mk("button","tab",(b.label||"Sandbox "+(boxes.length-i))+" ("+minsLeft(b)+"m)");t.type="button";t.setAttribute("role","tab");t.setAttribute("aria-selected",b.id===sel?"true":"false");t.onclick=()=>{sel=b.id;delArmed=false;renderList()};tabs.append(t)});
+ const nb=mk("button","tab new","+ New sandbox");nb.type="button";nb.onclick=()=>{resetBuilder();showView("new");$("lbl").focus()};tabs.append(nb);
+ const b=boxes.find((x)=>x.id===sel),meta=mk("div","meta"),hub=mk("span","chip"),code=mk("code","",b.hub_url);hub.append("Hub ",code);
+ const view=mk("span","chip"),a=mk("a","","Open web view");a.href=b.web_view;a.target="_blank";a.rel="noopener";view.append(a);meta.append(hub,view);
+ const list=mk("div","list");
+ for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join),c=mk("button","copy","Copy");c.type="button";
+  c.onclick=async()=>{try{await navigator.clipboard.writeText(g.join);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
+  line.append(pre,c);row.append(mk("div","who",g.agent_id+" ("+g.role+")"),line);list.append(row)}
+ const inst=mk("div","inst"),il=mk("div","line"),ip=mk("pre","",INSTALL),ic=mk("button","copy","Copy");ic.type="button";
+ ic.onclick=async()=>{try{await navigator.clipboard.writeText(INSTALL);ic.textContent="Copied"}catch(e){ic.textContent="Select"}setTimeout(()=>ic.textContent="Copy",1500)};
+ il.append(ip,ic);inst.append(mk("span","fl","First time on this machine? Install TeamBus once:"),il);
+ const parts=[meta,mk("p","exp","Expires in "+minsLeft(b)+" minutes. Run one command in each project folder:"),list,inst];
+ if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
+  n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ad.type="button";
+  const er=mk("p","err");er.setAttribute("role","alert");ad.onclick=async()=>{er.textContent="";ad.disabled=true;
+   try{const rs=await fetch("manage/"+b.id+"/agents",{method:"POST",headers:{...auth(b),"Content-Type":"application/json"},body:JSON.stringify({agent_id:n.value.trim(),role:ro.value.trim()})});let d={};try{d=await rs.json()}catch(e){}
+    if(!rs.ok){er.textContent=d.error||"Something went wrong.";return}b.agents.push(d);save();renderList()}catch(e){er.textContent="Could not reach the sandbox service."}finally{ad.disabled=false}};
+  r.append(n,ro,ad);f.append(mk("span","fl","Add an agent to this sandbox"),r,er);parts.push(f)}
+ const acts=mk("div","acts"),del=mk("button","ghost danger",delArmed?"Click again to delete":"Delete this sandbox");del.type="button";
+ del.onclick=async()=>{if(!delArmed){delArmed=true;del.textContent="Click again to delete";return}
+  del.disabled=true;try{const rs=await fetch("manage/"+b.id,{method:"DELETE",headers:auth(b)});if(rs.ok||rs.status===404||rs.status===401){boxes=boxes.filter((x)=>x.id!==b.id);save();delArmed=false;sel=null;renderList()}}catch(e){del.disabled=false;del.textContent="Could not reach the service, try again"}};
+ acts.append(del);parts.push(acts);o.replaceChildren(...parts);
+}
+async function verify(){   /* drop sandboxes the server no longer has (expired, evicted, or the free instance slept) and pick up agents added elsewhere */
+ await Promise.all(boxes.map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)b._gone=true;else if(r.ok){const d=await r.json();b.agents=d.agents;b.expires_at=d.expires_at}}catch(e){}}));
+ boxes=boxes.filter((b)=>!b._gone);save();refreshMine()}
+async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden&&!$("view-list").hidden)renderList()}
+runs.forEach((b)=>b.onclick=()=>{resetBuilder();openPanel("new")});
+$("mine").onclick=openList;$("backlist").onclick=()=>{renderList();showView("list")};$("addrow").onclick=()=>addRow();$("docreate").onclick=doCreate;$("close").onclick=hidePanel;
+$("agrows").addEventListener("keydown",(e)=>{if(e.key==="Enter")doCreate()});
 addEventListener("keydown",(e)=>{if(e.key==="Escape"&&!$("panel").hidden)hidePanel()});
+setInterval(()=>{refreshMine();if(!$("panel").hidden&&!$("view-list").hidden&&boxes.length)renderList()},30000);
+resetBuilder();refreshMine();verify();
 /* sticker columns: repeat the tiles until the stage is covered; row numbers for the board */
 (()=>{const fill=(id)=>{const el=$(id),base=[...el.children];if(!base.length)return;let n=0;while(el.scrollHeight<=el.parentElement.scrollHeight+200&&n++<40)base.forEach((t)=>el.append(t.cloneNode(true)))};
  const go=()=>{fill("tl");fill("tr")};go();const rows=$("rows");for(let i=1;i<=18;i++){const e=document.createElement("i");e.textContent=i;rows.append(e)}})();

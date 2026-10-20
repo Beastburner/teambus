@@ -3,7 +3,7 @@
 #   /path/to/teambus/teambus-join --hub http://IP:8765 --agent-id alice-frontend --role frontend --token TOKEN
 # (the hub owner's `./teambus-hub add ...` prints this exact line for you)
 set -euo pipefail
-HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+HERE="$(python3 -c 'import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]}")"   # follows symlinks; works on macOS without readlink -f
 die() { echo "teambus-join: $*" >&2; exit 1; }
 command -v python3 >/dev/null || die "python3 is required"
 command -v claude  >/dev/null || die "the 'claude' CLI is required (https://claude.com/claude-code)"

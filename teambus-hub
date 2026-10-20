@@ -7,7 +7,7 @@
 # State lives in $TEAMBUS_HUB_DIR (default ~/.teambus-hub): venv, tokens.json, hub.db, hub.env, hub.log.
 # Address teammates use: $TEAMBUS_HOST, else this machine's Tailscale IP, else its first LAN IP. Port: $TEAMBUS_PORT (default 8765).
 set -euo pipefail
-HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+HERE="$(python3 -c 'import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]}")"   # follows symlinks; works on macOS without readlink -f
 STATE="${TEAMBUS_HUB_DIR:-$HOME/.teambus-hub}"; VENV="$STATE/venv"; TOKENS="$STATE/tokens.json"; ENVF="$STATE/hub.env"; PIDF="$STATE/hub.pid"
 mkdir -p "$STATE"; chmod 700 "$STATE"
 

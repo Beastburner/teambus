@@ -224,3 +224,43 @@ def test_inbox_tool_result_always_has_content(hub):
     assert out["unread"] == len(out["messages"]) >= 1
     api("te", "inbox"); out = json.loads(asyncio.run(go("te")))   # reading marks them read: now empty, yet the tool result is still not blank
     assert out == {"unread": 0, "messages": []}
+
+
+def _cli():
+    import importlib.machinery, importlib.util
+    ld = importlib.machinery.SourceFileLoader("teambus_cli2", str(Path(HERE) / "teambus")); sp = importlib.util.spec_from_loader("teambus_cli2", ld); m = importlib.util.module_from_spec(sp); ld.exec_module(m); return m
+
+
+def test_installed_hooks_do_nothing_when_teambus_is_gone_and_survive_paths_with_spaces(tmp_path):
+    cli = _cli(); cli.HOOK = Path("/nonexistent/teambus/hooks/hook.py")
+    gone = subprocess.run(["sh", "-c", cli.hook_cmd("pre")], input='{"tool_name":"Edit"}', capture_output=True, text=True)
+    assert gone.returncode == 0 and gone.stdout == ""                       # a removed install must never block a session (a bare `python3 missing.py` exits 2)
+    d = tmp_path / "my tools" / "hooks"; d.mkdir(parents=True); (d / "hook.py").write_text(Path(HOOK).read_text()); cli.HOOK = d / "hook.py"
+    ok = subprocess.run(["sh", "-c", cli.hook_cmd("start")], input="{}", capture_output=True, text=True, env={**os.environ, "TEAMBUS_URL": "http://127.0.0.1:1", "TEAMBUS_TOKEN": "x"})
+    assert ok.returncode == 0                                                # real script, space in the path, hub unreachable: still silent and fine
+
+
+def test_init_writes_guarded_hooks_and_is_still_idempotent(tmp_path):
+    proj = tmp_path / "p"; proj.mkdir(); env = {**os.environ, "HOME": str(tmp_path / "home")}; (tmp_path / "home").mkdir()
+    for _ in range(2): subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", URL, "--agent-id", "alice", "--role", "frontend", "--token", "ta", "--dir", str(proj)], env=env, capture_output=True, text=True, check=True)
+    s = json.loads((proj / ".claude" / "settings.local.json").read_text())
+    cmds = [h["command"] for ev in s["hooks"].values() for e in ev for h in e["hooks"]]
+    assert len(cmds) == 5 and all(c.startswith("[ -f ") and c.endswith("|| true") and "hooks/hook.py" in c for c in cmds)
+
+
+def test_install_script_installs_links_and_updates(tmp_path):
+    src = tmp_path / "src"; src.mkdir()
+    for f in ("teambus", "teambus-join", "teambus-hub", "install.sh", "requirements.txt"): (src / f).write_bytes((Path(HERE) / f).read_bytes()); os.chmod(src / f, 0o755)
+    sh = lambda *a, **k: subprocess.run(a, cwd=src, capture_output=True, text=True, check=True, **k)
+    sh("git", "init", "-q", "-b", "main"); sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one")
+    home, bin_ = tmp_path / "home", tmp_path / "bin"; home.mkdir()
+    env = {**os.environ, "HOME": str(home), "TEAMBUS_REPO": f"file://{src}", "TEAMBUS_BIN": str(bin_), "PATH": os.environ["PATH"]}
+    r = subprocess.run(["sh", str(src / "install.sh")], env=env, capture_output=True, text=True); assert r.returncode == 0, r.stderr + r.stdout
+    assert "Installing into" in r.stdout and "is not on your PATH" in r.stdout                  # bin dir was not on PATH: it says how to fix it
+    for c in ("teambus", "teambus-join", "teambus-hub"): assert (bin_ / c).is_symlink() and os.access(bin_ / c, os.X_OK)
+    run = lambda *a: subprocess.run(a, env={**env, "PATH": f"{bin_}:{os.environ['PATH']}"}, capture_output=True, text=True)
+    assert run("teambus", "--help").returncode == 0 and "init" in run("teambus", "--help").stdout       # works through the symlink
+    j = run("teambus-join"); assert j.returncode == 1 and "usage: teambus-join" in j.stderr             # finds its own folder through the symlink (python3/claude checks pass first)
+    (src / "NEWFILE").write_text("x"); sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "two")
+    r2 = subprocess.run(["sh", str(src / "install.sh")], env=env, capture_output=True, text=True); assert r2.returncode == 0 and "Updating" in r2.stdout and (home / ".teambus" / "NEWFILE").exists()   # re-running updates
+    bad = subprocess.run(["sh", str(src / "install.sh")], env={**env, "TEAMBUS_HOME": str(tmp_path)}, capture_output=True, text=True); assert bad.returncode == 1 and "not a TeamBus checkout" in bad.stderr   # never clobbers a random folder

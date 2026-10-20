@@ -48,3 +48,18 @@ jobs:
           out=$(docker run --rm teambus-hub:ci 2>&1 || true)       # the hub exits 1 here by design
           echo "$out"; echo "$out" | grep -q "refusing to start without auth"
           echo "hub refuses without auth: ok"
+
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh installs, links and updates (fresh HOME, from this checkout)
+        run: |
+          git branch -f ci-install HEAD            # a real branch for the commit under test (PR runs have a detached merge ref)
+          export HOME="$(mktemp -d)"; git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          export TEAMBUS_REPO="file://$GITHUB_WORKSPACE" TEAMBUS_REF=ci-install
+          sh install.sh
+          export PATH="$HOME/.local/bin:$PATH"
+          teambus --help | head -3
+          teambus-join 2>&1 | grep -q "usage: teambus-join"
+          sh install.sh | grep -q Updating

@@ -11,12 +11,28 @@ docker compose -f docker-compose.sandbox.yml up -d --build
 
 Visitors open `https://sandbox.example.com/`, click **Create my sandbox**, and get a `teambus-join …` line per agent plus a web-view link. `curl -X POST https://sandbox.example.com/new` returns the same as JSON.
 
+## Several sandboxes, your own agents and roles
+A visitor can hold several sandboxes at once (default 3 active, 6 new per hour), and chooses each one's agents and roles. The page keeps your sandboxes in your browser (with their tokens) so you can come back to them; they disappear when they expire.
+
+API (the page uses exactly this):
+| Call | What it does |
+|---|---|
+| `POST /new` with optional `{"label": "checkout rewrite", "agents": [{"agent_id": "dana-web", "role": "web"}, ...]}` | creates a sandbox. 2 to `SANDBOX_MAX_AGENTS` agents; names are 2 to 31 characters of lowercase letters, digits and dashes starting with a letter; roles are 1 to 24 letters, digits, dashes or underscores. No body means alice-frontend, bob-backend and carol-fullstack. Returns the hub URL, the web view, every agent's token and join command, and a `manage_token`. |
+| `GET /manage/<id>` | the same description again (bearer `manage_token`) |
+| `POST /manage/<id>/agents` with `{"agent_id", "role"}` | adds an agent to a running sandbox; every existing token keeps working |
+| `DELETE /manage/<id>` | deletes the sandbox now and frees its slot |
+
+Validation is strict on purpose: names and roles end up in a shell command (the join line) and in other agents' context. The manage token is separate from the agent tokens: an agent token cannot delete or edit a sandbox.
+
 ## Limits (all environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
 | `SANDBOX_TTL` | 3600 | seconds until a sandbox and its data are deleted |
 | `SANDBOX_MAX` | 20 | concurrent sandboxes (503 when full) |
-| `SANDBOX_NEW_PER_IP_HOUR` | 3 | creations per client IP per hour (429) |
+| `SANDBOX_NEW_PER_IP_HOUR` | 6 | new sandboxes per client IP per hour (429) |
+| `SANDBOX_MAX_ACTIVE_PER_IP` | 3 | sandboxes one client can hold at once (429; delete one to free the slot) |
+| `SANDBOX_MAX_AGENTS` | 5 | most agents in one sandbox |
+| `SANDBOX_INSTALL_CMD` | the install one-liner | what the dialog shows under "First time on this machine?" |
 | `SANDBOX_RPM` | 600 | requests per minute per sandbox (429) |
 | `SANDBOX_MAX_BODY` | 65536 | bytes per request (413) |
 | `SANDBOX_MAX_DB_MB` | 5 | a sandbox whose DB exceeds this is deleted |
@@ -39,7 +55,7 @@ The compose service is read-only, drops all capabilities, runs as a non-root use
 `render.yaml` is a Blueprint for it. Nothing here has been deployed or tested on Render itself; the numbers below come from running the same image in Docker with Render's documented free limits (`--memory 512m --cpus 0.1`).
 
 **What the free instance means for this service**
-- **512 MB RAM, 0.1 CPU.** Measured: about 40 MiB per sandbox (230 MiB with 4 sandboxes and a spare), so `SANDBOX_MAX=6` is the blueprint's default. Starting a hub takes about 15 s of wall time at 0.1 CPU, which is why `SANDBOX_WARM=1` keeps one ready (visitors then get theirs instantly; the next one warms in 7 to 11 s).
+- **512 MB RAM, 0.1 CPU.** Measured: about 40 MiB per sandbox (230 MiB with 4 sandboxes and a spare), so `SANDBOX_MAX=8` is the blueprint's default (about 390 MiB with a spare). Starting a hub takes about 15 s of wall time at 0.1 CPU, which is why `SANDBOX_WARM=1` keeps one ready (visitors then get theirs instantly; the next one warms in 7 to 11 s).
 - **Sleeps after 15 minutes without requests, about a minute to wake.** Every sandbox disappears when it sleeps or restarts, and invite commands stop working. For throwaway sandboxes that is acceptable; say so on the page if it matters.
 - **Ephemeral disk, 750 free instance hours a month.** Fine for data that is deleted anyway; the service stops for the month when the hours run out.
 - **TLS** is terminated by Render's load balancer, so the container sees plain http: `SANDBOX_TRUST_PROXY=1` makes invites use `https://` and your `onrender.com` host.

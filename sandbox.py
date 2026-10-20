@@ -2,7 +2,7 @@
 Each sandbox is its own `server.py` process + SQLite file, so visitors never see each other's data (no cross-visitor prompt injection).
 This service creates them (POST /new), reverse-proxies /s/<id>/... to the right one, rate-limits, caps size, and deletes everything on expiry.
 Run: python sandbox.py        (env: SANDBOX_PUBLIC_URL, SANDBOX_DIR, SANDBOX_TTL, SANDBOX_MAX, SANDBOX_NEW_PER_IP_HOUR, SANDBOX_RPM, SANDBOX_MAX_DB_MB, SANDBOX_MAX_BODY, SANDBOX_TRUST_PROXY, HOST, PORT)"""
-import asyncio, collections, json, mimetypes, os, secrets, shutil, socket, subprocess, sys, time
+import asyncio, collections, json, mimetypes, os, re, shlex, secrets, shutil, socket, subprocess, sys, time
 from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx, uvicorn
@@ -15,12 +15,39 @@ from starlette.routing import Route
 E = lambda k, d="": os.environ.get(k, d)
 HERE = Path(__file__).resolve().parent
 DIR = Path(E("SANDBOX_DIR", str(HERE / "sandboxes"))).resolve()
-TTL, MAX, PER_IP, RPM = int(E("SANDBOX_TTL", 3600)), int(E("SANDBOX_MAX", 20)), int(E("SANDBOX_NEW_PER_IP_HOUR", 3)), int(E("SANDBOX_RPM", 600))
+TTL, MAX, PER_IP, RPM = int(E("SANDBOX_TTL", 3600)), int(E("SANDBOX_MAX", 20)), int(E("SANDBOX_NEW_PER_IP_HOUR", 6)), int(E("SANDBOX_RPM", 600))
 MAX_DB, MAX_BODY, TRUST_PROXY = int(float(E("SANDBOX_MAX_DB_MB", 5)) * 1e6), int(E("SANDBOX_MAX_BODY", 65536)), E("SANDBOX_TRUST_PROXY") == "1"
 START_TIMEOUT, WARM, SPAWN_PAR = float(E("SANDBOX_START_TIMEOUT", 45)), E("SANDBOX_WARM") == "1", max(1, int(E("SANDBOX_SPAWN_CONCURRENCY", 2)))
+INSTALL_CMD = E("SANDBOX_INSTALL_CMD", "curl -fsSL https://raw.githubusercontent.com/Beastburner/teambus/main/install.sh | sh")
 IP_HEADER, TRUST_HOPS, DEBUG_IP = E("SANDBOX_CLIENT_IP_HEADER", "x-forwarded-for").lower(), max(1, int(E("SANDBOX_TRUST_PROXY_HOPS", 1))), E("SANDBOX_DEBUG_IP") == "1"
 PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
 AGENTS = [("alice-frontend", "frontend"), ("bob-backend", "backend"), ("carol-fullstack", "fullstack")]
+MAX_AGENTS, MAX_ACTIVE_PER_IP = max(2, int(E("SANDBOX_MAX_AGENTS", 5))), max(1, int(E("SANDBOX_MAX_ACTIVE_PER_IP", 3)))
+ID_RE, ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
+
+def clean_agent(a):
+    """One {agent_id, role} from user input -> (agent_id, role) or an error string."""
+    if not isinstance(a, dict) or not isinstance(a.get("agent_id"), str): return "each agent needs an agent_id"
+    aid, role = a["agent_id"].strip(), (a.get("role") or "member"); role = role.strip() if isinstance(role, str) else ""
+    if not ID_RE.fullmatch(aid): return f"agent name {aid[:20]!r}: use 2 to 31 characters, lowercase letters, numbers and dashes, starting with a letter"
+    if not ROLE_RE.fullmatch(role): return f"role {role[:20]!r}: use 1 to 24 letters, numbers, dashes or underscores (no spaces)"
+    return aid, role
+
+def parse_agents(raw):
+    if raw is None: return list(AGENTS), None
+    if not isinstance(raw, list) or not 2 <= len(raw) <= MAX_AGENTS: return None, f"a sandbox needs between 2 and {MAX_AGENTS} agents"
+    out, seen = [], set()
+    for a in raw:
+        c = clean_agent(a)
+        if isinstance(c, str): return None, c
+        if c[0] in seen: return None, f"agent name {c[0]!r} is used twice"
+        seen.add(c[0]); out.append(c)
+    return out, None
+
+def clean_label(v):
+    if v is None or v == "": return "", None
+    if not isinstance(v, str) or len(v.strip()) > 40 or any(ord(ch) < 32 for ch in v): return None, "label: at most 40 characters"
+    return v.strip(), None
 HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate", "host", "content-length"}
 SBX: dict[str, dict] = {}                              # id -> sandbox
 NEW_LOG: dict[str, collections.deque] = {}             # ip -> creation timestamps
@@ -46,6 +73,19 @@ def public_base(r: Request):
         proto = r.headers.get("x-forwarded-proto", "").split(",")[0].strip() or r.url.scheme
         return f"{proto}://{r.headers.get('x-forwarded-host', r.headers.get('host', r.url.netloc)).split(',')[0].strip()}"
     return str(r.base_url).rstrip("/")
+
+def store_tokens(sb, toks):
+    """Persist {token: {agent_id, role}} for the sandbox. The hub re-reads tokens.json whenever its mtime changes, so this works on a running hub (and on the warm spare)."""
+    path = sb["dir"] / "tokens.json"; prev = path.stat().st_mtime if path.exists() else 0
+    tmp = sb["dir"] / "tokens.tmp"; tmp.write_text(json.dumps(toks)); tmp.chmod(0o600); os.replace(tmp, path)
+    os.utime(path, (max(time.time(), prev + 1),) * 2)          # guarantee a new mtime so the hub notices
+    sb["tokens"] = toks
+
+def write_tokens(sb, agents):                                  # a new set of agents: fresh tokens for all of them
+    store_tokens(sb, {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in agents})
+
+def add_token(sb, agent_id, role):                             # one more agent: every existing token keeps working
+    tok = secrets.token_urlsafe(24); store_tokens(sb, {**sb["tokens"], tok: {"agent_id": agent_id, "role": role}}); return tok
 
 def free_port():
     with socket.socket() as s: s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
@@ -95,29 +135,84 @@ async def refill():
 def kick():
     t = asyncio.create_task(refill()); BG.add(t); t.add_done_callback(BG.discard)
 
-async def create(ip):
+async def create(ip, agents=None, label=""):
     global SPARE
     now = time.time(); log = NEW_LOG.setdefault(ip, collections.deque())
     while log and now - log[0] > 3600: log.popleft()
-    if len(log) >= PER_IP: return None, JSONResponse({"error": f"limit: {PER_IP} sandboxes per hour per IP"}, 429)
+    active = sum(1 for b in SBX.values() if b.get("ip") == ip)
+    if active >= MAX_ACTIVE_PER_IP: return None, JSONResponse({"error": f"you already have {active} active sandboxes (the limit is {MAX_ACTIVE_PER_IP}); delete one or wait for it to expire"}, 429)
+    if len(log) >= PER_IP: return None, JSONResponse({"error": f"limit: {PER_IP} new sandboxes per hour per visitor"}, 429)
     if len(SBX) >= MAX: return None, JSONResponse({"error": "sandbox capacity reached, try again in a few minutes"}, 503)
     log.append(now)
     if SPARE and SPARE["proc"].poll() is None: sb, SPARE = SPARE, None
     else: sb = await spawn()
     if not sb: return None, JSONResponse({"error": "could not start sandbox"}, 500)
-    sb["expires"] = time.time() + TTL; SBX[sb["id"]] = sb
+    if agents is not None and [(v["agent_id"], v["role"]) for v in sb["tokens"].values()] != agents: write_tokens(sb, agents)
+    sb.update(expires=time.time() + TTL, ip=ip, label=label, manage=secrets.token_urlsafe(24), created=time.time()); SBX[sb["id"]] = sb
     kick(); return sb, None
+
+def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
 
 def describe(sb, base):
     url = f"{base}/s/{sb['id']}"
-    return {"id": sb["id"], "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "web_view": f"{url}/?token={sb['viewer']}",
-            "agents": [{"agent_id": v["agent_id"], "role": v["role"], "token": t,
-                        "join": f"teambus-join --hub {url} --agent-id {v['agent_id']} --role {v['role']} --token {t}"} for t, v in sb["tokens"].items()]}
+    return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
+            "web_view": f"{url}/?token={sb['viewer']}", "max_agents": MAX_AGENTS, "manage_token": sb["manage"],
+            "agents": [{"agent_id": v["agent_id"], "role": v["role"], "token": t, "join": join_line(url, v["agent_id"], v["role"], t)} for t, v in sb["tokens"].items()]}
+
+async def body_json(request: Request):
+    raw = b""
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > MAX_BODY: return None, JSONResponse({"error": "request too large"}, 413)
+    if not raw.strip(): return None, None
+    try: return json.loads(raw), None
+    except ValueError: return None, JSONResponse({"error": "request body must be JSON"}, 400)
 
 async def new(request: Request):
-    sb, err = await create(ip_of(request))
+    body, err = await body_json(request)
+    if err: return err
+    if body is not None and not isinstance(body, dict): return JSONResponse({"error": "request body must be a JSON object"}, 400)
+    body = body or {}
+    agents, e = parse_agents(body.get("agents"))
+    if e: return JSONResponse({"error": e}, 400)
+    label, e = clean_label(body.get("label"))
+    if e: return JSONResponse({"error": e}, 400)
+    sb, err = await create(ip_of(request), agents if "agents" in body else None, label)
     if err: return err
     return JSONResponse(describe(sb, public_base(request)), 201)
+
+def managed(request: Request):
+    """The sandbox named in the URL, if the bearer token is its manage token; else an error response. Counts against the sandbox's request rate."""
+    sb = SBX.get(request.path_params["sid"])
+    if not sb or sb["expires"] < time.time(): return None, JSONResponse({"error": "sandbox not found or expired"}, 404)
+    auth = request.headers.get("authorization", ""); tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not tok or not secrets.compare_digest(tok, sb["manage"]): return None, JSONResponse({"error": "missing or wrong manage token"}, 401)
+    now = time.time(); h = sb["hits"]
+    while h and now - h[0] > 60: h.popleft()
+    if len(h) >= RPM: return None, JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
+    h.append(now); return sb, None
+
+async def manage_get(request: Request):
+    sb, err = managed(request)
+    return err or JSONResponse(describe(sb, public_base(request)))
+
+async def manage_delete(request: Request):
+    sb, err = managed(request)
+    if err: return err
+    destroy(sb["id"]); kick(); return JSONResponse({"deleted": sb["id"]})
+
+async def manage_add_agent(request: Request):
+    sb, err = managed(request)
+    if err: return err
+    body, err = await body_json(request)
+    if err: return err
+    c = clean_agent(body if isinstance(body, dict) else None)
+    if isinstance(c, str): return JSONResponse({"error": c}, 400)
+    cur = [(v["agent_id"], v["role"]) for v in sb["tokens"].values()]
+    if len(cur) >= MAX_AGENTS: return JSONResponse({"error": f"a sandbox can have at most {MAX_AGENTS} agents"}, 400)
+    if any(a == c[0] for a, _ in cur): return JSONResponse({"error": f"agent name {c[0]!r} already exists in this sandbox"}, 400)
+    add_token(sb, *c); d = describe(sb, public_base(request))
+    return JSONResponse(next(a for a in d["agents"] if a["agent_id"] == c[0]), 201)
 
 async def proxy(request: Request):
     sb = SBX.get(request.path_params["sid"])
@@ -141,7 +236,7 @@ PAGE = (HERE / "web" / "sandbox.html").read_text()   # landing page; the __X__ p
 for _ext, _t in ((".woff2", "font/woff2"), (".js", "text/javascript"), (".jpg", "image/jpeg")): mimetypes.add_type(_t, _ext)   # slim container images ship no MIME table
 ASSETS = {p.name: p for p in (HERE / "web" / "assets").glob("*") if p.is_file()}   # fonts + preview images; a fixed whitelist, so no path traversal
 async def home(request):
-    html = PAGE.replace("__MINS__", str(TTL // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}")
+    html = PAGE.replace("__MINS__", str(TTL // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}").replace("__MAX_ACTIVE__", str(MAX_ACTIVE_PER_IP)).replace("__MAX_AGENTS__", str(MAX_AGENTS)).replace("__INSTALL__", json.dumps(INSTALL_CMD))
     return HTMLResponse(html)
 async def asset(request):
     p = ASSETS.get(request.path_params["name"])
@@ -174,6 +269,7 @@ async def lifespan(app):
     await client.aclose()
 
 app = Starlette(routes=[Route("/", home), Route("/healthz", healthz), *([Route("/_ip", debug_ip)] if DEBUG_IP else []), Route("/assets/{name}", asset), Route("/new", new, methods=["POST"]),
+                        Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]),
                         Route("/s/{sid}/{rest:path}", proxy, methods=["GET", "POST", "DELETE", "OPTIONS"]), Route("/s/{sid}", proxy, methods=["GET"], name="bare")], lifespan=lifespan)
 
 if __name__ == "__main__":

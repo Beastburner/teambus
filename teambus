@@ -5,7 +5,7 @@
   teambus status                                               team feed, presence and your inbox in the terminal
   teambus resolve [--committed]                                mark your open intents done (used by the git post-commit hook)
   teambus git-hook                                             install the post-commit hook only"""
-import argparse, json, os, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
+import argparse, json, os, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -28,7 +28,9 @@ def call(c, name, body=None, method="POST", timeout=5):
     r = urllib.request.Request(f"{c['url']}/{name}", json.dumps(body or {}).encode() if method == "POST" else None, {"Content-Type": "application/json", "Authorization": f"Bearer {c['token']}"}, method=method)
     return json.load(urllib.request.urlopen(r, timeout=timeout))
 
-def hook_cmd(mode): return f"python3 {HOOK} {mode}"
+def hook_cmd(mode):
+    """Guarded: if TeamBus is uninstalled or moved, the hook does nothing (a missing script would otherwise exit 2, which Claude Code treats as a blocking error)."""
+    h = shlex.quote(str(HOOK)); return f"[ -f {h} ] && python3 {h} {mode} || true"
 def has_hook(entries): return any("hooks/hook.py" in h.get("command", "") for e in entries for h in e.get("hooks", []))
 
 def init(a):
