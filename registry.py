@@ -46,10 +46,12 @@ def _error_body(r):
     except Exception: return {}
 
 
-def _is_api_error(r):
-    """A 404 on a document just means 'no such sandbox'; a 404 that names an API problem (no database, wrong project) is a real error."""
-    e = _error_body(r); m = (e.get("message") or "").lower()
-    return "database" in m and ("not exist" in m or "not found" in m) or "service_disabled" in str(e).lower()
+def _is_missing_document(r):
+    """Google's reply for a document that simply is not there: 404, message 'Document "projects/.../documents/<collection>/<id>" not found.'
+    Anything else with a 404 (no database in the project, wrong project) is a real error. The path in that message contains the word 'databases',
+    so match the whole shape, not keywords."""
+    e = _error_body(r); m = (e.get("message") or "").strip().lower()
+    return r.status_code == 404 and e.get("status", "NOT_FOUND") == "NOT_FOUND" and m.startswith("document ") and m.endswith("not found.")
 
 
 def describe_error(r):
@@ -92,7 +94,7 @@ class FirestoreRegistry:
     async def _call(self, method, url, **kw):
         h = {"Authorization": "Bearer " + await self._token()}
         r = await self.client.request(method, url, headers=h, timeout=6, **kw)
-        if r.status_code == 404 and not _is_api_error(r): return None
+        if _is_missing_document(r): return None
         if r.status_code >= 400: raise RuntimeError(describe_error(r))
         return r.json() if r.content else {}
 
@@ -100,7 +102,7 @@ class FirestoreRegistry:
 
     async def check(self):
         """Cheap startup probe: can we authenticate and read? Raises with Google's reason (API disabled, no database, missing role) if not."""
-        await self._call("GET", self._doc("__probe__")); return "ok"
+        await self._call("GET", self._doc("health-probe")); return "ok"
 
     async def put(self, rec):
         await self._call("PATCH", self._doc(rec["id"]), json={"fields": {k: to_fs(v) for k, v in rec.items()}})

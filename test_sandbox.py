@@ -306,13 +306,16 @@ class FakeFirestore:
                                                                               "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED", "domain": "googleapis.com"}]}})
                 if fs.mode == "nodb": return self.reply(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": "The database (default) does not exist for project proj. Please visit https://console.cloud.google.com/datastore/setup?project=proj to add a Cloud Datastore or Cloud Firestore database."}})
                 pre = "/v1/projects/proj/databases/(default)/documents"
+                rid = u.path.rsplit("/", 1)[-1].split(":")[0]
+                if u.path.startswith(pre + "/") and (rid == "health-probe" and getattr(fs, "reject_probe", False) or rid.startswith("__") and rid.endswith("__")):       # Firestore reserves ids like __name__ (the real service rejects them with a 400)
+                    return self.reply(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": f'Resource id "{rid}" is invalid because it is reserved.'}})
                 if u.path == pre + ":runQuery" and method == "POST":
                     f = json.loads(self.body())["structuredQuery"]["where"]["fieldFilter"]; assert f["op"] == "EQUAL" and f["field"]["fieldPath"] == "state"
                     rows = [{"document": {"name": f"{pre}/sandboxes/{i}", "fields": d}} for i, d in fs.docs.items() if d.get("state") == f["value"]]
                     return self.reply(200, rows or [{"readTime": "2026-01-01T00:00:00Z"}])
                 if u.path.startswith(pre + "/sandboxes/"):
                     sid = u.path.rsplit("/", 1)[1]
-                    if method == "GET": return self.reply(200, {"name": u.path, "fields": fs.docs[sid]}) if sid in fs.docs else self.reply(404, {"error": {"code": 404}})
+                    if method == "GET": return self.reply(200, {"name": u.path, "fields": fs.docs[sid]}) if sid in fs.docs else self.reply(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": f'Document "projects/proj/databases/(default)/documents/sandboxes/{sid}" not found.'}})
                     if method == "PATCH":
                         fields = json.loads(self.body())["fields"]; masks = urllib.parse.parse_qs(u.query).get("updateMask.fieldPaths")
                         if masks: fs.docs.setdefault(sid, {}).update({k: fields[k] for k in masks})
@@ -418,3 +421,28 @@ def test_healthz_reports_googles_own_reason_when_firestore_cannot_be_used(mgr, f
 def test_an_ordinary_missing_document_is_not_reported_as_an_error(mgr, fake):
     m = mgr(**fake.env()); st, s = call("GET", m.url + "/status/0123456789ab")
     assert st == 404 and s["state"] == "unknown" and json.loads(req(m.url + "/healthz")[1])["registry_errors"] == 0               # "no such sandbox" is an answer, not a failure
+
+
+def test_startup_probe_and_restart_cleanup_survive_a_real_shaped_missing_document_reply(mgr, fake):
+    # Google answers a probe of a missing document with 404 + 'Document "projects/.../databases/(default)/documents/..." not found.'
+    # (it contains the word "databases"); that must read as "no such document", not as "no database", or the startup cleanup never runs.
+    fake.docs["old1"] = {k: registry_mod.to_fs(v) for k, v in {"id": "old1", "state": "active", "boot_id": "a-previous-run", "agents": [], "joined": {}}.items()}
+    m = mgr(**fake.env()); assert wait_for(lambda: fake.doc("old1")["state"] == "lost"), "the cleanup step ran after the probe"
+    h = json.loads(req(m.url + "/healthz")[1]); assert h["registry_errors"] == 0 and "registry_last_error" not in h
+
+
+def test_missing_document_classifier_matches_googles_real_messages():
+    class R:
+        def __init__(s, code, body): s.status_code, s._b, s.text = code, body, json.dumps(body)
+        def json(s): return s._b
+    doc = R(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": 'Document "projects/teambus/databases/(default)/documents/zz/nope" not found.'}})
+    nodb = R(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": "The database (default) does not exist for project teambus. Please visit https://console.cloud.google.com/datastore/setup?project=teambus"}})
+    disabled = R(403, {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Cloud Firestore API has not been used in project teambus before or it is disabled."}})
+    assert registry_mod._is_missing_document(doc) and not registry_mod._is_missing_document(nodb) and not registry_mod._is_missing_document(disabled)
+
+
+def test_a_failing_probe_does_not_skip_the_restart_cleanup(mgr, fake):
+    # even if the health probe is rejected for any reason, sandboxes left active by an earlier run must still be marked lost
+    fake.docs["old2"] = {k: registry_mod.to_fs(v) for k, v in {"id": "old2", "state": "active", "boot_id": "earlier-run", "agents": [], "joined": {}}.items()}
+    orig = fake.mode; fake.reject_probe = True
+    m = mgr(**fake.env()); assert wait_for(lambda: fake.doc("old2")["state"] == "lost"), "cleanup still ran"

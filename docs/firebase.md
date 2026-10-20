@@ -24,6 +24,6 @@ Other settings: `SANDBOX_REGISTRY_COLLECTION` (default `sandboxes`) and `FIRESTO
 - A `403` in `registry_last_error` means the service account lacks the role; `404` on the database means Firestore was not created in that project.
 
 ## Honest limits
-- It was built against the Firestore REST API and tested against a strict stand-in (it verifies the signed service-account JWT, bearer tokens, the typed value format, update masks and queries). It has not been run against Google's real service until you add credentials, so check step 4 first.
+- Verified against a real Firestore database (not only a test double): create, agents and roles, no secrets stored, join recorded, delete recorded with join history kept, status read back, and a crash plus restart marking the old sandbox `lost`, with no registry errors. That run found two things a stand-in cannot: Google's "document not found" reply contains the word "databases" (so it must be matched by shape), and Firestore reserves ids like `__probe__`. Both are fixed and covered by tests. The automated tests still use a strict stand-in, since CI has no credentials.
 - Records accumulate (a few hundred bytes each). Firestore's free quota is generous for this (each sandbox makes about 3 to 6 writes), but set a budget alert, and delete old documents now and then. A TTL policy needs a timestamp field, which these records do not use.
 - The public `GET /status/<id>` endpoint needs only the sandbox id (random, like the hub URL) and reveals names, roles, label and join times, never secrets.
