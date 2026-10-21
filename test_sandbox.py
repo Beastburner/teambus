@@ -715,3 +715,18 @@ def test_an_account_survives_restarts_and_wakes_its_sleeping_sandbox(mgr, fake, 
     st, rj, _ = acall("POST", f"{m2.url}/me/sandboxes/{sid}/reissue", {}, cookie=ck); new = {a["agent_id"]: a["token"] for a in rj["agents"]}
     st, inbox = call("POST", f"{m2.url}/s/{sid}/api/inbox", {}, new["bob-backend"])[:2]; assert st == 200 and [x["body"] for x in inbox] == ["kept"]   # data came back; the new lines work
     assert acall("DELETE", f"{m2.url}/manage/{sid}", cookie=ck)[0] == 200 and wait_for(lambda: sid not in fake.snaps)
+
+
+def test_every_local_module_the_service_imports_is_copied_into_both_images():
+    """Render builds Dockerfile.sandbox: a module added to the code but not to a COPY line crashes the deploy on import (it did, once)."""
+    import re
+    mods = set()
+    for f in ("server.py", "sandbox.py", "registry.py", "accounts.py"):
+        for line in (HERE / f).read_text().splitlines():
+            m = re.match(r"\s*import ([\w, ]+)$", line) or re.match(r"\s*from (\w+) import", line)
+            if m: mods |= {x.strip() for x in m.group(1).split(",")}
+    local = {m for m in mods if (HERE / f"{m}.py").exists()} | {"server", "sandbox", "registry", "accounts"}
+    for df in ("Dockerfile", "Dockerfile.sandbox"):
+        copied = " ".join(l for l in (HERE / df).read_text().splitlines() if l.startswith("COPY"))
+        missing = [m for m in sorted(local) if f"{m}.py" not in copied and not (df == "Dockerfile.sandbox" and m == "server" and False)]
+        assert not missing, f"{df} does not COPY {missing}"
