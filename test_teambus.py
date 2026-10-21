@@ -152,7 +152,7 @@ def test_cli_init_merges_and_is_idempotent(hub, tmp_path):
 def test_cli_doctor_status_and_git_hook_resolve(hub, tmp_path):
     cli(tmp_path, "init", "--hub", URL, "--agent-id", "alice", "--role", "frontend", "--token", "ta")
     d = cli(tmp_path, "doctor", check=False); assert "[PASS] token accepted" in d.stdout and "[PASS] MCP endpoint" in d.stdout and "[PASS] hooks wired" in d.stdout, d.stdout
-    assert "[WARN] claude CLI" in d.stdout and "[FAIL] .mcp.json registers" in d.stdout and d.returncode == 1                    # no claude on PATH here -> no .mcp.json -> doctor fails
+    assert "[PASS] .mcp.json registers" in d.stdout and "[PASS] .mcp.json points at the same hub" in d.stdout and d.returncode == 0           # init writes .mcp.json itself now, with or without the claude CLI
     (tmp_path / ".claude/settings.local.json").write_text((tmp_path / ".claude/settings.local.json").read_text().replace('"ta"', '"bad"'))
     assert "[FAIL] token accepted" in cli(tmp_path, "doctor", check=False).stdout
     (tmp_path / ".claude/settings.local.json").write_text((tmp_path / ".claude/settings.local.json").read_text().replace('"bad"', '"ta"'))
@@ -264,3 +264,24 @@ def test_install_script_installs_links_and_updates(tmp_path):
     (src / "NEWFILE").write_text("x"); sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "two")
     r2 = subprocess.run(["sh", str(src / "install.sh")], env=env, capture_output=True, text=True); assert r2.returncode == 0 and "Updating" in r2.stdout and (home / ".teambus" / "NEWFILE").exists()   # re-running updates
     bad = subprocess.run(["sh", str(src / "install.sh")], env={**env, "TEAMBUS_HOME": str(tmp_path)}, capture_output=True, text=True); assert bad.returncode == 1 and "not a TeamBus checkout" in bad.stderr   # never clobbers a random folder
+
+
+def test_rejoining_another_hub_updates_mcp_json_even_without_the_claude_cli(tmp_path):
+    proj = tmp_path / "p"; proj.mkdir(); (proj / ".mcp.json").write_text(json.dumps({"mcpServers": {"other": {"type": "http", "url": "https://o.example/mcp"}}}))
+    env = {k: v for k, v in os.environ.items() if k != "PATH"} | {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}          # no claude CLI on PATH
+    init = lambda hub, tok: subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", hub, "--agent-id", "alice", "--role", "frontend", "--token", tok, "--dir", str(proj)], env=env, capture_output=True, text=True, check=True).stdout
+    mcp = lambda: json.loads((proj / ".mcp.json").read_text())["mcpServers"]
+    assert "added to .mcp.json" in init("https://h.example/s/AAAA", "ta") and mcp()["teambus"]["url"] == "https://h.example/s/AAAA/mcp"
+    out = init("https://h.example/s/BBBB", "tb"); assert ".mcp.json updated" in out and "AAAA" in out and mcp()["teambus"]["url"] == "https://h.example/s/BBBB/mcp"     # the old sandbox is not kept
+    assert mcp()["other"]["url"] == "https://o.example/mcp" and mcp()["teambus"]["headers"] == {"Authorization": "Bearer ${TEAMBUS_TOKEN}"}                  # others untouched, token stays a placeholder
+    before = (proj / ".mcp.json").read_text(); init("https://h.example/s/BBBB", "tb"); assert (proj / ".mcp.json").read_text() == before                      # idempotent
+    assert json.loads((proj / ".claude" / "settings.local.json").read_text())["env"]["TEAMBUS_URL"] == "https://h.example/s/BBBB"
+
+
+def test_doctor_flags_an_mcp_json_that_points_at_a_different_hub(tmp_path):
+    proj = tmp_path / "p"; proj.mkdir(); env = {k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))} | {"HOME": str(tmp_path)}   # a hub configured in the caller's environment would win over the project's settings
+    subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", URL, "--agent-id", "alice", "--role", "frontend", "--token", "ta", "--dir", str(proj)], env=env, capture_output=True, text=True, check=True)
+    ok = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout; assert "[PASS] .mcp.json points at the same hub" in ok, ok
+    p = proj / ".mcp.json"; d = json.loads(p.read_text()); d["mcpServers"]["teambus"]["url"] = "https://dead.example/s/OLD/mcp"; p.write_text(json.dumps(d))
+    bad = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout
+    assert "[FAIL] .mcp.json points at the same hub" in bad and "dead.example" in bad and "run teambus-join" in bad

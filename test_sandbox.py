@@ -473,3 +473,26 @@ def test_doctor_and_status_explain_a_gone_sandbox(mgr, tmp_path):
     assert "[FAIL] hub reachable" in d.stdout and "This sandbox was deleted" in d.stdout and "Create a new one at" in d.stdout, d.stdout
     s = subprocess.run([sys.executable, str(HERE / "teambus"), "status", "--dir", str(tmp_path)], capture_output=True, text=True, env=env, timeout=30)
     assert s.returncode != 0 and "This sandbox was deleted" in s.stderr, s.stderr
+
+
+def test_notice_is_shown_only_when_configured(mgr):
+    assert b'NOTICE=""' in req(mgr().url + "/")[1]
+    assert b'NOTICE="Heads up: this host sleeps."' in req(mgr(SANDBOX_NOTICE="Heads up: this host sleeps.").url + "/")[1]
+
+
+@pytest.mark.skipif(shutil.which("python") is None, reason="start.sh runs `python`, as the Docker images provide")
+def test_start_sh_on_render_defaults_to_the_sandbox_with_a_free_hosting_notice(tmp_path):
+    def run(extra):
+        port = free_port(); env = {**os.environ, "RENDER": "true", "PORT": str(port), "HOST": "127.0.0.1", "SANDBOX_DIR": str(tmp_path / f"s{port}"), **extra}
+        for k in ("TEAMBUS_TOKEN", "TEAMBUS_TOKENS", "TEAMBUS_NOAUTH", "SANDBOX_NOTICE"):
+            if k not in extra: env.pop(k, None)
+        p = subprocess.Popen(["sh", str(HERE / "start.sh")], cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            def up():
+                try: return req(f"http://127.0.0.1:{port}/healthz")[0] == 200
+                except OSError: return p.poll() is not None          # still starting (refused), or it exited
+            wait_for(up, 30)
+            st, html = req(f"http://127.0.0.1:{port}/"); return st, html.decode()
+        finally: p.terminate(); p.wait(10)
+    st, html = run({}); assert st == 200 and "Free hosting: the server sleeps after about 15 idle minutes" in html           # the sandbox started, warning included
+    st, html = run({"SANDBOX_NOTICE": ""}); assert st == 200 and "Free hosting" not in html and 'NOTICE=""' in html          # an empty value hides it

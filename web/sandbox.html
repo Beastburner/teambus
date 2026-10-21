@@ -111,7 +111,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.tab{font:700 13px var(--sans);color:var(--ink);background:var(--cream-2);border:2px solid var(--ink);border-radius:10px;height:34px;padding:0 11px;cursor:pointer;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tab[aria-selected="true"]{background:var(--red);color:#fff4ea}.tab.new{background:transparent}
 .addag{margin:12px 0 4px;padding-top:6px;border-top:2px dashed rgba(42,31,27,.35)}.addag .agrow{grid-template-columns:1.35fr 1fr auto}
-.exp{margin:0 0 10px;font-size:14px;font-weight:500}.jn{margin-left:8px;font-weight:600;color:var(--red-ink)}.jn.ok{color:#1f6b3a}
+.exp{margin:0 0 10px;font-size:14px;font-weight:500}.notice{margin:8px 0 6px;padding-left:10px;border-left:4px solid var(--red);font:600 13px/1.35 var(--sans);color:var(--red-ink)}.jn{margin-left:8px;font-weight:600;color:var(--red-ink)}.jn.ok{color:#1f6b3a}
 .endnote{display:flex;gap:10px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border:2px solid var(--red);border-radius:12px;background:#fff1e6;font:600 13.5px/1.35 var(--sans)}.endnote span{flex:1}.endnote button{font:700 12px var(--sans);background:transparent;border:2px solid var(--ink);border-radius:8px;height:26px;padding:0 8px;cursor:pointer}.inst{margin:10px 0 2px}.inst .fl{margin-top:4px}
 @media (max-width:860px){.linkbtn{margin:10px 0 0;display:block}}
 .ribbon{height:0}.rib{display:block;width:calc(100% + 40px);margin:-10px -20px 0;height:34px;color:var(--red);transform:rotate(-1.2deg);position:relative;top:-6px}.hlsvg{width:100%;height:100%;display:block}.scrib+*{}</style></head><body>
@@ -193,6 +193,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
   <div id="agrows"></div>
   <button class="ghost" id="addrow" type="button">Add agent</button>
   <p class="err" id="nerr" role="alert"></p>
+  <p class="notice" id="notice" hidden></p>
   <div class="acts"><button class="btn sm" id="docreate" type="button">Create sandbox</button><button class="ghost" id="backlist" type="button" hidden>Back to my sandboxes</button></div>
  </div>
  <div id="view-list" hidden>
@@ -205,7 +206,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 /* Sandboxes. Plain script: it works even if WebGL or GSAP are unavailable. A visitor can hold several sandboxes (kept in this browser), choose each one's agents and roles,
    add agents later and delete a sandbox to free its slot. */
 const $=(i)=>document.getElementById(i),mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
-const INSTALL=__INSTALL__,LS="tb.sandboxes",DEFAULTS=[["alice-frontend","frontend"],["bob-backend","backend"],["carol-fullstack","fullstack"]],MAXA=__MAX_AGENTS__;
+const INSTALL=__INSTALL__,NOTICE=__NOTICE__,LS="tb.sandboxes",DEFAULTS=[["alice-frontend","frontend"],["bob-backend","backend"],["carol-fullstack","fullstack"]],MAXA=__MAX_AGENTS__;
 const nowS=()=>Date.now()/1000;
 let boxes=[],sel=null,creating=false,delArmed=false;
 const load=()=>{try{const v=JSON.parse(localStorage.getItem(LS)||"[]");return Array.isArray(v)?v.filter((b)=>b&&b.id&&b.manage_token&&b.expires_at>nowS()):[]}catch(e){return[]}};
@@ -270,6 +271,7 @@ function renderList(){
  ic.onclick=async()=>{try{await navigator.clipboard.writeText(INSTALL);ic.textContent="Copied"}catch(e){ic.textContent="Select"}setTimeout(()=>ic.textContent="Copy",1500)};
  il.append(ip,ic);inst.append(mk("span","fl","First time on this machine? Install TeamBus once:"),il);
  const parts=[meta,mk("p","exp","Expires in "+minsLeft(b)+" minutes. Run one command in each project folder:"),list,inst];
+ if(NOTICE)parts.splice(2,0,mk("p","notice",NOTICE));
  if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
   n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ad.type="button";
   const er=mk("p","err");er.setAttribute("role","alert");ad.onclick=async()=>{er.textContent="";ad.disabled=true;
@@ -292,6 +294,7 @@ $("mine").onclick=openList;$("backlist").onclick=()=>{renderList();showView("lis
 $("agrows").addEventListener("keydown",(e)=>{if(e.key==="Enter")doCreate()});
 addEventListener("keydown",(e)=>{if(e.key==="Escape"&&!$("panel").hidden)hidePanel()});
 setInterval(()=>{refreshMine();if(!$("panel").hidden&&!$("view-list").hidden&&boxes.length)renderList()},30000);
+if(NOTICE){$("notice").textContent=NOTICE;$("notice").hidden=false}
 resetBuilder();refreshMine();verify();
 /* sticker columns: repeat the tiles until the stage is covered; row numbers for the board */
 (()=>{const fill=(id)=>{const el=$(id),base=[...el.children];if(!base.length)return;let n=0;while(el.scrollHeight<=el.parentElement.scrollHeight+200&&n++<40)base.forEach((t)=>el.append(t.cloneNode(true)))};

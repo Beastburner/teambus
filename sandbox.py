@@ -19,6 +19,7 @@ DIR = Path(E("SANDBOX_DIR", str(HERE / "sandboxes"))).resolve()
 TTL, MAX, PER_IP, RPM = int(E("SANDBOX_TTL", 3600)), int(E("SANDBOX_MAX", 20)), int(E("SANDBOX_NEW_PER_IP_HOUR", 6)), int(E("SANDBOX_RPM", 600))
 MAX_DB, MAX_BODY, TRUST_PROXY = int(float(E("SANDBOX_MAX_DB_MB", 5)) * 1e6), int(E("SANDBOX_MAX_BODY", 65536)), E("SANDBOX_TRUST_PROXY") == "1"
 START_TIMEOUT, WARM, SPAWN_PAR = float(E("SANDBOX_START_TIMEOUT", 45)), E("SANDBOX_WARM") == "1", max(1, int(E("SANDBOX_SPAWN_CONCURRENCY", 2)))
+NOTICE = E("SANDBOX_NOTICE")   # shown in the dialog, e.g. a warning that the host sleeps and wipes sandboxes
 INSTALL_CMD = E("SANDBOX_INSTALL_CMD", "curl -fsSL https://raw.githubusercontent.com/Beastburner/teambus/main/install.sh | sh")
 IP_HEADER, TRUST_HOPS, DEBUG_IP = E("SANDBOX_CLIENT_IP_HEADER", "x-forwarded-for").lower(), max(1, int(E("SANDBOX_TRUST_PROXY_HOPS", 1))), E("SANDBOX_DEBUG_IP") == "1"
 PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
@@ -319,7 +320,7 @@ PAGE = (HERE / "web" / "sandbox.html").read_text()   # landing page; the __X__ p
 for _ext, _t in ((".woff2", "font/woff2"), (".js", "text/javascript"), (".jpg", "image/jpeg")): mimetypes.add_type(_t, _ext)   # slim container images ship no MIME table
 ASSETS = {p.name: p for p in (HERE / "web" / "assets").glob("*") if p.is_file()}   # fonts + preview images; a fixed whitelist, so no path traversal
 async def home(request):
-    html = PAGE.replace("__MINS__", str(TTL // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}").replace("__MAX_ACTIVE__", str(MAX_ACTIVE_PER_IP)).replace("__MAX_AGENTS__", str(MAX_AGENTS)).replace("__INSTALL__", json.dumps(INSTALL_CMD))
+    html = PAGE.replace("__MINS__", str(TTL // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}").replace("__MAX_ACTIVE__", str(MAX_ACTIVE_PER_IP)).replace("__MAX_AGENTS__", str(MAX_AGENTS)).replace("__INSTALL__", json.dumps(INSTALL_CMD)).replace("__NOTICE__", json.dumps(NOTICE))
     return HTMLResponse(html)
 async def asset(request):
     p = ASSETS.get(request.path_params["name"])

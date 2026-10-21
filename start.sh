@@ -10,6 +10,7 @@ if [ -z "$mode" ]; then
   if [ "$mode" = sandbox ]; then
     export SANDBOX_TRUST_PROXY="${SANDBOX_TRUST_PROXY:-1}" SANDBOX_WARM="${SANDBOX_WARM:-1}" SANDBOX_START_TIMEOUT="${SANDBOX_START_TIMEOUT:-90}" \
            SANDBOX_MAX="${SANDBOX_MAX:-8}" SANDBOX_TTL="${SANDBOX_TTL:-1800}" SANDBOX_NEW_PER_IP_HOUR="${SANDBOX_NEW_PER_IP_HOUR:-6}" SANDBOX_MAX_ACTIVE_PER_IP="${SANDBOX_MAX_ACTIVE_PER_IP:-3}" SANDBOX_DEBUG_IP="${SANDBOX_DEBUG_IP:-0}" \
+           SANDBOX_NOTICE="${SANDBOX_NOTICE-Free hosting: the server sleeps after about 15 idle minutes and every sandbox is wiped when it does, and on each deploy. Create a new one if a link stops working.}" \
            SANDBOX_CLIENT_IP_HEADER="${SANDBOX_CLIENT_IP_HEADER:-cf-connecting-ip}" SANDBOX_TRUST_PROXY_HOPS="${SANDBOX_TRUST_PROXY_HOPS:-3}"
     echo "start.sh: running on Render with no hub auth configured, so starting the public sandbox (set TEAMBUS_MODE=hub to override)"
   fi

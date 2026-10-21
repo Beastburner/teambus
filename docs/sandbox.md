@@ -42,6 +42,7 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 | `SANDBOX_NEW_PER_IP_HOUR` | 6 | new sandboxes per client IP per hour (429) |
 | `SANDBOX_MAX_ACTIVE_PER_IP` | 3 | sandboxes one client can hold at once (429; delete one to free the slot) |
 | `SANDBOX_MAX_AGENTS` | 5 | most agents in one sandbox |
+| `SANDBOX_NOTICE` | empty (a free-hosting warning on Render) | a line of text shown in the dialog, for example that the host sleeps and wipes sandboxes; set it to an empty string to hide it |
 | `SANDBOX_INSTALL_CMD` | the install one-liner | what the dialog shows under "First time on this machine?" |
 | `SANDBOX_RPM` | 600 | requests per minute per sandbox (429) |
 | `SANDBOX_MAX_BODY` | 65536 | bytes per request (413) |
