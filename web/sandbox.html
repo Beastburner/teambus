@@ -18,7 +18,7 @@
 *{box-sizing:border-box}html{background:#b83c4c}
 body{margin:0;color:var(--chalk);font:400 17px/1.55 var(--sans);-webkit-font-smoothing:antialiased;overflow-x:hidden;background:#b83c4c}
 a{color:inherit}
-.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%),radial-gradient(40% 40% at 50% 50%,#d9505d,transparent 75%),#b83c4c;filter:blur(30px) saturate(1.25);animation:aura 18s ease-in-out infinite alternate}
+.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%),radial-gradient(40% 40% at 50% 50%,#d9505d,transparent 75%),#b83c4c;animation:aura 18s ease-in-out infinite alternate}.lite .aura{animation:none}.lite #gl{display:none}
 @keyframes aura{to{transform:translate3d(3%,-2%,0) rotate(5deg) scale(1.08)}}
 .cam{position:relative;z-index:1}.world{position:relative;transform-origin:50% 0}
 .stage{position:relative;background:var(--stage);border-radius:22px;overflow:hidden;min-height:100vh;box-shadow:0 40px 90px -30px rgba(40,0,10,.6)}
@@ -317,6 +317,9 @@ resetBuilder();refreshMine();verify();
 /* Motion, in the order of the reference: the page arrives from a zoomed-out gradient frame, the nav draws hand-made doodles on hover,
    the headline's last word rotates, notes land, the board scatters, the checklist ticks itself, and the camera pulls back at the end. */
 const root=document.documentElement,reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+/* A machine that cannot draw about 30 frames a second (software rendering, an old phone) gets a lite page: no blur, no WebGL, a fast intro. Measured, not guessed. */
+const fps=await new Promise((r)=>{let n=0,t0=0;const f=(t)=>{if(!t0)t0=t;n++;if(t-t0>=450)r((n-1)/((t-t0)/1000));else requestAnimationFrame(f)};requestAnimationFrame(f);setTimeout(()=>r(0),1600)});
+const lite=fps<30;if(lite)root.classList.add("lite");
 await new Promise((r)=>{if(window.gsap&&window.ScrollTrigger)r();else addEventListener("load",r,{once:true})});
 const gsap=window.gsap,ST=window.ScrollTrigger;
 if(gsap&&ST&&!reduce){
@@ -328,9 +331,9 @@ if(gsap&&ST&&!reduce){
 
  // 0. Camera: the first screen starts zoomed out inside the gradient frame (a viewport-sized window, blurred on wide screens), then pushes in.
  const cam=document.getElementById("cam");
- gsap.set(cam,{height:innerHeight,overflow:"hidden",borderRadius:22,scale:narrow?.9:.62,filter:narrow?"none":"blur(14px)",transformOrigin:"50% 50%"});
+ gsap.set(cam,{height:innerHeight,overflow:"hidden",borderRadius:22,scale:narrow?.9:.62,filter:narrow||lite?"none":"blur(14px)",transformOrigin:"50% 50%"});
  prime(document.getElementById("top"));
- const intro=gsap.timeline({defaults:{ease:"expo.inOut"}});
+ const intro=gsap.timeline({defaults:{ease:"expo.inOut"}});if(lite)intro.timeScale(4);
  intro.to(cam,{scale:1,filter:"blur(0px)",duration:1.7},.5)
   .from(".nv",{y:-24,opacity:0,duration:.9,stagger:.08,ease:"expo.out"},1.2).from(".sig",{rotate:-24,y:30,opacity:0,duration:1,ease:"back.out(2)"},1.3)
   .from("#h1 .a",{yPercent:110,duration:1.1,stagger:.1,ease:"expo.out"},1.35).from(".role,.sub,#b,.cap",{y:20,opacity:0,duration:.9,stagger:.07,ease:"expo.out"},1.6)
@@ -374,6 +377,7 @@ if(gsap&&ST&&!reduce){
 
 // three.js: a few chalk-white wireframes drifting in the corners, spinning faster when you scroll fast. Decorative; skipped without WebGL.
 try{
+ if(lite)throw new Error("lite");
  const THREE=await import("three");
  const canvas=document.getElementById("gl"),renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
  renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));renderer.setClearColor(0,0);
