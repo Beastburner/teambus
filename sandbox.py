@@ -2,7 +2,7 @@
 Each sandbox is its own `server.py` process + SQLite file, so visitors never see each other's data (no cross-visitor prompt injection).
 This service creates them (POST /new), reverse-proxies /s/<id>/... to the right one, rate-limits, caps size, and deletes everything on expiry.
 Run: python sandbox.py        (env: SANDBOX_PUBLIC_URL, SANDBOX_DIR, SANDBOX_TTL, SANDBOX_MAX, SANDBOX_NEW_PER_IP_HOUR, SANDBOX_RPM, SANDBOX_MAX_DB_MB, SANDBOX_MAX_BODY, SANDBOX_TRUST_PROXY, HOST, PORT)"""
-import asyncio, collections, json, mimetypes, os, re, shlex, secrets, shutil, socket, subprocess, sys, time
+import asyncio, base64, collections, hashlib, json, mimetypes, os, re, shlex, secrets, shutil, socket, sqlite3, subprocess, sys, time, zlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx, uvicorn
@@ -25,6 +25,7 @@ IP_HEADER, TRUST_HOPS, DEBUG_IP = E("SANDBOX_CLIENT_IP_HEADER", "x-forwarded-for
 PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
 AGENTS = [("alice-frontend", "frontend"), ("bob-backend", "backend"), ("carol-fullstack", "fullstack")]
 MAX_AGE, IDLE = int(E("SANDBOX_MAX_AGE", 86400)), int(E("SANDBOX_IDLE", 7200))   # hard ceiling on any sandbox's life; and how long without any request before it is dropped
+RESUME, SNAP_SECS, SNAP_MAX = E("SANDBOX_RESUME", "1") != "0", max(5, int(E("SANDBOX_SNAPSHOT_SECS", 60))), 900_000   # snapshot size limit: one Firestore document is 1 MiB
 MAX_AGENTS, MAX_ACTIVE_PER_IP = max(2, int(E("SANDBOX_MAX_AGENTS", 5))), max(1, int(E("SANDBOX_MAX_ACTIVE_PER_IP", 3)))
 ID_RE, ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
 
@@ -89,6 +90,8 @@ def write_tokens(sb, agents):                                  # a new set of ag
 
 def add_token(sb, agent_id, role):                             # one more agent: every existing token keeps working
     tok = secrets.token_urlsafe(24); store_tokens(sb, {**sb["tokens"], tok: {"agent_id": agent_id, "role": role}}); return tok
+
+def sha(t): return hashlib.sha256(t.encode()).hexdigest()
 
 def deadline(sb):
     """When this sandbox ends unless something changes: the earliest of its hard ceiling, the lifetime its owner chose, and `idle` seconds after its last request."""
@@ -155,7 +158,7 @@ async def reg_get(sid):
 
 def record(sb, state="active", reason="", ended=0):
     return {"id": sb["id"], "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "state": state, "reason": reason, "ended_at": int(ended),
-            "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {}))}
+            "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {})), "resumable": False}
 
 async def hub_agents(sb):
     """{agent_id: seconds since that agent last used the hub, or None if never} straight from the sandbox's own hub."""
@@ -174,19 +177,25 @@ async def observe_joins(sb):
 
 def end(sb, state, reason):
     """Record how a sandbox ended (best effort) and remove it."""
-    track(REG.update(sb["id"], state=state, reason=reason, ended_at=int(time.time()), joined=dict(sb.get("joined", {})), agents=record(sb)["agents"]))
+    track(REG.update(sb["id"], state=state, reason=reason, ended_at=int(time.time()), joined=dict(sb.get("joined", {})), agents=record(sb)["agents"], resumable=False))
+    track(REG.delete_snapshot(sb["id"]))                       # an ended sandbox must not come back, and its stored data goes with it
 
-async def spawn():
-    """Start one hub process with its own DB and tokens; returns it once /healthz answers, or None."""
+async def spawn(): return await launch()
+
+async def launch(sid=None, toks=None, viewer_hash=None, db=None):
+    """Start one hub process with its own DB and tokens; returns it once /healthz answers, or None.
+    A resumed sandbox passes its old id, its stored (hashed) tokens, the hash of the viewer token its owner already holds, and its database file."""
     global SPAWN_SEM
     SPAWN_SEM = SPAWN_SEM or asyncio.Semaphore(SPAWN_PAR)      # limit simultaneous imports: they would starve each other on a small CPU
     async with SPAWN_SEM:
-        sid = secrets.token_hex(6); d = DIR / f"sb-{sid}"; d.mkdir(parents=True); port = free_port()
-        toks = {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in AGENTS}; viewer = secrets.token_urlsafe(18)
+        sid = sid or secrets.token_hex(6); d = DIR / f"sb-{sid}"; d.mkdir(parents=True, exist_ok=True); port = free_port()
+        toks = toks or {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in AGENTS}; viewer = secrets.token_urlsafe(18)
         (d / "tokens.json").write_text(json.dumps(toks)); (d / "tokens.json").chmod(0o600)
-        env = {**os.environ, "HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(d / "hub.db"), "TEAMBUS_TOKENS": str(d / "tokens.json"), "TEAMBUS_TOKEN": viewer}
+        if db is not None: (d / "hub.db").write_bytes(db)
+        env = {**os.environ, "HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(d / "hub.db"), "TEAMBUS_TOKENS": str(d / "tokens.json"), "TEAMBUS_TOKEN": viewer,
+               **({"TEAMBUS_TOKEN_SHA256": viewer_hash} if viewer_hash else {})}
         proc = subprocess.Popen([sys.executable, str(HERE / "server.py")], cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
-        sb = dict(id=sid, dir=d, port=port, proc=proc, expires=None, hits=collections.deque(), tokens=toks, viewer=viewer)
+        sb = dict(id=sid, dir=d, port=port, proc=proc, expires=None, hits=collections.deque(), tokens=toks, viewer=viewer, viewer_hash=viewer_hash or sha(viewer))   # viewer: what this service uses itself
         deadline = time.time() + START_TIMEOUT
         while time.time() < deadline and proc.poll() is None:
             try:
@@ -194,6 +203,72 @@ async def spawn():
             except httpx.HTTPError: pass
             await asyncio.sleep(0.25)
         destroy_sb(sb); return None
+
+# ---- sleeping and waking: a free host stops the whole service after 15 idle minutes, so each sandbox's hub data is copied to the registry and restored on demand ----
+def can_resume(): return RESUME and getattr(REG, "persistent", False)
+
+def dump_db(path):
+    """A consistent compressed copy of a running hub's SQLite file, as base64 text (None if there is no file)."""
+    if not path.exists(): return None
+    tmp = path.with_suffix(".snap"); src, dst = sqlite3.connect(path, timeout=5), sqlite3.connect(tmp)
+    try:
+        with dst: src.backup(dst)
+    finally: src.close(); dst.close()
+    raw = tmp.read_bytes(); tmp.unlink(); return base64.b64encode(zlib.compress(raw, 9)).decode()
+
+def fingerprint(sb):
+    return (max((p.stat().st_mtime_ns for p in sb["dir"].glob("hub.db*") if p.exists()), default=0), len(sb["tokens"]), int(sb["until"]), len(sb.get("joined", {})))
+
+async def snapshot(sb):
+    """Store everything needed to bring this sandbox back: its data, its tokens as hashes only (never the tokens themselves), and how much lifetime it has left. True if stored."""
+    if not can_resume() or "manage_hash" not in sb: return False
+    fp = fingerprint(sb); data = await asyncio.to_thread(dump_db, sb["dir"] / "hub.db")
+    if data is None or len(data) > SNAP_MAX: return False
+    now = time.time()
+    await REG.put_snapshot(sb["id"], {"id": sb["id"], "taken_at": int(now), "db": data, "remaining": max(0, int(sb["until"] - now)), "hard": int(sb["hard"]), "created": int(sb.get("created", now)),
+        "label": sb.get("label", ""), "joined": dict(sb.get("joined", {})), "manage_hash": sb["manage_hash"], "viewer_hash": sb["viewer_hash"],
+        "agents": [{"key": k if k.startswith("sha256:") else "sha256:" + sha(k), "agent_id": v["agent_id"], "role": v["role"]} for k, v in sb["tokens"].items()]})
+    await REG.update(sb["id"], resumable=True, snapshot_at=int(now)); sb["snap_fp"] = fp; return True
+
+async def snapshotter():
+    while True:
+        await asyncio.sleep(SNAP_SECS)
+        if not can_resume(): continue
+        for sb in list(SBX.values()):
+            if sb["id"] in SBX and sb.get("snap_fp") != fingerprint(sb):
+                try: await asyncio.wait_for(snapshot(sb), 15)
+                except Exception as e: note_registry_error(e)
+
+def note_registry_error(e):
+    global REG_ERRORS, REG_ERROR
+    REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:160]
+
+WAKE_LOCKS: dict[str, asyncio.Lock] = {}
+
+async def wake(sid):
+    """(sandbox, None) if it is running or has just been woken; (None, None) if there is nothing to resume; (None, response) if it should have been resumable but could not be now."""
+    sb = SBX.get(sid)
+    if sb or not can_resume(): return sb, None
+    async with WAKE_LOCKS.setdefault(sid, asyncio.Lock()):             # two requests for a sleeping sandbox must start one hub, not two
+        if sid in SBX: return SBX[sid], None
+        rec = await reg_get(sid)
+        if not rec or not rec.get("resumable") or rec.get("state") == "active" and rec.get("boot_id") == BOOT_ID or rec.get("state") not in ("sleeping", "active"): return None, None
+        try: snap = await asyncio.wait_for(REG.get_snapshot(sid), 10)
+        except Exception as e: note_registry_error(e); return None, JSONResponse({"error": "this sandbox is asleep and its stored data could not be read right now; try again in a minute"}, 503, headers={"Retry-After": "20"})
+        if not snap: return None, None
+        now = time.time()
+        if now >= snap["hard"]:
+            track(REG.update(sid, state="expired", reason=f"it reached the {fmt_span(MAX_AGE)} maximum age", ended_at=int(now), resumable=False)); track(REG.delete_snapshot(sid)); return None, None
+        if len(SBX) >= MAX: return None, JSONResponse({"error": "this sandbox is asleep and the service is full right now; try again in a few minutes"}, 503, headers={"Retry-After": "30"})
+        toks = {a["key"]: {"agent_id": a["agent_id"], "role": a["role"]} for a in snap["agents"]}
+        try: db = zlib.decompress(base64.b64decode(snap["db"]))
+        except Exception: return None, None
+        sb = await launch(sid, toks, snap["viewer_hash"], db)
+        if not sb: shutil.rmtree(DIR / f"sb-{sid}", ignore_errors=True); return None, JSONResponse({"error": "could not wake this sandbox; try again in a minute"}, 503, headers={"Retry-After": "20"})
+        life = min(max(snap["remaining"], 600), max(60, snap["hard"] - now))     # the time it slept does not count against its lifetime; a little is always left to use
+        sb.update(ip="", label=snap.get("label", ""), manage_hash=snap["manage_hash"], created=snap["created"], joined=dict(snap.get("joined", {})), hard=snap["hard"], until=now + life, active=now, resumed=True)
+        sb["expires"] = deadline(sb); sb["snap_fp"] = fingerprint(sb); SBX[sid] = sb
+        track(REG.update(sid, state="active", reason="", boot_id=BOOT_ID, expires_at=int(sb["expires"]), ended_at=0)); return sb, None
 
 async def refill():
     global SPARE, REFILLING
@@ -219,7 +294,7 @@ async def create(ip, agents=None, label="", lifetime=None):
     if not sb: return None, JSONResponse({"error": "could not start sandbox"}, 500)
     if agents is not None and [(v["agent_id"], v["role"]) for v in sb["tokens"].values()] != agents: write_tokens(sb, agents)
     now = time.time(); life = min(lifetime or TTL, MAX_AGE)
-    sb.update(ip=ip, label=label, manage=secrets.token_urlsafe(24), created=now, joined={}, hard=now + MAX_AGE, until=now + life, active=now); sb["expires"] = deadline(sb); SBX[sb["id"]] = sb
+    sb.update(ip=ip, label=label, manage=(m := secrets.token_urlsafe(24)), manage_hash=sha(m), created=now, joined={}, hard=now + MAX_AGE, until=now + life, active=now); sb["expires"] = deadline(sb); SBX[sb["id"]] = sb
     track(REG.put(record(sb))); kick(); return sb, None
 
 def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
@@ -227,8 +302,9 @@ def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url
 def describe(sb, base):
     url = f"{base}/s/{sb['id']}"
     return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
-            "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "web_view": f"{url}/?token={sb['viewer']}", "max_agents": MAX_AGENTS, "manage_token": sb["manage"],
-            "agents": [{"agent_id": v["agent_id"], "role": v["role"], "token": t, "join": join_line(url, v["agent_id"], v["role"], t)} for t, v in sb["tokens"].items()]}
+            "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")),
+            **({"web_view": f"{url}/?token={sb['viewer']}", "manage_token": sb["manage"]} if "manage" in sb else {}),    # a resumed sandbox only knows hashes: its owner already holds the real tokens
+            "agents": [{"agent_id": v["agent_id"], "role": v["role"], **({} if t.startswith("sha256:") else {"token": t, "join": join_line(url, v["agent_id"], v["role"], t)})} for t, v in sb["tokens"].items()]}
 
 async def body_json(request: Request):
     raw = b""
@@ -254,12 +330,13 @@ async def new(request: Request):
     if err: return err
     return JSONResponse(describe(sb, public_base(request)), 201)
 
-def managed(request: Request):
-    """The sandbox named in the URL, if the bearer token is its manage token; else an error response. Counts against the sandbox's request rate."""
-    sb = SBX.get(request.path_params["sid"])
-    if not sb or sb["expires"] < time.time(): return None, JSONResponse({"error": "sandbox not found or expired"}, 404)
+async def managed(request: Request):
+    """The sandbox named in the URL (woken first if it is asleep), if the bearer token is its manage token; else an error response. Counts against the sandbox's request rate."""
     auth = request.headers.get("authorization", ""); tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    if not tok or not secrets.compare_digest(tok, sb["manage"]): return None, JSONResponse({"error": "missing or wrong manage token"}, 401)
+    sb, resp = await wake(request.path_params["sid"])
+    if resp: return None, resp
+    if not sb or sb["expires"] < time.time(): return None, JSONResponse({"error": "sandbox not found or expired"}, 404)
+    if not tok or not secrets.compare_digest(sha(tok), sb["manage_hash"]): return None, JSONResponse({"error": "missing or wrong manage token"}, 401)
     now = time.time(); h = sb["hits"]
     while h and now - h[0] > 60: h.popleft()
     if len(h) >= RPM: return None, JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
@@ -272,16 +349,29 @@ async def describe_live(sb, base):
     return d
 
 async def manage_get(request: Request):
-    sb, err = managed(request)
+    sb, err = await managed(request)
     return err or JSONResponse(await describe_live(sb, public_base(request)))
 
+async def delete_asleep(request: Request):
+    """Owner deletes a sandbox that is asleep: check the token against the stored hash and purge it, without paying for a wake-up. None if it is not asleep."""
+    sid = request.path_params["sid"]; auth = request.headers.get("authorization", ""); tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if sid in SBX or not can_resume(): return None
+    rec = await reg_get(sid)
+    if not rec or not rec.get("resumable"): return None
+    try: snap = await asyncio.wait_for(REG.get_snapshot(sid), 10)
+    except Exception as e: note_registry_error(e); return None
+    if not snap: return None
+    if not tok or not secrets.compare_digest(sha(tok), snap["manage_hash"]): return JSONResponse({"error": "missing or wrong manage token"}, 401)
+    track(REG.update(sid, state="deleted", reason="deleted by its owner", ended_at=int(time.time()), resumable=False)); track(REG.delete_snapshot(sid)); return JSONResponse({"deleted": sid})
+
 async def manage_delete(request: Request):
-    sb, err = managed(request)
+    if (gone := await delete_asleep(request)) is not None: return gone
+    sb, err = await managed(request)
     if err: return err
     await observe_joins(sb); destroy(sb["id"], "deleted", "deleted by its owner"); kick(); return JSONResponse({"deleted": sb["id"]})
 
 async def manage_extend(request: Request):
-    sb, err = managed(request)
+    sb, err = await managed(request)
     if err: return err
     body, err = await body_json(request)
     if err: return err
@@ -293,7 +383,7 @@ async def manage_extend(request: Request):
     return JSONResponse(await describe_live(sb, public_base(request)))
 
 async def manage_add_agent(request: Request):
-    sb, err = managed(request)
+    sb, err = await managed(request)
     if err: return err
     body, err = await body_json(request)
     if err: return err
@@ -312,7 +402,8 @@ def ended_view(rec, base):
     if st == "active": st, reason = "lost", "the server restarted"                     # still 'active' in the record but not running here: it died with an earlier run
     msg = {"expired": f"This sandbox expired at {when(rec.get('expires_at'))} ({reason}).",
            "deleted": f"This sandbox was deleted at {when(rec.get('ended_at'))} ({reason}).",
-           "evicted": f"This sandbox was removed at {when(rec.get('ended_at'))}: {reason}."}.get(st, f"This sandbox was lost: {reason}.")
+           "evicted": f"This sandbox was removed at {when(rec.get('ended_at'))}: {reason}.",
+           "sleeping": "This sandbox is asleep and could not be woken just now."}.get(st, f"This sandbox was lost: {reason}.")
     j = rec.get("joined") or {}
     return {"id": rec.get("id"), "state": st, "reason": reason, "label": rec.get("label", ""), "created_at": rec.get("created_at"), "expires_at": rec.get("expires_at"), "ended_at": rec.get("ended_at"),
             "agents": [{"agent_id": a["agent_id"], "role": a["role"], "joined": a["agent_id"] in j, "joined_at": j.get(a["agent_id"])} for a in rec.get("agents", [])],
@@ -338,10 +429,16 @@ async def status(request: Request):
         return JSONResponse({"id": sid, "state": "active", "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "max_expires_at": int(sb["hard"]), "expires_in_seconds": int(sb["expires"] - now),
                              "agents": [{"agent_id": v["agent_id"], "role": v["role"], "joined": v["agent_id"] in sb["joined"], "joined_at": sb["joined"].get(v["agent_id"]), "last_seen_ago": seen.get(v["agent_id"])} for v in sb["tokens"].values()],
                              "registry": REG.kind})
+    rec = await reg_get(sid) if can_resume() and not sb else None
+    if rec and rec.get("resumable") and (rec.get("state") == "sleeping" or rec.get("state") == "active" and rec.get("boot_id") != BOOT_ID):
+        j = rec.get("joined") or {}                           # asleep, not gone: reading its status does not wake it; its next real request does
+        return JSONResponse({"id": sid, "state": "asleep", "label": rec.get("label", ""), "created_at": rec.get("created_at"), "message": "This sandbox is asleep (the free host stopped). It wakes on its next request, which takes about 15 seconds.",
+                             "agents": [{"agent_id": a["agent_id"], "role": a["role"], "joined": a["agent_id"] in j, "joined_at": j.get(a["agent_id"])} for a in rec.get("agents", [])], "registry": REG.kind})
     return await gone_response(request, sid)
 
 async def proxy(request: Request):
-    sb = SBX.get(request.path_params["sid"])
+    sb, resp = await wake(request.path_params["sid"])
+    if resp: return resp
     if not sb or sb["expires"] < time.time(): return await gone_response(request, request.path_params["sid"])
     if not request.path_params.get("rest", "") and not request.url.path.endswith("/"): return RedirectResponse(request.url.path + "/" + (f"?{request.url.query}" if request.url.query else ""))
     now = time.time(); h = sb["hits"]
@@ -368,7 +465,7 @@ async def asset(request):
     p = ASSETS.get(request.path_params["name"])
     if not p: return JSONResponse({"error": "not found"}, 404)
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})
-async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
+async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "resume": can_resume(), "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
 async def debug_ip(request):   # enabled only with SANDBOX_DEBUG_IP=1: shows what the proxy sends, to pick SANDBOX_CLIENT_IP_HEADER / SANDBOX_TRUST_PROXY_HOPS
     h = request.headers
     return JSONResponse({"derived_ip": ip_of(request), "peer": request.client.host if request.client else None, "x-forwarded-for": h.get("x-forwarded-for"), "cf-connecting-ip": h.get("cf-connecting-ip"), "true-client-ip": h.get("true-client-ip"), "x-forwarded-proto": h.get("x-forwarded-proto"), "public_base": public_base(request)})
@@ -395,17 +492,25 @@ async def lifespan(app):
         global REG_ERRORS, REG_ERROR
         try: await REG.check()                                      # surfaces "API disabled / no database / missing role" in /healthz right away, with Google's wording
         except Exception as e: REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:300]    # a failed probe must not skip the cleanup below
-        await REG.mark_lost(BOOT_ID, time.time())                   # sandboxes of earlier runs that were still 'active' died with them
+        await REG.mark_lost(BOOT_ID, time.time(), can_resume())                   # sandboxes of earlier runs that were still 'active' died with them
     track(startup_registry())
-    task = asyncio.create_task(reaper()); kick()
+    task, snap_task = asyncio.create_task(reaper()), asyncio.create_task(snapshotter()); kick()
     yield
-    task.cancel()
+    task.cancel(); snap_task.cancel()
     global SPARE
-    for sid in list(SBX):
-        sb = SBX[sid]
-        try: await asyncio.wait_for(REG.update(sid, state="lost", reason="the server stopped", ended_at=int(time.time()), joined=dict(sb.get("joined", {}))), 4)
+    async def put_to_sleep(sb):
+        """Graceful stop (a deploy, or the host's idle shutdown): save the sandbox, and say it is asleep rather than lost."""
+        saved = False
+        if can_resume():
+            try: await observe_joins(sb); saved = await asyncio.wait_for(snapshot(sb), 6)
+            except Exception as e: note_registry_error(e)
+        try:
+            await asyncio.wait_for(REG.update(sb["id"], **({"state": "sleeping", "reason": "the server stopped; it wakes on its next request"} if saved else
+                                   {"state": "lost", "reason": "the server stopped", "ended_at": int(time.time()), "resumable": False}), joined=dict(sb.get("joined", {}))), 2)
         except Exception: pass
-        destroy_sb(SBX.pop(sid))
+    try: await asyncio.wait_for(asyncio.gather(*(put_to_sleep(sb) for sb in list(SBX.values())), return_exceptions=True), 8)    # a host gives a stopping service about 30 s: never spend it all waiting for the registry
+    except asyncio.TimeoutError: pass
+    for sid in list(SBX): destroy_sb(SBX.pop(sid))
     if SPARE: destroy_sb(SPARE); SPARE = None
     await client.aclose()
 

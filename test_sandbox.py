@@ -283,7 +283,7 @@ class FakeFirestore:
     def __init__(self):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(); self.pub = key.public_key()
-        self.docs, self.token_requests, self.bad_auth, self.down, self.requests, self.mode = {}, 0, 0, False, [], None
+        self.docs, self.snaps, self.token_requests, self.bad_auth, self.down, self.requests, self.mode = {}, {}, 0, 0, False, [], None
         fs = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -313,6 +313,11 @@ class FakeFirestore:
                     f = json.loads(self.body())["structuredQuery"]["where"]["fieldFilter"]; assert f["op"] == "EQUAL" and f["field"]["fieldPath"] == "state"
                     rows = [{"document": {"name": f"{pre}/sandboxes/{i}", "fields": d}} for i, d in fs.docs.items() if d.get("state") == f["value"]]
                     return self.reply(200, rows or [{"readTime": "2026-01-01T00:00:00Z"}])
+                if u.path.startswith(pre + "/sandboxes_snapshots/"):
+                    sid = u.path.rsplit("/", 1)[1]
+                    if method == "GET": return self.reply(200, {"name": u.path, "fields": fs.snaps[sid]}) if sid in fs.snaps else self.reply(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": f'Document "projects/proj/databases/(default)/documents/sandboxes_snapshots/{sid}" not found.'}})
+                    if method == "PATCH": fs.snaps[sid] = json.loads(self.body())["fields"]; return self.reply(200, {"name": u.path, "fields": fs.snaps[sid]})
+                    if method == "DELETE": fs.snaps.pop(sid, None); return self.reply(200, {})
                 if u.path.startswith(pre + "/sandboxes/"):
                     sid = u.path.rsplit("/", 1)[1]
                     if method == "GET": return self.reply(200, {"name": u.path, "fields": fs.docs[sid]}) if sid in fs.docs else self.reply(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": f'Document "projects/proj/databases/(default)/documents/sandboxes/{sid}" not found.'}})
@@ -325,6 +330,7 @@ class FakeFirestore:
             def do_GET(self): self.route("GET")
             def do_POST(self): self.route("POST")
             def do_PATCH(self): self.route("PATCH")
+            def do_DELETE(self): self.route("DELETE")
 
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); self.port = self.srv.server_address[1]; threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
@@ -495,6 +501,7 @@ def test_start_sh_on_render_defaults_to_the_sandbox_with_a_free_hosting_notice(t
             st, html = req(f"http://127.0.0.1:{port}/"); return st, html.decode()
         finally: p.terminate(); p.wait(10)
     st, html = run({}); assert st == 200 and "Free hosting: the server sleeps after about 15 idle minutes" in html           # the sandbox started, warning included
+    st, html = run({"FIREBASE_SERVICE_ACCOUNT_FILE": "/nonexistent.json"}); assert st == 200 and "saved and wakes on its next request" in html and "wiped" not in html      # with a registry configured, the promise changes
     st, html = run({"SANDBOX_NOTICE": ""}); assert st == 200 and "Free hosting" not in html and 'NOTICE=""' in html          # an empty value hides it
 
 
@@ -529,3 +536,74 @@ def test_ceiling_beats_activity(mgr):
     d = call("POST", m.url + "/new")[1]
     wait_for(lambda: call("GET", m.url + "/status/" + d["id"])[1].get("state") == "expired", 15)
     assert "maximum age" in call("GET", m.url + "/status/" + d["id"])[1]["reason"]
+
+
+# ---- sleeping and waking: a restart or the host's idle shutdown must not lose a sandbox ----
+def _fire(m, sb, who="alice-frontend", to="bob-backend", text="hello across the restart"):
+    return call("POST", sb["hub_url"] + "/api/ask", {"to_agent": to, "question": text}, tok(sb, who))
+
+def test_graceful_restart_puts_a_sandbox_to_sleep_and_the_same_tokens_wake_it(mgr, fake):
+    m1 = mgr(**fake.env(), SANDBOX_NEW_PER_IP_HOUR=20); sb = call("POST", m1.url + "/new", {"label": "survivor", "lifetime_minutes": 90})[1]; sid = sb["id"]
+    assert _fire(m1, sb)[0] == 200; call("GET", sb["hub_url"] + "/api/status", token=sb["agents"][0]["token"])
+    m1.stop()                                                                                     # SIGTERM, as on a deploy or the host's idle shutdown
+    assert fake.doc(sid)["state"] == "sleeping" and fake.doc(sid)["resumable"] is True and sid in fake.snaps
+    blob = json.dumps({"docs": fake.docs, "snaps": fake.snaps}); secrets_ = [a["token"] for a in sb["agents"]] + [sb["manage_token"], sb["web_view"].split("token=")[1]]
+    assert not any(x in blob for x in secrets_)                                                   # only hashes are stored, never a usable token
+    m2 = mgr(**fake.env())
+    st, s = call("GET", m2.url + "/status/" + sid); assert st == 200 and s["state"] == "asleep" and "wakes on its next request" in s["message"]
+    assert sid in fake.snaps and call("GET", m2.url + "/healthz")[1]["resume"] is True            # looking did not wake it
+    hub = f"{m2.url}/s/{sid}"; bob = tok(sb, "bob-backend")
+    st, inbox = call("POST", hub + "/api/inbox", {}, bob); assert st == 200 and [m["body"] for m in inbox] == ["hello across the restart"]      # same token, same data
+    assert call("POST", hub + "/api/whoami", {}, "not-a-token")[0] == 401                         # and a wrong one is still refused
+    st, view = call("GET", hub + "/api/status", token=sb["web_view"].split("token=")[1]); assert st == 200 and len(view["agents"]) == 3     # the owner's old web-view link works
+    st, d = call("GET", m2.url + "/manage/" + sid, token=sb["manage_token"]); assert st == 200 and d["resumed"] is True and d["label"] == "survivor"
+    assert all("token" not in a and "join" not in a for a in d["agents"]) and "manage_token" not in d and "web_view" not in d      # a resumed sandbox cannot re-issue secrets it never kept
+    assert call("GET", m2.url + "/manage/" + sid, token="wrong")[0] == 401
+    assert call("GET", m2.url + "/status/" + sid)[1]["state"] == "active" and fake.doc(sid)["state"] == "active"
+    assert d["expires_in_seconds"] >= 590                                                         # the sleep did not eat its lifetime
+
+def test_a_crash_resumes_from_the_last_snapshot(mgr, fake):
+    m1 = mgr(**fake.env(), SANDBOX_SNAPSHOT_SECS=5); sb = call("POST", m1.url + "/new")[1]; sid = sb["id"]; _fire(m1, sb, text="saved in time")
+    assert wait_for(lambda: sid in fake.snaps and fake.doc(sid).get("resumable"), 25)
+    kids = m1.children(); m1.proc.kill(); m1.proc.wait(10)                                        # no shutdown hook at all
+    for k in kids:
+        try: os.kill(k, signal.SIGTERM)
+        except OSError: pass
+    assert fake.doc(sid)["state"] == "active"
+    m2 = mgr(**fake.env())
+    assert wait_for(lambda: fake.doc(sid)["state"] == "sleeping", 15), fake.docs[sid]             # the new boot finds a snapshot: asleep, not lost
+    st, inbox = call("POST", f"{m2.url}/s/{sid}/api/inbox", {}, tok(sb, "bob-backend")); assert st == 200 and [m["body"] for m in inbox] == ["saved in time"]
+
+def test_deleted_and_expired_sandboxes_are_not_resumable_and_their_data_is_purged(mgr, fake):
+    m = mgr(**fake.env(), SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9, SANDBOX_SNAPSHOT_SECS=5)
+    a = call("POST", m.url + "/new")[1]; b = call("POST", m.url + "/new", {"lifetime_minutes": 1})[1]
+    assert wait_for(lambda: a["id"] in fake.snaps and b["id"] in fake.snaps, 25)
+    assert call("DELETE", m.url + "/manage/" + a["id"], token=a["manage_token"])[0] == 200
+    assert wait_for(lambda: a["id"] not in fake.snaps and fake.doc(a["id"])["resumable"] is False), fake.doc(a["id"])
+    assert call("POST", f"{m.url}/s/{a['id']}/api/whoami", {}, tok(a, "alice-frontend"))[0] == 404          # gone for good
+    assert call("GET", m.url + "/status/" + a["id"])[1]["state"] == "deleted"
+
+def test_an_asleep_sandbox_can_be_deleted_without_waking_it(mgr, fake):
+    m1 = mgr(**fake.env()); sb = call("POST", m1.url + "/new")[1]; sid = sb["id"]; m1.stop()
+    m2 = mgr(**fake.env()); hub = f"{m2.url}/s/{sid}"
+    assert call("DELETE", m2.url + "/manage/" + sid, token="wrong")[0] == 401 and sid in fake.snaps         # a stranger cannot delete it
+    st, r = call("DELETE", m2.url + "/manage/" + sid, token=sb["manage_token"]); assert st == 200 and r == {"deleted": sid}
+    assert m2.children() == [] and wait_for(lambda: sid not in fake.snaps)                                 # no hub was started just to delete it
+    assert call("GET", hub + "/healthz")[1]["state"] == "deleted"
+
+def test_the_maximum_age_still_applies_while_asleep(mgr, fake):
+    m1 = mgr(**fake.env(), SANDBOX_MAX_AGE=8); sb = call("POST", m1.url + "/new")[1]; sid = sb["id"]; m1.stop(); assert sid in fake.snaps
+    time.sleep(9); m2 = mgr(**fake.env(), SANDBOX_MAX_AGE=8)
+    assert call("POST", f"{m2.url}/s/{sid}/api/whoami", {}, tok(sb, "alice-frontend"))[0] == 404
+    assert wait_for(lambda: sid not in fake.snaps) and fake.doc(sid)["state"] == "expired" and "maximum age" in fake.doc(sid)["reason"]
+
+def test_resume_can_be_turned_off_and_needs_a_persistent_registry(mgr, fake):
+    m1 = mgr(**fake.env(), SANDBOX_RESUME=0); sb = call("POST", m1.url + "/new")[1]; sid = sb["id"]; m1.stop()
+    assert sid not in fake.snaps and fake.doc(sid)["state"] == "lost"                                      # old behaviour: stopped means lost
+    m2 = mgr(); assert call("GET", m2.url + "/healthz")[1]["resume"] is False                              # in-memory registry: nothing to resume from
+
+def test_two_requests_for_a_sleeping_sandbox_start_one_hub(mgr, fake):
+    m1 = mgr(**fake.env()); sb = call("POST", m1.url + "/new")[1]; sid = sb["id"]; m1.stop()
+    m2 = mgr(**fake.env()); import concurrent.futures as cf
+    with cf.ThreadPoolExecutor(4) as ex: codes = list(ex.map(lambda _: call("POST", f"{m2.url}/s/{sid}/api/whoami", {}, tok(sb, "alice-frontend"))[0], range(4)))
+    assert codes == [200] * 4 and len(m2.children()) == 1

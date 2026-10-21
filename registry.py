@@ -63,18 +63,23 @@ def describe_error(r):
 
 class MemoryRegistry:
     kind = "memory"
+    persistent = False                                          # dies with the process, so a sandbox can never be resumed from it
 
-    def __init__(self): self.docs = {}
+    def __init__(self): self.docs, self.snaps = {}, {}
+    async def put_snapshot(self, sid, rec): self.snaps[sid] = dict(rec)
+    async def get_snapshot(self, sid): return dict(self.snaps[sid]) if sid in self.snaps else None
+    async def delete_snapshot(self, sid): self.snaps.pop(sid, None)
     async def put(self, rec): self.docs[rec["id"]] = dict(rec)
     async def get(self, sid): return dict(self.docs[sid]) if sid in self.docs else None
     async def update(self, sid, **fields):
         if sid in self.docs: self.docs[sid].update(fields)
-    async def mark_lost(self, boot_id, now): return 0           # nothing outlives the process, so there is nothing stale to find
+    async def mark_lost(self, boot_id, now, resume=False): return 0           # nothing outlives the process, so there is nothing stale to find
     async def check(self): return "ok"
 
 
 class FirestoreRegistry:
     kind = "firestore"
+    persistent = True
 
     def __init__(self, sa, client, base=None, collection=COLLECTION):
         self.sa, self.client, self.collection = sa, client, collection
@@ -99,6 +104,16 @@ class FirestoreRegistry:
         return r.json() if r.content else {}
 
     def _doc(self, sid): return f"{self.base}/{self.collection}/{sid}"
+    def _snap(self, sid): return f"{self.base}/{self.collection}_snapshots/{sid}"
+
+    async def put_snapshot(self, sid, rec):
+        await self._call("PATCH", self._snap(sid), json={"fields": {k: to_fs(v) for k, v in rec.items()}})
+
+    async def get_snapshot(self, sid):
+        d = await self._call("GET", self._snap(sid))
+        return None if d is None else {k: from_fs(v) for k, v in d.get("fields", {}).items()}
+
+    async def delete_snapshot(self, sid): await self._call("DELETE", self._snap(sid))
 
     async def check(self):
         """Cheap startup probe: can we authenticate and read? Raises with Google's reason (API disabled, no database, missing role) if not."""
@@ -115,8 +130,9 @@ class FirestoreRegistry:
         q = "&".join(f"updateMask.fieldPaths={k}" for k in fields)
         await self._call("PATCH", self._doc(sid) + "?" + q, json={"fields": {k: to_fs(v) for k, v in fields.items()}})
 
-    async def mark_lost(self, boot_id, now):
-        """Called once at startup: any sandbox still 'active' that belongs to an earlier run of the service died with that run."""
+    async def mark_lost(self, boot_id, now, resume=False):
+        """Called once at startup: any sandbox still 'active' that belongs to an earlier run of the service died with that run.
+        With resume, one that has a snapshot is not lost: it is asleep and wakes on its next request."""
         body = {"structuredQuery": {"from": [{"collectionId": self.collection}], "limit": 300,
                                     "where": {"fieldFilter": {"field": {"fieldPath": "state"}, "op": "EQUAL", "value": {"stringValue": "active"}}}}}
         res = await self._call("POST", self.base + ":runQuery", json=body) or []
@@ -125,7 +141,9 @@ class FirestoreRegistry:
             doc = row.get("document")
             if not doc: continue
             f = {k: from_fs(v) for k, v in doc.get("fields", {}).items()}
-            if f.get("boot_id") != boot_id:
+            if f.get("boot_id") != boot_id and resume and f.get("resumable"):
+                await self.update(f["id"], state="sleeping", reason="the server restarted; it wakes on its next request"); n += 1
+            elif f.get("boot_id") != boot_id:
                 await self.update(f["id"], state="lost", reason="the server restarted (free instances sleep after 15 idle minutes and are replaced on every deploy)", ended_at=int(now)); n += 1
         return n
 

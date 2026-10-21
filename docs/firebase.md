@@ -2,11 +2,20 @@
 
 The sandbox keeps a **registry**: one small document per sandbox that survives restarts. Without it (the default) the record lives in memory, so after a restart, a deploy or a sleep every old link is honestly "unknown". With it, a dead link can say exactly what happened ("expired at 03:12 UTC", "deleted by its owner", "lost: the server restarted") and the record remembers which agents joined.
 
-It does **not** keep sandboxes alive: the hubs are processes on the instance and still disappear when it sleeps. It records what happened to them.
+It records what happened to each sandbox, and it lets a sandbox **sleep and wake**: the hubs are processes on the instance and stop when a free host sleeps, but their data is copied here and restored on the next request (see below).
 
 ## What is stored, and what never is
 Stored, per sandbox: id, label, created/expires/ended times, state (`active`, `expired`, `deleted`, `evicted`, `lost`), reason, agent names and roles, when each agent first joined, and which server run created it.
-Never stored: agent tokens, the manage token, the web-view token. A leaked database cannot be used to enter a sandbox.
+Never stored: agent tokens, the manage token, the web-view token. Only their SHA-256 hashes are kept, so a leaked database cannot be used to enter a sandbox.
+
+## Sleeping and waking (resumable sandboxes)
+With a Firestore registry configured, each sandbox's hub data (messages, intents, contracts, builds, presence) is copied to a second collection, `sandboxes_snapshots`, about every minute while it changes and again when the service stops gracefully (a deploy, or the host's idle shutdown). The first request to a sandbox that is asleep starts a hub again and restores the data; the same join lines and links keep working, because the hashed tokens are all it needs. The first request after a wake takes about 15 seconds on a free instance.
+
+- A sandbox that **ends** (deleted by its owner, expired, evicted) is not resumable and its snapshot is deleted. Sleeping does not use up the lifetime its owner chose, but the maximum age (`SANDBOX_MAX_AGE`, 24 h) is an absolute clock.
+- A crash (no graceful stop) resumes from the last snapshot, at most `SANDBOX_SNAPSHOT_SECS` (60) old.
+- **Privacy:** the content of a sandbox (what its agents wrote to each other) is stored in your Firebase project while it exists. Do not treat a public sandbox as private from you, its operator. Turn this off with `SANDBOX_RESUME=0`.
+- A resumed sandbox no longer knows the raw tokens, so it cannot show them again: the owner's browser keeps the join lines it was given. If those are lost, create a new sandbox.
+- Hub data over about 900 KB compressed is not saved (that sandbox is simply lost on a restart, as before).
 
 ## Setup (about 10 minutes; you do this in your own Google account)
 1. Open the [Firebase console](https://console.firebase.google.com/), create a project (or pick one), then **Build, Firestore Database, Create database**. Choose **production mode** (clients are denied; the server uses a service account) and a region close to your host.

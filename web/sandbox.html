@@ -218,6 +218,7 @@ const save=()=>{try{localStorage.setItem(LS,JSON.stringify(boxes))}catch(e){}};
 boxes=load();
 const runs=[...document.querySelectorAll("[data-run]")];
 const animIn=(el)=>{if(window.gsap&&!matchMedia("(prefers-reduced-motion: reduce)").matches)gsap.fromTo(el,{opacity:0,y:-26,rotate:2.5,scale:.96},{opacity:1,y:0,rotate:0,scale:1,duration:.6,ease:"back.out(1.6)"})};
+const mergeAgents=(old,fresh)=>fresh.map((g)=>({...(old||[]).find((x)=>x.agent_id===g.agent_id),...g}));   /* a woken sandbox only knows token hashes: keep the join lines this browser already holds */
 const clock=(ts)=>new Date(ts*1000).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const span=(m)=>m>=120?Math.round(m/60)+" hours":m+" min";
 const minsLeft=(b)=>Math.max(0,Math.round((b.expires_at-nowS())/60));
@@ -238,7 +239,7 @@ async function pollSelected(){   /* every few seconds while the list is open: ha
  if($("panel").hidden||$("view-list").hidden||creating)return;const b=boxes.find((x)=>x.id===sel);if(!b)return;
  try{const r=await fetch("manage/"+b.id,{headers:auth(b)});
   if(r.status===404||r.status===401){await ended(b);renderList();return}
-  if(!r.ok)return;const d=await r.json();b.agents=d.agents;b.expires_at=d.expires_at;save();
+  if(!r.ok)return;const d=await r.json();b.agents=mergeAgents(b.agents,d.agents);b.expires_at=d.expires_at;save();
   d.agents.forEach((g)=>{const el=document.querySelector('.jn[data-agent="'+g.agent_id+'"]');if(el)setJoin(el,g)})}catch(e){}}
 setInterval(pollSelected,4000);
 
@@ -296,7 +297,7 @@ function renderList(){
 }
 async function verify(){   /* drop sandboxes the server no longer has (expired, evicted, or the free instance slept) WITH the reason, and pick up joins and agents added elsewhere */
  const gone=[];
- await Promise.all(boxes.map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)gone.push(b);else if(r.ok){const d=await r.json();b.agents=d.agents;b.expires_at=d.expires_at}}catch(e){}}));
+ await Promise.all(boxes.map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)gone.push(b);else if(r.ok){const d=await r.json();b.agents=mergeAgents(b.agents,d.agents);b.expires_at=d.expires_at}}catch(e){}}));
  for(const b of gone)await ended(b);
  save();refreshMine()}
 async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden){if(boxes.length)renderList();else{resetBuilder();showView("new")}}}

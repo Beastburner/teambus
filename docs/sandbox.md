@@ -40,6 +40,8 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 | Variable | Default | Meaning |
 |---|---|---|
 | `SANDBOX_TTL` | 3600 | default lifetime in seconds. The owner can pick another when creating (`lifetime_minutes`, or `until_deleted: true` for the longest allowed) and add time with `POST /manage/<id>/extend {minutes}` |
+| `SANDBOX_RESUME` | 1 | wake sandboxes after the service restarts or sleeps (only takes effect with a Firestore registry); `0` turns it off |
+| `SANDBOX_SNAPSHOT_SECS` | 60 | how often changed sandboxes are saved |
 | `SANDBOX_MAX_AGE` | 86400 | hard ceiling in seconds: no sandbox lives longer, whatever was chosen or however busy it is |
 | `SANDBOX_IDLE` | 7200 | a sandbox nobody has sent a request to for this many seconds is deleted early |
 | `SANDBOX_MAX` | 20 | concurrent sandboxes (503 when full) |
