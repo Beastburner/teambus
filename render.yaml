@@ -22,3 +22,5 @@ services:
       - {key: SANDBOX_TTL, value: "1800"}
       - {key: SANDBOX_NEW_PER_IP_HOUR, value: "6"}
       - {key: SANDBOX_MAX_ACTIVE_PER_IP, value: "3"}   # one visitor can hold up to 3 sandboxes at once
+      - {key: GOOGLE_CLIENT_ID, sync: false}          # optional: your Google OAuth client id turns on "Sign in with Google" (docs/accounts.md); set it in the dashboard
+      - {key: FIREBASE_SERVICE_ACCOUNT_FILE, value: "/etc/secrets/firebase-key.json"}   # add that file under Environment > Secret Files to turn on sleep/wake and accounts that survive restarts (docs/firebase.md)

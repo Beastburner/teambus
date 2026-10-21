@@ -6,7 +6,7 @@ import asyncio, base64, collections, hashlib, json, mimetypes, os, re, shlex, se
 from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx, uvicorn
-import registry
+import accounts, registry
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
@@ -26,6 +26,8 @@ PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
 AGENTS = [("alice-frontend", "frontend"), ("bob-backend", "backend"), ("carol-fullstack", "fullstack")]
 MAX_AGE, IDLE = int(E("SANDBOX_MAX_AGE", 86400)), int(E("SANDBOX_IDLE", 7200))   # hard ceiling on any sandbox's life; and how long without any request before it is dropped
 RESUME, SNAP_SECS, SNAP_MAX = E("SANDBOX_RESUME", "1") != "0", max(5, int(E("SANDBOX_SNAPSHOT_SECS", 60))), 900_000   # snapshot size limit: one Firestore document is 1 MiB
+GOOGLE_ID, JWKS_URL = E("GOOGLE_CLIENT_ID"), E("GOOGLE_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs")   # sign-in is off unless an OAuth client id is configured
+VERIFIER, SESSIONS = accounts.Verifier(GOOGLE_ID, JWKS_URL), None
 MAX_AGENTS, MAX_ACTIVE_PER_IP = max(2, int(E("SANDBOX_MAX_AGENTS", 5))), max(1, int(E("SANDBOX_MAX_ACTIVE_PER_IP", 3)))
 ID_RE, ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
 
@@ -158,7 +160,7 @@ async def reg_get(sid):
 
 def record(sb, state="active", reason="", ended=0):
     return {"id": sb["id"], "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "state": state, "reason": reason, "ended_at": int(ended),
-            "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {})), "resumable": False}
+            "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {})), "resumable": False, "owner": sb.get("owner", "")}
 
 async def hub_agents(sb):
     """{agent_id: seconds since that agent last used the hub, or None if never} straight from the sandbox's own hub."""
@@ -217,7 +219,7 @@ def dump_db(path):
     raw = tmp.read_bytes(); tmp.unlink(); return base64.b64encode(zlib.compress(raw, 9)).decode()
 
 def fingerprint(sb):
-    return (max((p.stat().st_mtime_ns for p in sb["dir"].glob("hub.db*") if p.exists()), default=0), len(sb["tokens"]), int(sb["until"]), len(sb.get("joined", {})))
+    return (max((p.stat().st_mtime_ns for p in sb["dir"].glob("hub.db*") if p.exists()), default=0), hash(tuple(sb["tokens"])), int(sb["until"]), len(sb.get("joined", {})), sb.get("owner", ""), sb["manage_hash"])
 
 async def snapshot(sb):
     """Store everything needed to bring this sandbox back: its data, its tokens as hashes only (never the tokens themselves), and how much lifetime it has left. True if stored."""
@@ -226,7 +228,7 @@ async def snapshot(sb):
     if data is None or len(data) > SNAP_MAX: return False
     now = time.time()
     await REG.put_snapshot(sb["id"], {"id": sb["id"], "taken_at": int(now), "db": data, "remaining": max(0, int(sb["until"] - now)), "hard": int(sb["hard"]), "created": int(sb.get("created", now)),
-        "label": sb.get("label", ""), "joined": dict(sb.get("joined", {})), "manage_hash": sb["manage_hash"], "viewer_hash": sb["viewer_hash"],
+        "label": sb.get("label", ""), "joined": dict(sb.get("joined", {})), "manage_hash": sb["manage_hash"], "viewer_hash": sb["viewer_hash"], "owner": sb.get("owner", ""),
         "agents": [{"key": k if k.startswith("sha256:") else "sha256:" + sha(k), "agent_id": v["agent_id"], "role": v["role"]} for k, v in sb["tokens"].items()]})
     await REG.update(sb["id"], resumable=True, snapshot_at=int(now)); sb["snap_fp"] = fp; return True
 
@@ -266,7 +268,7 @@ async def wake(sid):
         sb = await launch(sid, toks, snap["viewer_hash"], db)
         if not sb: shutil.rmtree(DIR / f"sb-{sid}", ignore_errors=True); return None, JSONResponse({"error": "could not wake this sandbox; try again in a minute"}, 503, headers={"Retry-After": "20"})
         life = min(max(snap["remaining"], 600), max(60, snap["hard"] - now))     # the time it slept does not count against its lifetime; a little is always left to use
-        sb.update(ip="", label=snap.get("label", ""), manage_hash=snap["manage_hash"], created=snap["created"], joined=dict(snap.get("joined", {})), hard=snap["hard"], until=now + life, active=now, resumed=True)
+        sb.update(ip="", label=snap.get("label", ""), manage_hash=snap["manage_hash"], created=snap["created"], joined=dict(snap.get("joined", {})), hard=snap["hard"], until=now + life, active=now, resumed=True, owner=snap.get("owner", ""))
         sb["expires"] = deadline(sb); sb["snap_fp"] = fingerprint(sb); SBX[sid] = sb
         track(REG.update(sid, state="active", reason="", boot_id=BOOT_ID, expires_at=int(sb["expires"]), ended_at=0)); return sb, None
 
@@ -280,7 +282,7 @@ async def refill():
 def kick():
     t = asyncio.create_task(refill()); BG.add(t); t.add_done_callback(BG.discard)
 
-async def create(ip, agents=None, label="", lifetime=None):
+async def create(ip, agents=None, label="", lifetime=None, owner=""):
     global SPARE
     now = time.time(); log = NEW_LOG.setdefault(ip, collections.deque())
     while log and now - log[0] > 3600: log.popleft()
@@ -294,7 +296,7 @@ async def create(ip, agents=None, label="", lifetime=None):
     if not sb: return None, JSONResponse({"error": "could not start sandbox"}, 500)
     if agents is not None and [(v["agent_id"], v["role"]) for v in sb["tokens"].values()] != agents: write_tokens(sb, agents)
     now = time.time(); life = min(lifetime or TTL, MAX_AGE)
-    sb.update(ip=ip, label=label, manage=(m := secrets.token_urlsafe(24)), manage_hash=sha(m), created=now, joined={}, hard=now + MAX_AGE, until=now + life, active=now); sb["expires"] = deadline(sb); SBX[sb["id"]] = sb
+    sb.update(ip=ip, owner=owner, label=label, manage=(m := secrets.token_urlsafe(24)), manage_hash=sha(m), created=now, joined={}, hard=now + MAX_AGE, until=now + life, active=now); sb["expires"] = deadline(sb); SBX[sb["id"]] = sb
     track(REG.put(record(sb))); kick(); return sb, None
 
 def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
@@ -302,7 +304,7 @@ def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url
 def describe(sb, base):
     url = f"{base}/s/{sb['id']}"
     return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
-            "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")),
+            "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")), "owned": bool(sb.get("owner")),
             **({"web_view": f"{url}/?token={sb['viewer']}", "manage_token": sb["manage"]} if "manage" in sb else {}),    # a resumed sandbox only knows hashes: its owner already holds the real tokens
             "agents": [{"agent_id": v["agent_id"], "role": v["role"], **({} if t.startswith("sha256:") else {"token": t, "join": join_line(url, v["agent_id"], v["role"], t)})} for t, v in sb["tokens"].items()]}
 
@@ -326,7 +328,8 @@ async def new(request: Request):
     if e: return JSONResponse({"error": e}, 400)
     life, e = parse_lifetime(body)
     if e: return JSONResponse({"error": e}, 400)
-    sb, err = await create(ip_of(request), agents if "agents" in body else None, label, life)
+    who = signed_in(request, write=True)      # a signed-in browser owns what it creates; without the CSRF header it is treated as anonymous
+    sb, err = await create(ip_of(request), agents if "agents" in body else None, label, life, who["owner"] if who else "")
     if err: return err
     return JSONResponse(describe(sb, public_base(request)), 201)
 
@@ -336,7 +339,9 @@ async def managed(request: Request):
     sb, resp = await wake(request.path_params["sid"])
     if resp: return None, resp
     if not sb or sb["expires"] < time.time(): return None, JSONResponse({"error": "sandbox not found or expired"}, 404)
-    if not tok or not secrets.compare_digest(sha(tok), sb["manage_hash"]): return None, JSONResponse({"error": "missing or wrong manage token"}, 401)
+    by_token = bool(tok) and secrets.compare_digest(sha(tok), sb["manage_hash"])
+    who = None if by_token else signed_in(request, write=request.method not in ("GET", "HEAD"))
+    if not by_token and not (who and sb.get("owner") and who["owner"] == sb["owner"]): return None, JSONResponse({"error": "missing or wrong manage token"}, 401)
     now = time.time(); h = sb["hits"]
     while h and now - h[0] > 60: h.popleft()
     if len(h) >= RPM: return None, JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
@@ -347,6 +352,90 @@ async def describe_live(sb, base):
     d = describe(sb, base); seen = await observe_joins(sb)
     for a in d["agents"]: a["joined"] = a["agent_id"] in sb["joined"]; a["joined_at"] = sb["joined"].get(a["agent_id"]); a["last_seen_ago"] = seen.get(a["agent_id"])
     return d
+
+# ---- accounts: Google sign-in, so a sandbox can be found, woken and re-keyed from any browser ----
+def signed_in(request: Request, write=False):
+    """{'owner', 'email'} of the signed-in browser, or None. Anything that changes state also needs the X-TeamBus header, which a cross-site form or image cannot send."""
+    if SESSIONS is None or (write and request.headers.get("x-teambus") != "1"): return None
+    return SESSIONS.read(request.cookies.get("tb_session", ""))
+
+def need_account(request: Request, write=False):
+    if not GOOGLE_ID: return None, JSONResponse({"error": "sign-in is not configured on this server"}, 404)
+    if write and request.headers.get("x-teambus") != "1": return None, JSONResponse({"error": "send the X-TeamBus: 1 header with this request"}, 400)
+    who = signed_in(request, write)
+    return (who, None) if who else (None, JSONResponse({"error": "not signed in"}, 401))
+
+async def auth_config(request: Request):
+    who = signed_in(request)
+    return JSONResponse({"enabled": bool(GOOGLE_ID), "client_id": GOOGLE_ID, "signed_in": bool(who), "email": who["email"] if who else ""})
+
+async def auth_google(request: Request):
+    if not GOOGLE_ID: return JSONResponse({"error": "sign-in is not configured on this server"}, 404)
+    if request.headers.get("x-teambus") != "1": return JSONResponse({"error": "send the X-TeamBus: 1 header with this request"}, 400)
+    body, err = await body_json(request)
+    if err: return err
+    c = await asyncio.to_thread(VERIFIER.verify, (body or {}).get("credential") if isinstance(body, dict) else None)
+    if not c: return JSONResponse({"error": "Google did not accept that sign-in"}, 401)
+    resp = JSONResponse({"email": c.get("email", ""), "signed_in": True})
+    resp.set_cookie("tb_session", SESSIONS.make(accounts.owner_id(c["sub"]), c.get("email", "")), max_age=SESSIONS.ttl, httponly=True, samesite="lax", secure=public_base(request).startswith("https"), path="/")
+    return resp
+
+async def auth_logout(request: Request):
+    resp = JSONResponse({"signed_in": False}); resp.delete_cookie("tb_session", path="/"); return resp
+
+def summary(rec, live=None):
+    j = rec.get("joined") or {}
+    return {"id": rec["id"], "label": rec.get("label", ""), "state": "active" if live else "asleep", "created_at": rec.get("created_at"), "expires_at": int(live["expires"]) if live else rec.get("expires_at"),
+            "agents": [{"agent_id": a["agent_id"], "role": a["role"], "joined": a["agent_id"] in j} for a in rec.get("agents", [])]}
+
+async def my_sandboxes(request: Request):
+    who, err = need_account(request)
+    if err: return err
+    try: recs = await asyncio.wait_for(REG.list_owner(who["owner"]), 8)
+    except Exception as e: note_registry_error(e); return JSONResponse({"error": "could not read your sandboxes right now; try again"}, 503)
+    out = {r["id"]: summary(r, SBX.get(r["id"])) for r in recs}
+    for sb in SBX.values():                                  # running here and not yet in the registry listing
+        if sb.get("owner") == who["owner"] and sb["id"] not in out: out[sb["id"]] = summary(record(sb), sb)
+    return JSONResponse({"email": who["email"], "sandboxes": sorted(out.values(), key=lambda x: -(x.get("created_at") or 0))})
+
+async def owned(request: Request, write=False):
+    """The signed-in owner's sandbox from the URL, woken if asleep."""
+    who, err = need_account(request, write)
+    if err: return None, err
+    sb, resp = await wake(request.path_params["sid"])
+    if resp: return None, resp
+    if not sb or sb["expires"] < time.time() or not sb.get("owner") or sb["owner"] != who["owner"]: return None, JSONResponse({"error": "sandbox not found in your account"}, 404)
+    touch(sb); return sb, None
+
+async def my_sandbox(request: Request):
+    """Open one of your sandboxes from any browser: wakes it, and gives the web-view link (agent tokens are never shown again: reissue them to get fresh join lines)."""
+    sb, err = await owned(request)
+    if err: return err
+    d = await describe_live(sb, public_base(request)); d.pop("manage_token", None); d["web_view"] = f"{public_base(request)}/s/{sb['id']}/?token={sb['viewer']}"
+    for a in d["agents"]: a.pop("token", None); a.pop("join", None)
+    return JSONResponse(d)
+
+async def my_reissue(request: Request):
+    """Fresh tokens for every agent (the old join lines stop working) and a fresh manage token: how an owner recovers access after losing the browser that held them."""
+    sb, err = await owned(request, write=True)
+    if err: return err
+    fresh = {secrets.token_urlsafe(24): {"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()}; store_tokens(sb, fresh)
+    m = secrets.token_urlsafe(24); sb["manage"], sb["manage_hash"] = m, sha(m)
+    track(snapshot(sb)); d = describe(sb, public_base(request)); d["web_view"] = f"{public_base(request)}/s/{sb['id']}/?token={sb['viewer']}"; return JSONResponse(d)
+
+async def my_claim(request: Request):
+    """Attach an anonymous sandbox (one you hold the manage token for) to your account."""
+    who, err = need_account(request, True)
+    if err: return err
+    body, err = await body_json(request)
+    if err: return err
+    body = body if isinstance(body, dict) else {}; tok = body.get("manage_token"); sid = body.get("id")
+    if not isinstance(tok, str) or not isinstance(sid, str): return JSONResponse({"error": "send {id, manage_token}"}, 400)
+    sb, resp = await wake(sid)
+    if resp: return resp
+    if not sb or not secrets.compare_digest(sha(tok), sb["manage_hash"]): return JSONResponse({"error": "sandbox not found or wrong manage token"}, 404)
+    if sb.get("owner") and sb["owner"] != who["owner"]: return JSONResponse({"error": "this sandbox already belongs to another account"}, 409)
+    sb["owner"] = who["owner"]; track(REG.update(sid, owner=who["owner"])); track(snapshot(sb)); return JSONResponse({"claimed": sid})
 
 async def manage_get(request: Request):
     sb, err = await managed(request)
@@ -361,7 +450,8 @@ async def delete_asleep(request: Request):
     try: snap = await asyncio.wait_for(REG.get_snapshot(sid), 10)
     except Exception as e: note_registry_error(e); return None
     if not snap: return None
-    if not tok or not secrets.compare_digest(sha(tok), snap["manage_hash"]): return JSONResponse({"error": "missing or wrong manage token"}, 401)
+    who = signed_in(request, write=True)
+    if not (tok and secrets.compare_digest(sha(tok), snap["manage_hash"])) and not (who and snap.get("owner") and who["owner"] == snap["owner"]): return JSONResponse({"error": "missing or wrong manage token"}, 401)
     track(REG.update(sid, state="deleted", reason="deleted by its owner", ended_at=int(time.time()), resumable=False)); track(REG.delete_snapshot(sid)); return JSONResponse({"deleted": sid})
 
 async def manage_delete(request: Request):
@@ -465,7 +555,7 @@ async def asset(request):
     p = ASSETS.get(request.path_params["name"])
     if not p: return JSONResponse({"error": "not found"}, 404)
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})
-async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "resume": can_resume(), "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
+async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "resume": can_resume(), "sign_in": bool(GOOGLE_ID), "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
 async def debug_ip(request):   # enabled only with SANDBOX_DEBUG_IP=1: shows what the proxy sends, to pick SANDBOX_CLIENT_IP_HEADER / SANDBOX_TRUST_PROXY_HOPS
     h = request.headers
     return JSONResponse({"derived_ip": ip_of(request), "peer": request.client.host if request.client else None, "x-forwarded-for": h.get("x-forwarded-for"), "cf-connecting-ip": h.get("cf-connecting-ip"), "true-client-ip": h.get("true-client-ip"), "x-forwarded-proto": h.get("x-forwarded-proto"), "public_base": public_base(request)})
@@ -493,6 +583,8 @@ async def lifespan(app):
         try: await REG.check()                                      # surfaces "API disabled / no database / missing role" in /healthz right away, with Google's wording
         except Exception as e: REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:300]    # a failed probe must not skip the cleanup below
         await REG.mark_lost(BOOT_ID, time.time(), can_resume())                   # sandboxes of earlier runs that were still 'active' died with them
+    global SESSIONS
+    SESSIONS = accounts.Sessions(accounts.session_key(E("SANDBOX_SESSION_SECRET"), getattr(REG, "sa", {}).get("private_key", "")))
     track(startup_registry())
     task, snap_task = asyncio.create_task(reaper()), asyncio.create_task(snapshotter()); kick()
     yield
@@ -516,6 +608,8 @@ async def lifespan(app):
 
 app = Starlette(routes=[Route("/", home), Route("/healthz", healthz), *([Route("/_ip", debug_ip)] if DEBUG_IP else []), Route("/assets/{name}", asset), Route("/new", new, methods=["POST"]),
                         Route("/status/{sid}", status, methods=["GET"]), Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]), Route("/manage/{sid}/extend", manage_extend, methods=["POST"]),
+                        Route("/auth/config", auth_config, methods=["GET"]), Route("/auth/google", auth_google, methods=["POST"]), Route("/auth/logout", auth_logout, methods=["POST"]),
+                        Route("/me/sandboxes", my_sandboxes, methods=["GET"]), Route("/me/sandboxes/{sid}", my_sandbox, methods=["GET"]), Route("/me/sandboxes/{sid}/reissue", my_reissue, methods=["POST"]), Route("/me/claim", my_claim, methods=["POST"]),
                         Route("/s/{sid}/{rest:path}", proxy, methods=["GET", "POST", "DELETE", "OPTIONS"]), Route("/s/{sid}", proxy, methods=["GET"], name="bare")], lifespan=lifespan)
 
 if __name__ == "__main__":

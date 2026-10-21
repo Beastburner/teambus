@@ -66,6 +66,7 @@ class MemoryRegistry:
     persistent = False                                          # dies with the process, so a sandbox can never be resumed from it
 
     def __init__(self): self.docs, self.snaps = {}, {}
+    async def list_owner(self, owner): return [dict(d) for d in self.docs.values() if owner and d.get("owner") == owner and d.get("state") in ("active", "sleeping")]
     async def put_snapshot(self, sid, rec): self.snaps[sid] = dict(rec)
     async def get_snapshot(self, sid): return dict(self.snaps[sid]) if sid in self.snaps else None
     async def delete_snapshot(self, sid): self.snaps.pop(sid, None)
@@ -105,6 +106,14 @@ class FirestoreRegistry:
 
     def _doc(self, sid): return f"{self.base}/{self.collection}/{sid}"
     def _snap(self, sid): return f"{self.base}/{self.collection}_snapshots/{sid}"
+
+    async def list_owner(self, owner):
+        """This account's sandboxes that can still be used (running or asleep)."""
+        if not owner: return []
+        body = {"structuredQuery": {"from": [{"collectionId": self.collection}], "limit": 50, "where": {"fieldFilter": {"field": {"fieldPath": "owner"}, "op": "EQUAL", "value": {"stringValue": owner}}}}}
+        res = await self._call("POST", self.base + ":runQuery", json=body) or []
+        recs = [{k: from_fs(v) for k, v in r["document"].get("fields", {}).items()} for r in res if r.get("document")]
+        return [r for r in recs if r.get("state") in ("active", "sleeping")]
 
     async def put_snapshot(self, sid, rec):
         await self._call("PATCH", self._snap(sid), json={"fields": {k: to_fs(v) for k, v in rec.items()}})

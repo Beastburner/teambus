@@ -73,6 +73,8 @@ It leaves a working session alone (its hooks deliver within seconds), reminds yo
 ## Teams
 For a startup-sized group (5 to 7 people with several agents each) see [docs/startup-team.md](docs/startup-team.md): one persistent hub, `teambus-hub person dana frontend backend qa` to create a person's agents, and `@dana` / `@qa` to message a person's agents or a whole role.
 
+**Accounts.** The public sandbox can optionally offer *Sign in with Google*, so a sandbox can be found, woken and re-keyed from any browser: [docs/accounts.md](docs/accounts.md).
+
 ## Layout
 `server.py` hub · `web/index.html` web view · `hooks/hook.py` Claude Code hook · `teambus` CLI · `.claude-plugin/`, `hooks/hooks.json`, `.mcp.json` plugin · `teambus-hub` / `teambus-join` easy setup · `sandbox.py` public sandbox · `render.yaml` · `Dockerfile`, `docker-compose.yml`, `docker-compose.sandbox.yml`, `Caddyfile*` · `docs/` (deploy guide, real-session proof, transcripts) · `ARCHITECTURE.md`
 

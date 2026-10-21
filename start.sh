@@ -8,7 +8,7 @@ mode="${TEAMBUS_MODE:-}"
 if [ -z "$mode" ]; then
   if [ -n "$RENDER" ] && [ -z "$TEAMBUS_TOKEN" ] && [ ! -f "${TEAMBUS_TOKENS:-/data/tokens.json}" ] && [ "$TEAMBUS_NOAUTH" != "1" ]; then mode=sandbox; else mode=hub; fi
   if [ "$mode" = sandbox ]; then
-    if [ -n "$FIREBASE_SERVICE_ACCOUNT" ] || [ -n "$FIREBASE_SERVICE_ACCOUNT_FILE" ]; then
+    if [ -n "$FIREBASE_SERVICE_ACCOUNT" ] || { [ -n "$FIREBASE_SERVICE_ACCOUNT_FILE" ] && [ -f "$FIREBASE_SERVICE_ACCOUNT_FILE" ]; }; then
       notice="Free hosting: the server sleeps after about 15 idle minutes. Your sandbox is saved and wakes on its next request; the first one takes about 15 seconds."
     else
       notice="Free hosting: the server sleeps after about 15 idle minutes and every sandbox is wiped when it does, and on each deploy. Create a new one if a link stops working."

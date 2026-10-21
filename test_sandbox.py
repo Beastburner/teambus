@@ -310,8 +310,8 @@ class FakeFirestore:
                 if u.path.startswith(pre + "/") and (rid == "health-probe" and getattr(fs, "reject_probe", False) or rid.startswith("__") and rid.endswith("__")):       # Firestore reserves ids like __name__ (the real service rejects them with a 400)
                     return self.reply(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": f'Resource id "{rid}" is invalid because it is reserved.'}})
                 if u.path == pre + ":runQuery" and method == "POST":
-                    f = json.loads(self.body())["structuredQuery"]["where"]["fieldFilter"]; assert f["op"] == "EQUAL" and f["field"]["fieldPath"] == "state"
-                    rows = [{"document": {"name": f"{pre}/sandboxes/{i}", "fields": d}} for i, d in fs.docs.items() if d.get("state") == f["value"]]
+                    f = json.loads(self.body())["structuredQuery"]["where"]["fieldFilter"]; assert f["op"] == "EQUAL" and f["field"]["fieldPath"] in ("state", "owner")
+                    rows = [{"document": {"name": f"{pre}/sandboxes/{i}", "fields": d}} for i, d in fs.docs.items() if d.get(f["field"]["fieldPath"]) == f["value"]]
                     return self.reply(200, rows or [{"readTime": "2026-01-01T00:00:00Z"}])
                 if u.path.startswith(pre + "/sandboxes_snapshots/"):
                     sid = u.path.rsplit("/", 1)[1]
@@ -501,7 +501,9 @@ def test_start_sh_on_render_defaults_to_the_sandbox_with_a_free_hosting_notice(t
             st, html = req(f"http://127.0.0.1:{port}/"); return st, html.decode()
         finally: p.terminate(); p.wait(10)
     st, html = run({}); assert st == 200 and "Free hosting: the server sleeps after about 15 idle minutes" in html           # the sandbox started, warning included
-    st, html = run({"FIREBASE_SERVICE_ACCOUNT_FILE": "/nonexistent.json"}); assert st == 200 and "saved and wakes on its next request" in html and "wiped" not in html      # with a registry configured, the promise changes
+    keyfile = tmp_path / "key.json"; keyfile.write_text("{}")
+    st, html = run({"FIREBASE_SERVICE_ACCOUNT_FILE": str(keyfile)}); assert st == 200 and "saved and wakes on its next request" in html and "wiped" not in html      # with a registry configured, the promise changes
+    st, html = run({"FIREBASE_SERVICE_ACCOUNT_FILE": "/etc/secrets/missing.json"}); assert st == 200 and "wiped" in html and "saved and wakes" not in html            # a configured but missing key file must not promise it
     st, html = run({"SANDBOX_NOTICE": ""}); assert st == 200 and "Free hosting" not in html and 'NOTICE=""' in html          # an empty value hides it
 
 
@@ -607,3 +609,109 @@ def test_two_requests_for_a_sleeping_sandbox_start_one_hub(mgr, fake):
     m2 = mgr(**fake.env()); import concurrent.futures as cf
     with cf.ThreadPoolExecutor(4) as ex: codes = list(ex.map(lambda _: call("POST", f"{m2.url}/s/{sid}/api/whoami", {}, tok(sb, "alice-frontend"))[0], range(4)))
     assert codes == [200] * 4 and len(m2.children()) == 1
+
+
+# ---- accounts: Google sign-in ----
+import jwt as pyjwt_mod
+from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+
+class FakeGoogle:
+    """Serves a JWKS and mints ID tokens, like Google does."""
+    def __init__(self):
+        self.key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        jwk = json.loads(pyjwt_mod.algorithms.RSAAlgorithm.to_jwk(self.key.public_key())); jwk.update(kid="k1", use="sig", alg="RS256"); body = json.dumps({"keys": [jwk]}).encode()
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self): self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H); self.port = self.srv.server_address[1]; threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+    def env(self): return {"GOOGLE_CLIENT_ID": "test-client.apps.googleusercontent.com", "GOOGLE_JWKS_URL": f"http://127.0.0.1:{self.port}/jwks"}
+    def token(self, sub="1001", email="dana@example.test", **over):
+        c = {"iss": "https://accounts.google.com", "aud": "test-client.apps.googleusercontent.com", "sub": sub, "email": email, "email_verified": True, "iat": int(time.time()), "exp": int(time.time()) + 3600, **over}
+        return pyjwt_mod.encode({k: v for k, v in c.items() if v is not None}, self.key, algorithm="RS256", headers={"kid": "k1"})
+    def stop(self): self.srv.shutdown()
+
+@pytest.fixture
+def google():
+    g = FakeGoogle(); yield g; g.stop()
+
+def acall(method, url, body=None, cookie=None, token=None, csrf=True):
+    """call() that also carries a session cookie and the X-TeamBus header; returns (status, json, set-cookie)."""
+    r = urllib.request.Request(url, json.dumps(body).encode() if body is not None else None,
+                               {"Content-Type": "application/json", **({"Cookie": cookie} if cookie else {}), **({"X-TeamBus": "1"} if csrf else {}), **({"Authorization": "Bearer " + token} if token else {})}, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=20) as x: return x.status, json.loads(x.read() or b"null"), x.headers.get("Set-Cookie", "")
+    except urllib.error.HTTPError as e:
+        try: j = json.loads(e.read())
+        except Exception: j = None
+        return e.code, j, e.headers.get("Set-Cookie", "")
+
+def sign_in(m, g, **kw):
+    st, d, sc = acall("POST", m.url + "/auth/google", {"credential": g.token(**kw)}); assert st == 200, d
+    return sc.split(";")[0]                                                                  # "tb_session=..."
+
+def test_sign_in_is_off_unless_configured(mgr):
+    m = mgr(); assert call("GET", m.url + "/auth/config")[1]["enabled"] is False
+    assert acall("POST", m.url + "/auth/google", {"credential": "x.y.z"})[0] == 404 and acall("GET", m.url + "/me/sandboxes")[0] == 404
+
+def test_only_a_valid_google_token_signs_you_in(mgr, google):
+    m = mgr(**google.env()); cfg = call("GET", m.url + "/auth/config")[1]; assert cfg["enabled"] and cfg["client_id"].startswith("test-client") and cfg["signed_in"] is False
+    bad = {"wrong audience": google.token(aud="someone-elses-app"), "wrong issuer": google.token(iss="https://evil.example"), "expired": google.token(exp=int(time.time()) - 600),
+           "unverified email": google.token(email_verified=False), "no subject": google.token(sub=None), "garbage": "not.a.jwt",
+           "unsigned": pyjwt_mod.encode({"iss": "https://accounts.google.com", "aud": "test-client.apps.googleusercontent.com", "sub": "1", "email_verified": True, "iat": 1, "exp": 4102444800}, "", algorithm="none"),
+           "signed by another key": pyjwt_mod.encode({"iss": "https://accounts.google.com", "aud": "test-client.apps.googleusercontent.com", "sub": "1", "email_verified": True, "iat": int(time.time()), "exp": int(time.time()) + 600},
+                                                     _rsa.generate_private_key(public_exponent=65537, key_size=2048), algorithm="RS256", headers={"kid": "k1"})}
+    for name, tk in bad.items(): assert acall("POST", m.url + "/auth/google", {"credential": tk})[0] == 401, name
+    assert acall("POST", m.url + "/auth/google", {"credential": google.token()}, csrf=False)[0] == 400                      # needs the custom header
+    st, d, sc = acall("POST", m.url + "/auth/google", {"credential": google.token()}); assert st == 200 and d["email"] == "dana@example.test"
+    assert "HttpOnly" in sc and "SameSite=lax" in sc and "tb_session=" in sc
+    ck = sc.split(";")[0]; assert acall("GET", m.url + "/auth/config", cookie=ck)[1]["signed_in"] is True
+    assert acall("GET", m.url + "/auth/config", cookie=ck[:-3] + "xyz")[1]["signed_in"] is False                            # a tampered cookie is just no cookie
+
+def test_a_signed_in_owner_sees_and_manages_their_sandboxes_from_a_fresh_browser(mgr, google):
+    m = mgr(**google.env(), SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9); ck = sign_in(m, google)
+    st, mine, _ = acall("POST", m.url + "/new", {"label": "mine", "lifetime_minutes": 90}, cookie=ck); assert st == 201 and mine["owned"] is True
+    anon = call("POST", m.url + "/new", {"label": "anonymous"})[1]; assert anon["owned"] is False
+    other = sign_in(m, google, sub="2002", email="eve@example.test")
+    assert acall("POST", m.url + "/new", {"label": "eves"}, cookie=other)[0] == 201
+    assert acall("POST", m.url + "/new", {"label": "no header"}, cookie=ck, csrf=False)[1]["owned"] is False              # a cross-site request cannot create things in your account
+    # a brand-new browser: no local tokens at all, just the sign-in
+    ck2 = sign_in(m, google); st, lst, _ = acall("GET", m.url + "/me/sandboxes", cookie=ck2)
+    assert st == 200 and [x["label"] for x in lst["sandboxes"]] == ["mine"] and lst["email"] == "dana@example.test"        # only mine: not the anonymous one, not Eve's
+    st, d, _ = acall("GET", m.url + "/me/sandboxes/" + mine["id"], cookie=ck2); assert st == 200 and "manage_token" not in d and all("token" not in a and "join" not in a for a in d["agents"])
+    assert call("GET", d["web_view"].split("?")[0] + "api/status", token=d["web_view"].split("token=")[1])[0] == 200           # the web-view link works
+    assert acall("GET", m.url + "/me/sandboxes/" + mine["id"], cookie=other)[0] == 404                                      # not yours
+    assert acall("GET", m.url + "/me/sandboxes", cookie=None)[0] == 401
+    st, d, _ = acall("POST", f"{m.url}/manage/{mine['id']}/extend", {"minutes": 30}, cookie=ck2); assert st == 200           # manage without the manage token
+    assert acall("POST", f"{m.url}/manage/{mine['id']}/extend", {"minutes": 30}, cookie=ck2, csrf=False)[0] == 401          # ...but a state change needs the header
+    assert acall("POST", f"{m.url}/manage/{mine['id']}/extend", {"minutes": 30}, cookie=other)[0] == 401
+    assert acall("DELETE", f"{m.url}/manage/{mine['id']}", cookie=other)[0] == 401
+    assert acall("DELETE", f"{m.url}/manage/{mine['id']}", cookie=ck2)[0] == 200 and acall("GET", m.url + "/me/sandboxes", cookie=ck2)[1]["sandboxes"] == []
+
+def test_reissue_gives_new_join_lines_and_kills_the_old_ones(mgr, google):
+    m = mgr(**google.env()); ck = sign_in(m, google); sb = acall("POST", m.url + "/new", None, cookie=ck)[1]; old = tok(sb, "alice-frontend")
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, old)[0] == 200
+    assert acall("POST", f"{m.url}/me/sandboxes/{sb['id']}/reissue", {}, cookie=ck, csrf=False)[0] == 400
+    st, d, _ = acall("POST", f"{m.url}/me/sandboxes/{sb['id']}/reissue", {}, cookie=ck); assert st == 200
+    new = {a["agent_id"]: a["token"] for a in d["agents"]}; assert set(new) == {"alice-frontend", "bob-backend", "carol-fullstack"} and all("--token " + t in a["join"] for a in d["agents"] for t in [new[a["agent_id"]]])
+    assert wait_for(lambda: call("POST", sb["hub_url"] + "/api/whoami", {}, old)[0] == 401, 10)                           # old join lines are dead
+    st, w = call("POST", sb["hub_url"] + "/api/whoami", {}, new["alice-frontend"])[:2]; assert st == 200 and w["agent_id"] == "alice-frontend"
+    assert call("GET", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[0] == 401 and call("GET", m.url + "/manage/" + sb["id"], token=d["manage_token"])[0] == 200   # the manage token was rotated too
+
+def test_claiming_an_anonymous_sandbox_with_its_manage_token(mgr, google):
+    m = mgr(**google.env()); anon = call("POST", m.url + "/new")[1]; ck = sign_in(m, google)
+    assert acall("POST", m.url + "/me/claim", {"id": anon["id"], "manage_token": "wrong"}, cookie=ck)[0] == 404
+    assert acall("POST", m.url + "/me/claim", {"id": anon["id"], "manage_token": anon["manage_token"]}, cookie=ck)[0] == 200
+    assert [x["id"] for x in acall("GET", m.url + "/me/sandboxes", cookie=ck)[1]["sandboxes"]] == [anon["id"]]
+    assert acall("POST", m.url + "/me/claim", {"id": anon["id"], "manage_token": anon["manage_token"]}, cookie=sign_in(m, google, sub="999"))[0] == 409   # already someone's
+
+def test_an_account_survives_restarts_and_wakes_its_sleeping_sandbox(mgr, fake, google):
+    env = {**fake.env(), **google.env()}; m1 = mgr(**env); ck = sign_in(m1, google); sb = acall("POST", m1.url + "/new", {"label": "survivor"}, cookie=ck)[1]; sid = sb["id"]
+    call("POST", sb["hub_url"] + "/api/ask", {"to_agent": "bob-backend", "question": "kept"}, tok(sb, "alice-frontend")); m1.stop()
+    assert fake.doc(sid)["owner"] and fake.doc(sid)["state"] == "sleeping" and fake.snaps[sid]                              # the owner id is stored, not the Google id or email
+    assert "dana@example.test" not in json.dumps({"d": fake.docs, "s": fake.snaps}) and "1001" not in json.dumps(fake.docs[sid])
+    m2 = mgr(**env)                                                                                                         # new process, same cookie (the signing key is derived from the stored service account)
+    st, lst, _ = acall("GET", m2.url + "/me/sandboxes", cookie=ck); assert st == 200 and [(x["id"], x["state"]) for x in lst["sandboxes"]] == [(sid, "asleep")]
+    st, d, _ = acall("GET", m2.url + "/me/sandboxes/" + sid, cookie=ck); assert st == 200 and d["resumed"] is True                 # opening it wakes it
+    st, rj, _ = acall("POST", f"{m2.url}/me/sandboxes/{sid}/reissue", {}, cookie=ck); new = {a["agent_id"]: a["token"] for a in rj["agents"]}
+    st, inbox = call("POST", f"{m2.url}/s/{sid}/api/inbox", {}, new["bob-backend"])[:2]; assert st == 200 and [x["body"] for x in inbox] == ["kept"]   # data came back; the new lines work
+    assert acall("DELETE", f"{m2.url}/manage/{sid}", cookie=ck)[0] == 200 and wait_for(lambda: sid not in fake.snaps)

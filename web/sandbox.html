@@ -88,6 +88,7 @@ h1 .l{display:block;white-space:nowrap;overflow:hidden;padding:.04em 0 .1em;marg
 footer{position:relative;z-index:3;padding:46px 0 80px;text-align:center}
 footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0;font:500 13px var(--mono);color:rgba(239,227,211,.5)}
 .panel{position:fixed;z-index:60;right:max(14px,env(safe-area-inset-right));top:14px;width:min(480px,calc(100% - 28px));max-height:calc(100dvh - 28px);overflow:auto;padding:20px 22px 12px;border:10px solid var(--red);border-radius:30px;color:var(--ink);background:linear-gradient(var(--grid) 2px,transparent 2px) 0 0/56px 56px,linear-gradient(90deg,var(--grid) 2px,transparent 2px) 0 0/56px 56px,var(--cream);box-shadow:0 30px 60px -20px rgba(0,0,0,.8)}
+.acct{margin:0 0 12px;padding:10px 12px;border:2px dashed var(--red);border-radius:10px;font-size:14px}.acct .who{font-weight:600;margin-right:10px}.acct p{margin:0 0 8px}.acct .hint2{margin:6px 0 0;font-size:13px}
 .panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.panel h2{margin:0;font:400 34px/1 var(--serif);color:var(--red)}
 .x{font:600 14px var(--sans);color:var(--ink);background:transparent;border:2px solid var(--ink);border-radius:10px;height:34px;padding:0 12px;cursor:pointer}.x:hover{background:var(--cream-2)}
 .meta{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}.chip{padding:6px 10px;border-radius:10px;background:var(--cream-2);border:2px solid var(--ink);font-size:13px;font-weight:600}.chip a{color:var(--red-ink);font-weight:700}.chip code{font:500 12px var(--mono);word-break:break-all}
@@ -185,6 +186,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 
 <aside class="panel" id="panel" role="dialog" aria-labelledby="ptitle" hidden>
  <div class="panel-head"><h2 id="ptitle">New sandbox</h2><button class="x" id="close" type="button">Close</button></div>
+ <div id="acct" class="acct" hidden></div>
  <div id="ended" aria-live="polite"></div>
  <div id="view-new">
   <label class="fl" for="lbl">Name <span class="hint">optional</span></label>
@@ -213,7 +215,7 @@ const INSTALL=__INSTALL__,NOTICE=__NOTICE__,LS="tb.sandboxes",DEFAULTS=[["alice-
 [...document.querySelectorAll("#life option")].forEach((o)=>{if(Number(o.value)>MAXMIN)o.remove()});
 const nowS=()=>Date.now()/1000;
 let boxes=[],sel=null,creating=false,delArmed=false;
-const load=()=>{try{const v=JSON.parse(localStorage.getItem(LS)||"[]");return Array.isArray(v)?v.filter((b)=>b&&b.id&&b.manage_token&&b.expires_at>nowS()):[]}catch(e){return[]}};
+const load=()=>{try{const v=JSON.parse(localStorage.getItem(LS)||"[]");return Array.isArray(v)?v.filter((b)=>b&&b.id&&(b.manage_token||b.account)&&b.expires_at>nowS()):[]}catch(e){return[]}};
 const save=()=>{try{localStorage.setItem(LS,JSON.stringify(boxes))}catch(e){}};
 boxes=load();
 const runs=[...document.querySelectorAll("[data-run]")];
@@ -224,7 +226,7 @@ const span=(m)=>m>=120?Math.round(m/60)+" hours":m+" min";
 const minsLeft=(b)=>Math.max(0,Math.round((b.expires_at-nowS())/60));
 function refreshMine(){boxes=boxes.filter((b)=>b.expires_at>nowS());$("mn").textContent=boxes.length;$("mine").hidden=boxes.length===0}
 function showView(v){$("view-new").hidden=v!=="new";$("view-list").hidden=v!=="list";$("ptitle").textContent=v==="new"?"New sandbox":"Your sandboxes";$("backlist").hidden=!boxes.length}
-function openPanel(v){const p=$("panel"),wasHidden=p.hidden;p.hidden=false;showView(v);if(wasHidden)animIn(p);(v==="new"?$("lbl"):$("close")).focus({preventScroll:true})}
+function openPanel(v){const p=$("panel"),wasHidden=p.hidden;p.hidden=false;showView(v);loadGsi();if(wasHidden)animIn(p);(v==="new"?$("lbl"):$("close")).focus({preventScroll:true})}
 const hidePanel=()=>{$("panel").hidden=true};
 
 /* join status and ended sandboxes */
@@ -253,7 +255,7 @@ async function doCreate(){
  if(creating)return;const agents=[...$("agrows").children].map((r)=>({agent_id:r.children[0].value.trim(),role:r.children[1].value.trim()}));
  const btn=$("docreate");creating=true;btn.disabled=true;btn.textContent="Creating";$("nerr").textContent="";
  try{
-  const r=await fetch("new",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({label:$("lbl").value.trim(),agents,lifetime_minutes:Number($("life").value)})});let d={};try{d=await r.json()}catch(e){}
+  const r=await fetch("new",{method:"POST",headers:{"Content-Type":"application/json",...H1},body:JSON.stringify({label:$("lbl").value.trim(),agents,lifetime_minutes:Number($("life").value)})});let d={};try{d=await r.json()}catch(e){}
   if(!r.ok){$("nerr").textContent=d.error||"Something went wrong.";return}
   boxes.unshift(d);save();sel=d.id;delArmed=false;refreshMine();renderList();showView("list");(btn.blur(),$("close").focus({preventScroll:true}))
  }catch(e){$("nerr").textContent="Could not reach the sandbox service."}
@@ -261,19 +263,21 @@ async function doCreate(){
 }
 
 /* list + details */
-const auth=(b)=>({Authorization:"Bearer "+b.manage_token});
+const H1={"X-TeamBus":"1"};   /* with the session cookie this proves the request came from this page, not a cross-site form */
+const auth=(b)=>b.manage_token?{Authorization:"Bearer "+b.manage_token,...H1}:H1;
 function renderList(){
  refreshMine();const tabs=$("tabs"),o=$("o");tabs.replaceChildren();
  if(!boxes.length){o.replaceChildren();resetBuilder();showView("new");return}
  if(!boxes.find((b)=>b.id===sel))sel=boxes[0].id;
  boxes.forEach((b,i)=>{const t=mk("button","tab",(b.label||"Sandbox "+(boxes.length-i))+" ("+minsLeft(b)+"m)");t.type="button";t.setAttribute("role","tab");t.setAttribute("aria-selected",b.id===sel?"true":"false");t.onclick=()=>{sel=b.id;delArmed=false;renderList()};tabs.append(t)});
  const nb=mk("button","tab new","+ New sandbox");nb.type="button";nb.onclick=()=>{resetBuilder();showView("new");$("lbl").focus()};tabs.append(nb);
- const b=boxes.find((x)=>x.id===sel),meta=mk("div","meta"),hub=mk("span","chip"),code=mk("code","",b.hub_url);hub.append("Hub ",code);
+ const b=boxes.find((x)=>x.id===sel);if(b.account&&!b.web_view){o.replaceChildren(mk("p","exp","Waking this sandbox and loading it from your account (about 15 seconds if it was asleep)..."));openFromAccount(b);return}
+ const meta=mk("div","meta"),hub=mk("span","chip"),code=mk("code","",b.hub_url);hub.append("Hub ",code);
  const view=mk("span","chip"),a=mk("a","","Open web view");a.href=b.web_view;a.target="_blank";a.rel="noopener";view.append(a);meta.append(hub,view);
  const list=mk("div","list");
- for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join),c=mk("button","copy","Copy");c.type="button";
+ for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join||"Not shown again: a woken or account sandbox only keeps a hash of each token. Press \"Get new join lines\" below for fresh ones."),c=mk("button","copy","Copy");c.type="button";
   c.onclick=async()=>{try{await navigator.clipboard.writeText(g.join);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
-  line.append(pre,c);const who=mk("div","who",g.agent_id+" ("+g.role+")"),jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);row.append(who,line);list.append(row)}
+  line.append(pre);if(g.join)line.append(c);const who=mk("div","who",g.agent_id+" ("+g.role+")"),jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);row.append(who,line);list.append(row)}
  const inst=mk("div","inst"),il=mk("div","line"),ip=mk("pre","",INSTALL),ic=mk("button","copy","Copy");ic.type="button";
  ic.onclick=async()=>{try{await navigator.clipboard.writeText(INSTALL);ic.textContent="Copied"}catch(e){ic.textContent="Select"}setTimeout(()=>ic.textContent="Copy",1500)};
  il.append(ip,ic);inst.append(mk("span","fl","First time on this machine? Install TeamBus once:"),il);
@@ -290,6 +294,15 @@ function renderList(){
    try{const rs=await fetch("manage/"+b.id+"/extend",{method:"POST",headers:{...auth(b),"Content-Type":"application/json"},body:JSON.stringify({minutes:m})});let d={};try{d=await rs.json()}catch(e){}
     if(!rs.ok){er2.textContent=d.error||"Something went wrong.";return}b.expires_at=d.expires_at;b.max_expires_at=d.max_expires_at;save();renderList()}catch(e){er2.textContent="Could not reach the sandbox service."}finally{x.disabled=false}};ext.append(x)}
  parts.push(ext,er2);
+ if(ME.signed){const ac=mk("div","acts"),er3=mk("p","err");er3.setAttribute("role","alert");
+  const need=!b.agents.every((g)=>g.join);
+  const re=mk("button","ghost",need?"Get new join lines":"Reissue join lines");re.type="button";re.title="Makes new tokens for every agent. The old join lines stop working.";
+  re.onclick=async()=>{if(!need&&!re.dataset.armed){re.dataset.armed="1";re.textContent="Click again: old join lines will stop working";return}
+   re.disabled=true;try{const rs=await fetch("me/sandboxes/"+b.id+"/reissue",{method:"POST",headers:H1});const d=await rs.json();if(!rs.ok){er3.textContent=d.error||"Something went wrong.";return}
+    b.agents=d.agents;b.manage_token=d.manage_token;b.web_view=d.web_view;b.expires_at=d.expires_at;save();renderList()}catch(e){er3.textContent="Could not reach the sandbox service."}finally{re.disabled=false}};
+  ac.append(re);
+  if(!b.account&&!b.owned){const cl=mk("button","ghost","Add to my account");cl.type="button";cl.onclick=async()=>{cl.disabled=true;try{const rs=await fetch("me/claim",{method:"POST",headers:{...H1,"Content-Type":"application/json"},body:JSON.stringify({id:b.id,manage_token:b.manage_token})});const d=await rs.json();if(!rs.ok){er3.textContent=d.error||"Something went wrong.";cl.disabled=false;return}b.owned=true;save();renderList()}catch(e){er3.textContent="Could not reach the sandbox service.";cl.disabled=false}};ac.append(cl)}
+  parts.push(ac,er3)}
  const acts=mk("div","acts"),del=mk("button","ghost danger",delArmed?"Click again to delete":"Delete this sandbox");del.type="button";
  del.onclick=async()=>{if(!delArmed){delArmed=true;del.textContent="Click again to delete";return}
   del.disabled=true;try{const rs=await fetch("manage/"+b.id,{method:"DELETE",headers:auth(b)});if(rs.ok||rs.status===404||rs.status===401){boxes=boxes.filter((x)=>x.id!==b.id);save();delArmed=false;sel=null;renderList()}}catch(e){del.disabled=false;del.textContent="Could not reach the service, try again"}};
@@ -297,9 +310,27 @@ function renderList(){
 }
 async function verify(){   /* drop sandboxes the server no longer has (expired, evicted, or the free instance slept) WITH the reason, and pick up joins and agents added elsewhere */
  const gone=[];
- await Promise.all(boxes.map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)gone.push(b);else if(r.ok){const d=await r.json();b.agents=mergeAgents(b.agents,d.agents);b.expires_at=d.expires_at}}catch(e){}}));
+ await Promise.all(boxes.filter((b)=>b.manage_token||b.web_view).map(async(b)=>{try{const r=await fetch("manage/"+b.id,{headers:auth(b)});if(r.status===404||r.status===401)gone.push(b);else if(r.ok){const d=await r.json();b.agents=mergeAgents(b.agents,d.agents);b.expires_at=d.expires_at;b.owned=d.owned}}catch(e){}}));
  for(const b of gone)await ended(b);
  save();refreshMine()}
+/* ---- account (Google sign-in): find, wake and re-key your sandboxes from any browser. Off unless the server has a client id. ---- */
+let ME={enabled:false,signed:false,email:"",client:""},slotPending=null,gsiLoaded=false;
+function renderAcct(){const a=$("acct");a.replaceChildren();a.hidden=!ME.enabled;slotPending=null;if(!ME.enabled)return;
+ if(ME.signed){const w=mk("span","who","Signed in as "+ME.email),out=mk("button","linkbtn","Sign out");out.type="button";
+  out.onclick=async()=>{try{await fetch("auth/logout",{method:"POST",headers:H1})}catch(e){}ME.signed=false;ME.email="";boxes=boxes.filter((b)=>!b.account);save();refreshMine();renderAcct();if(boxes.length)renderList();else{resetBuilder();showView("new")}};
+  a.append(w,out,mk("p","hint2","Your sandboxes in this account show up on any device you sign in on."));return}
+ const slot=mk("div");a.append(mk("p","","Sign in to find your sandboxes from any device, even after you clear this browser."),slot);slotPending=slot}
+function loadGsi(){if(!slotPending||!ME.client)return;const slot=slotPending;const go=()=>{try{google.accounts.id.initialize({client_id:ME.client,callback:onCredential,ux_mode:"popup"});google.accounts.id.renderButton(slot,{theme:"outline",size:"medium",text:"signin_with"})}catch(e){slot.textContent="Google sign-in could not load."}};
+ if(window.google&&google.accounts){go();return}if(gsiLoaded)return;gsiLoaded=true;const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.async=true;s.onload=go;s.onerror=()=>{slot.textContent="Google sign-in could not load."};document.head.append(s)}   /* loaded only when the panel opens, never on page load */
+async function onCredential(resp){try{const r=await fetch("auth/google",{method:"POST",headers:{...H1,"Content-Type":"application/json"},body:JSON.stringify({credential:resp.credential})});const d=await r.json();
+ if(!r.ok){$("acct").append(mk("p","err",d.error||"Sign-in failed."));return}ME.signed=true;ME.email=d.email;renderAcct();await syncAccount();if(boxes.length){renderList();showView("list")}}catch(e){$("acct").append(mk("p","err","Could not reach the sandbox service."))}}
+async function syncAccount(){try{const r=await fetch("me/sandboxes");if(!r.ok)return;const d=await r.json();const have=new Set(boxes.map((b)=>b.id));
+ for(const s of d.sandboxes){const b=boxes.find((x)=>x.id===s.id);if(b){b.owned=true;continue}boxes.push({id:s.id,label:s.label,account:true,owned:true,expires_at:s.expires_at,agents:s.agents,hub_url:location.origin+"/s/"+s.id})}
+ save();refreshMine()}catch(e){}}
+async function openFromAccount(b){try{const r=await fetch("me/sandboxes/"+b.id);const d=await r.json();if(!r.ok){boxes=boxes.filter((x)=>x.id!==b.id);save();notes.push({label:b.label||"Sandbox",message:d.error||"It is no longer in your account."});renderEnded();refreshMine();sel=null;renderList();return}
+ b.web_view=d.web_view;b.hub_url=d.hub_url;b.expires_at=d.expires_at;b.agents=mergeAgents(b.agents,d.agents);save();renderList()}catch(e){$("o").replaceChildren(mk("p","err","Could not reach the sandbox service."))}}
+async function loadAccount(){try{const c=await(await fetch("auth/config")).json();ME={enabled:!!c.enabled,signed:!!c.signed_in,email:c.email||"",client:c.client_id||""}}catch(e){}renderAcct();if(ME.signed){await syncAccount();refreshMine()}}
+loadAccount();
 async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden){if(boxes.length)renderList();else{resetBuilder();showView("new")}}}
 runs.forEach((b)=>b.onclick=()=>{resetBuilder();openPanel("new")});
 $("mine").onclick=openList;$("backlist").onclick=()=>{renderList();showView("list")};$("addrow").onclick=()=>addRow();$("docreate").onclick=doCreate;$("close").onclick=hidePanel;
