@@ -57,28 +57,45 @@ def init(a):
     e.update({"TEAMBUS_URL": a.hub.rstrip("/"), "TEAMBUS_TOKEN": a.token, tv: a.token, "AGENT_ID": a.agent_id, "AGENT_ROLE": a.role})
     if "teambus" not in s.setdefault("enabledMcpjsonServers", []): s["enabledMcpjsonServers"].append("teambus")
     sp.write_text(json.dumps(s, indent=2)); done.append("env + enabledMcpjsonServers in .claude/settings.local.json")
-    # project-scope MCP server, written directly (no dependency on the claude CLI) and UPDATED when the hub changes: rejoining another hub or sandbox must not leave
-    # Claude Code connecting to the old one. The URL is not secret; the token stays a ${TEAMBUS_TOKEN_<id>} placeholder (a ${VAR} inside `url` is rejected by Claude Code).
-    mp = root / ".mcp.json"; mj = jload(mp); entry = {"type": "http", "url": a.hub.rstrip("/") + "/mcp", "headers": {"Authorization": "Bearer ${" + tv + "}"}}
-    cur = mj.get("mcpServers", {}).get("teambus")
-    if cur != entry:
-        mj.setdefault("mcpServers", {})["teambus"] = entry; mp.write_text(json.dumps(mj, indent=2) + "\n")
-        done.append("teambus MCP server added to .mcp.json" if cur is None else f".mcp.json updated: teambus MCP server now points at {entry['url']} (was {str(cur.get('url'))[:80]})" if cur.get("url") != entry["url"]
-                    else ".mcp.json updated: the MCP token now travels in a variable only this join uses")
+    # MCP server. This file is PER MACHINE (its token variable is unique to this agent), so it must never reach a teammate's clone:
+    #  - no .mcp.json yet, or an untracked one: write the entry ourselves (no dependency on the claude CLI), UPDATE it when the hub changes (rejoining another hub or sandbox must not leave
+    #    Claude Code connecting to the old one) and keep it out of git. The URL is not secret; the token stays a ${TEAMBUS_TOKEN_<id>} placeholder (${VAR} inside `url` is rejected).
+    #  - a .mcp.json the repo TRACKS (shared servers): never edit it, every teammate's join would rewrite it and conflict. Register in the user's local scope instead (kept in ~/.claude.json).
+    mp = root / ".mcp.json"; url = a.hub.rstrip("/") + "/mcp"; in_git = (root / ".git").exists()
+    if in_git and git_tracked(root, ".mcp.json"):
+        done.append(register_local_mcp(root, url, a.token))
+    else:
+        mj = jload(mp); entry = {"type": "http", "url": url, "headers": {"Authorization": "Bearer ${" + tv + "}"}}; cur = mj.get("mcpServers", {}).get("teambus")
+        if cur != entry:
+            mj.setdefault("mcpServers", {})["teambus"] = entry; mp.write_text(json.dumps(mj, indent=2) + "\n")
+            done.append("teambus MCP server added to .mcp.json" if cur is None else f".mcp.json updated: teambus MCP server now points at {entry['url']} (was {str(cur.get('url'))[:80]})" if cur.get("url") != entry["url"]
+                        else ".mcp.json updated: the MCP token now travels in a variable only this join uses")
     md = root / "CLAUDE.md"
     if "## TeamBus" not in (md.read_text() if md.exists() else ""): md.open("a").write(("\n" if md.exists() else "") + SNIPPET.read_text()); done.append("CLAUDE.md snippet")
     gi = root / ".claude" / ".gitignore"                                                   # the token lives in settings.local.json: keep it (and the per-machine state) out of git even if this folder is not a repo yet
     want = ["settings.local.json", "settings.local.json.bak", "teambus-state.json"]; have = gi.read_text().splitlines() if gi.exists() else []
     if any(w not in have for w in want): gi.write_text("\n".join(have + [w for w in want if w not in have]) + "\n"); done.append(".claude/.gitignore keeps the token file and local state out of git")
-    if (root / ".git").exists(): done.append(git_hook(root)); done.append(git_exclude(root))
+    if in_git: done.append(git_hook(root)); done.append(git_exclude(root, [] if git_tracked(root, ".mcp.json") else [".mcp.json"]))
     print("teambus init:\n  " + "\n  ".join(done or ["nothing to do (already set up)"]) + "\nNext: `teambus doctor`")
 
-def git_exclude(root):
+def git_tracked(root, rel):
+    return subprocess.run(["git", "ls-files", "--error-unmatch", rel], cwd=root, capture_output=True).returncode == 0
+
+def register_local_mcp(root, url, token):
+    """Register the teambus MCP server in Claude Code's user-local scope for this project (stored in ~/.claude.json, never in the repo). The token goes straight into the header there:
+    that file is private to this user, and it makes this connection immune to environment variables inherited from another session."""
+    manual = f'claude mcp add --scope local --transport http teambus {url} --header "Authorization: Bearer <your token, see .claude/settings.local.json>"'
+    if not shutil.which("claude"): return f".mcp.json is tracked by git, so it was left alone. The claude CLI was not found: register the server yourself with: {manual}"
+    subprocess.run(["claude", "mcp", "remove", "--scope", "local", "teambus"], cwd=root, capture_output=True, text=True)
+    r = subprocess.run(["claude", "mcp", "add", "--scope", "local", "--transport", "http", "teambus", url, "--header", f"Authorization: Bearer {token}"], cwd=root, capture_output=True, text=True)
+    return ".mcp.json is tracked by git, so it was left alone; teambus MCP server registered in Claude's local scope" if r.returncode == 0 else f".mcp.json is tracked by git (left alone) but `claude mcp add` failed ({(r.stderr or r.stdout).strip()[:120]}); run: {manual}"
+
+def git_exclude(root, extra=()):
     """Keep the token-bearing, machine-specific files out of `git add -A` (per-clone .git/info/exclude, nothing to commit)."""
     ex = Path(subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=root, capture_output=True, text=True).stdout.strip() or ".git/info/exclude")
     ex = ex if ex.is_absolute() else root / ex
     have = ex.read_text() if ex.exists() else ""
-    new = [p for p in (".claude/settings.local.json", ".claude/settings.local.json.bak", ".claude/teambus-state.json") if p not in have.splitlines()]
+    new = [p for p in (".claude/settings.local.json", ".claude/settings.local.json.bak", ".claude/teambus-state.json", *extra) if p not in have.splitlines()]
     if new: ex.parent.mkdir(parents=True, exist_ok=True); ex.write_text(have.rstrip("\n") + ("\n" if have else "") + "# teambus (token + local state)\n" + "\n".join(new) + "\n")
     return "git exclude for local token/state files" if new else "git exclude (already set)"
 
@@ -103,7 +120,7 @@ def status(a):
     try: f = call(c, "api/feed", {"since": 0}); inbox = call(c, "api/inbox", {"peek": True}); me = call(c, "api/whoami")
     except Exception as e: sys.exit(f"cannot use hub {c['url']}: {why(e, 'could not reach the hub')}")
     print(f"you: {me['agent_id']}  hub: {c['url']}\n\nTEAM")
-    for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<20} {p['role']:<10} last seen {ago(p['last_seen_ago'])}")
+    for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<20} {p['role']:<10} {p.get('state', ''):<15} seen {ago(p['last_seen_ago'])}{'' if p.get('hook_ago') is not None else '  (hooks never reported)'}{'' if p.get('mcp_ago') is not None else '  (tools never connected)'}")
     print(f"\nINBOX ({len(inbox)} unread)")
     for m in inbox: print(f"  #{m['id']} from {m['from_agent']}" + (f" (reply to #{m['reply_to']})" if m["reply_to"] else "") + f": {m['body']}")
     print("\nRECENT ACTIVITY")
@@ -142,16 +159,19 @@ def doctor(a):
     missing = [ev for ev in EVENTS if not has_hook(allh.get(ev, []))]
     chk("hooks wired for " + ", ".join(EVENTS), not missing, f"missing: {missing}; run teambus init")
     chk(f"hook script exists ({HOOK})", HOOK.exists(), "reinstall teambus")
-    chk(".mcp.json registers `teambus`", "teambus" in jload(root / ".mcp.json").get("mcpServers", {}), "run teambus init")
-    mu = jload(root / ".mcp.json").get("mcpServers", {}).get("teambus", {}).get("url", ""); cfg_url = c["url"]
-    hdr = jload(root / ".mcp.json").get("mcpServers", {}).get("teambus", {}).get("headers", {}).get("Authorization", ""); m = re.search(r"\$\{(\w+)\}", hdr)
+    mj_entry = jload(root / ".mcp.json").get("mcpServers", {}).get("teambus"); loc_entry = jload(Path.home() / ".claude.json").get("projects", {}).get(str(root), {}).get("mcpServers", {}).get("teambus")
+    entry = mj_entry or loc_entry or {}
+    if mj_entry or not loc_entry: chk(".mcp.json registers `teambus`", bool(mj_entry), "run teambus init")
+    else: chk("teambus MCP server is registered in Claude's local scope (this repo tracks its own .mcp.json)", True, "")
+    mu = entry.get("url", ""); cfg_url = c["url"]
+    hdr = (mj_entry or {}).get("headers", {}).get("Authorization", ""); m = re.search(r"\$\{(\w+)\}", hdr)
     penv = {**jload(root / ".claude" / "settings.json").get("env", {}), **jload(root / ".claude" / "settings.local.json").get("env", {})}
     if m:
         chk("MCP token variable is defined in this project's settings", m.group(1) in penv, f".mcp.json sends ${{{m.group(1)}}} but settings.local.json does not define it: run teambus-join again")
         chk("MCP token variable has a name no other session is likely to set", m.group(1) != "TEAMBUS_TOKEN", "it uses the shared name TEAMBUS_TOKEN, which a parent session or your shell can override with another project's token (agents then authenticate as the wrong one): run teambus-join again", warn=True)
     amb = {k: v for k, v in os.environ.items() if k in ("TEAMBUS_URL", "TEAMBUS_TOKEN") and penv.get(k) and v != penv[k]}
     chk("your environment does not disagree with this project's settings", not amb, f"{', '.join(sorted(amb))} is exported in your shell or parent session with a different value; this project's settings win for hooks and this CLI, but anything that reads the environment would use the other one", warn=True)
-    if mu and cfg_url: chk(".mcp.json points at the same hub as your settings", mu == cfg_url + "/mcp", f".mcp.json connects to {mu} but TEAMBUS_URL is {cfg_url}: run teambus-join (or teambus init) again with your current invite")
+    if mu and cfg_url: chk(".mcp.json points at the same hub as your settings" if mj_entry or not loc_entry else "the MCP server points at the same hub as your settings", mu == cfg_url + "/mcp", f"the MCP server connects to {mu} but TEAMBUS_URL is {cfg_url}: run teambus-join (or teambus init) again with your current invite")
     if mu: chk(".mcp.json url is a literal http(s) URL", mu.startswith("http") and "${" not in mu, "Claude Code rejects ${VAR} inside url; rerun teambus init after deleting the teambus entry from .mcp.json")
     chk("claude CLI on PATH", bool(shutil.which("claude")), "install Claude Code", warn=True)
     md = root / "CLAUDE.md"; chk("CLAUDE.md has the TeamBus protocol", md.exists() and "## TeamBus" in md.read_text(), "run teambus init")

@@ -28,10 +28,12 @@ EXT = ["", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json", ".py"]
 
 WHY = ""   # why the last call failed, in words (filled by api())
 
+EVENT = ""   # which hook is running; sent with every call so the hub can tell hook traffic from MCP traffic
+
 def api(name, **kw):
     global WHY
     try:
-        req = urllib.request.Request(f"{URL}/api/{name}", json.dumps(kw).encode(), {"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"})
+        req = urllib.request.Request(f"{URL}/api/{name}", json.dumps(kw).encode(), {"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}", **({"X-TeamBus-Event": EVENT} if EVENT else {})})
         return json.load(urllib.request.urlopen(req, timeout=3))
     except urllib.error.HTTPError as e:
         try: msg = (json.loads(e.read()) or {}).get("message") or ""          # a sandbox explains itself: expired, deleted, lost in a restart, never existed
@@ -119,6 +121,7 @@ def unread_note(throttle=4.0):
     return "\n".join(digest_lines({"inbox": api("inbox") or []}))
 
 def main(mode):
+    global EVENT; EVENT = mode
     d = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     ti = d.get("tool_input") or {}
     root = os.environ.get("CLAUDE_PROJECT_DIR") or d.get("cwd") or os.getcwd()

@@ -20,7 +20,7 @@ SCHEMA = {
     "contracts": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, name TEXT, spec TEXT, files TEXT, source_files TEXT DEFAULT '[]', status TEXT DEFAULT 'open', done_files TEXT DEFAULT '[]', resolved_ts REAL",
     "messages": "id INTEGER PRIMARY KEY, ts REAL, from_agent TEXT, to_agent TEXT, body TEXT, reply_to INTEGER, read INTEGER DEFAULT 0, answered INTEGER DEFAULT 0, read_ts REAL",
     "builds": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, ok INTEGER, log_tail TEXT, cmd TEXT DEFAULT '', fixed_by INTEGER, fixed_ts REAL",
-    "agents": "agent_id TEXT PRIMARY KEY, role TEXT, last_seen REAL"}
+    "agents": "agent_id TEXT PRIMARY KEY, role TEXT, last_seen REAL, last_mcp REAL, last_hook REAL, last_event TEXT, last_event_ts REAL"}
 
 # Anything that looks like a credential is removed before it is stored or shown to other agents: build commands and logs, edit summaries and messages all travel to every
 # teammate (and sit in the hub's database). Teammates share secrets out of band, never through TeamBus.
@@ -91,8 +91,16 @@ def known():
     return {v["agent_id"]: v.get("role", "") for v in tokens().values() if v.get("agent_id")} | {r["agent_id"]: r["role"] for r in rows("SELECT agent_id, role FROM agents")}
 
 def presence():
-    seen = {r["agent_id"]: r["last_seen"] for r in rows("SELECT agent_id, last_seen FROM agents")}; now = time.time()
-    return [{"agent_id": a, "role": r, "last_seen_ago": (now - seen[a]) if a in seen else None, "active": a in seen and now - seen[a] < ACTIVE} for a, r in sorted(known().items())]
+    """Per agent: when it was last seen, from which side (hooks, MCP tools), what it was last doing, and a plain state."""
+    rs = {r["agent_id"]: r for r in rows("SELECT * FROM agents")}; now = time.time(); out = []
+    for a, role in sorted(known().items()):
+        r = rs.get(a); seen = r["last_seen"] if r else None; ago = lambda t: (now - t) if t else None
+        ev, ev_ago = (r["last_event"], ago(r["last_event_ts"])) if r else (None, None)
+        state = ("never connected" if seen is None else "offline" if now - seen > OFFLINE else "working" if ev in ("pre", "post", "prompt", "tool", "fail", "start") and ev_ago is not None and ev_ago < 120
+                 else "idle" if ev == "stop" and ev_ago is not None and ev_ago < ACTIVE else "active" if now - seen < ACTIVE else "quiet")
+        out.append({"agent_id": a, "role": role, "last_seen_ago": ago(seen), "active": seen is not None and now - seen < ACTIVE, "state": state,
+                    "hook_ago": ago(r["last_hook"]) if r else None, "mcp_ago": ago(r["last_mcp"]) if r else None, "event": ev, "event_ago": ev_ago})
+    return out
 
 class Auth:
     """ASGI middleware: 401 without a valid token; shared viewer token may only GET / and /api/status; records presence."""
@@ -105,7 +113,14 @@ class Auth:
         if who.get("viewer") and not (scope["method"] == "GET" and scope["path"] in ("/", "/api/status")):
             return await JSONResponse({"error": "viewer token is read-only"}, 403)(scope, receive, send)
         scope["teambus"] = who
-        if who.get("agent_id"): run("INSERT INTO agents(agent_id,role,last_seen) VALUES(?,?,?) ON CONFLICT(agent_id) DO UPDATE SET last_seen=excluded.last_seen, role=CASE WHEN excluded.role!='' THEN excluded.role ELSE role END", who["agent_id"], who.get("role", ""), time.time())
+        if who.get("agent_id"):
+            # Presence by source: MCP tool traffic, hook traffic (the hooks label every call with the event that fired them), or anything else (CLI, curl). A teammate whose hooks
+            # report but whose tools never connected (or the reverse) is not "coordinated": the feed can now say which half is missing.
+            ev = dict(scope["headers"]).get(b"x-teambus-event", b"").decode()[:16]; now = time.time(); mcp = scope["path"].startswith("/mcp")
+            run("INSERT INTO agents(agent_id,role,last_seen,last_mcp,last_hook,last_event,last_event_ts) VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET last_seen=excluded.last_seen, "
+                "role=CASE WHEN excluded.role!='' THEN excluded.role ELSE role END, last_mcp=COALESCE(excluded.last_mcp,last_mcp), last_hook=COALESCE(excluded.last_hook,last_hook), "
+                "last_event=COALESCE(excluded.last_event,last_event), last_event_ts=COALESCE(excluded.last_event_ts,last_event_ts)",
+                who["agent_id"], who.get("role", ""), now, now if mcp else None, now if ev else None, "tool" if mcp else (ev or None), now if (mcp or ev) else None)
         await s.app(scope, receive, send)
 
 # ---- core (each is both an MCP tool and POST /api/<name>; `agent_id`/`ctx` are optional: identity comes from the token) ----
@@ -182,8 +197,9 @@ def ask_teammate_agent(to_agent: str = "", question: str = "", reply_to: int | N
     body, removed = scrub(question)
     mid = run("INSERT INTO messages(ts,from_agent,to_agent,body,reply_to) VALUES(?,?,?,?,?)", time.time(), a, to, body, reply_to)
     if parent and parent["to_agent"] == a: run("UPDATE messages SET answered=1 WHERE id=?", reply_to)
-    seen = (rows("SELECT last_seen FROM agents WHERE agent_id=?", to) or [{"last_seen": None}])[0]["last_seen"]; out = {"id": mid, "to": to}
-    out["recipient"] = "never connected" if seen is None else f"active {int(time.time() - seen)}s ago" if time.time() - seen < ACTIVE else f"last seen {int((time.time() - seen) / 60)} min ago"
+    p = next((x for x in presence() if x["agent_id"] == to), {}); seen = None if p.get("last_seen_ago") is None else time.time() - p["last_seen_ago"]; out = {"id": mid, "to": to}
+    out["recipient"] = ("never connected" if seen is None else f"{p['state']}, seen {int(p['last_seen_ago'])}s ago" if p["last_seen_ago"] < ACTIVE else f"{p['state']}, last seen {int(p['last_seen_ago'] / 60)} min ago") \
+                       + ("" if p.get("hook_ago") is not None else "; their hooks have never reported, so they only see this when they call check_inbox")
     warn = []
     if seen is None or time.time() - seen > OFFLINE: warn.append(f"{to} has " + ("never connected" if seen is None else f"been offline {int((time.time() - seen) / 3600)}h") + "; the answer may take a while. Continue other work and check_inbox later.")
     if removed: warn.append(f"removed {removed} value(s) that looked like credentials from your message; share secrets out of band, never through TeamBus.")

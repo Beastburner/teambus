@@ -53,7 +53,7 @@ async function load() {
     const r = await fetch("api/status", { headers: { Authorization: "Bearer " + token } });
     if (!r.ok) throw new Error(r.status === 401 ? "401: missing or wrong token (open this page as /?token=YOUR_TOKEN)" : "hub returned " + r.status);
     const d = await r.json(); $("err").style.display = "none"; const n = d.now;
-    fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); li.append(dot, span("", a.agent_id), span("tag", a.role || "-"), span("m", "  " + (a.last_seen_ago == null ? "never seen" : a.active ? "active · " + ago(n - a.last_seen_ago, n) : "last seen " + ago(n - a.last_seen_ago, n)))); });
+    fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); li.append(dot, span("", a.agent_id), span("tag", a.role || "-"), span("m", "  " + (a.last_seen_ago == null ? "never seen" : (a.state || "") + " · " + ago(n - a.last_seen_ago, n))), a.last_seen_ago != null && a.hook_ago == null ? span("tag", "no hooks") : "", a.last_seen_ago != null && a.mcp_ago == null ? span("tag", "no tools") : ""); });
     fill("questions", d.questions.filter((q) => !q.answered), (li, q) => { li.append(span("", q.from_agent + " → " + q.to_agent), span("m", "  " + ago(q.ts, n)), pre(q.body)); });
     fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
     fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });

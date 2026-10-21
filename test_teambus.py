@@ -6,7 +6,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 HERE = os.path.dirname(os.path.abspath(__file__)); HOOK = f"{HERE}/hooks/hook.py"; URL = "http://127.0.0.1:8799"
-TOK = {"ta": {"agent_id": "alice", "role": "frontend"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}}
+TOK = {"ta": {"agent_id": "alice", "role": "frontend"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}}
 
 @pytest.fixture(scope="module")
 def hub(tmp_path_factory):
@@ -100,8 +100,18 @@ def test_threads_roles_presence(hub):
     assert next(p for p in api("ta", "feed")["agents"] if p["agent_id"] == "alice")["active"]
 
 def test_offline_over_24h_warns(hub):
-    import sqlite3; c = sqlite3.connect(hub / "h.db"); c.execute("INSERT OR REPLACE INTO agents VALUES('bob','backend',?)", (time.time() - 30 * 3600,)); c.commit()
+    import sqlite3; c = sqlite3.connect(hub / "h.db"); c.execute("INSERT OR REPLACE INTO agents(agent_id,role,last_seen) VALUES('bob','backend',?)", (time.time() - 30 * 3600,)); c.commit()
     assert "offline 30h" in api("ta", "ask", to_agent="bob", question="hi")["warning"]
+
+def test_presence_by_source(hub):
+    pr = lambda a: next(p for p in api("viewer", "status", method="GET")["agents"] if p["agent_id"] == a)
+    assert pr("frank")["hook_ago"] is None and pr("frank")["state"] == "never connected"       # nothing seen yet
+    r = api("ta", "ask", to_agent="frank", question="anyone?"); assert r["recipient"] == "never connected; their hooks have never reported, so they only see this when they call check_inbox"
+    api("tf", "whoami"); p = pr("frank"); assert p["hook_ago"] is None and p["mcp_ago"] is None and p["state"] in ("active", "quiet")   # plain REST is neither hook nor MCP
+    hook("post", "tf", {"tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {}, "cwd": str(hub)}, hub)
+    p = pr("frank"); assert p["hook_ago"] is not None and p["mcp_ago"] is None and p["event"] == "post" and p["state"] == "working"
+    hook("stop", "tf", {"cwd": str(hub)}, hub); p = pr("frank"); assert p["event"] == "stop" and p["state"] == "idle"
+    
 
 # ---- digest cursor ----
 def test_digest_cursor(hub):
@@ -485,3 +495,46 @@ def test_init_keeps_token_files_out_of_git_even_before_the_folder_is_a_repo(tmp_
     gi = (proj / ".claude" / ".gitignore").read_text().splitlines(); assert {"settings.local.json", "settings.local.json.bak", "teambus-state.json"} <= set(gi)
     g = lambda *a: subprocess.run(["git", "-C", str(proj), "-c", "user.name=t", "-c", "user.email=t@t", *a], capture_output=True, text=True, check=True).stdout
     g("init", "-q"); g("add", "-A"); staged = g("diff", "--cached", "--name-only"); assert "settings.local.json" not in staged and "teambus-state.json" not in staged     # a later `git add -A` cannot commit the token
+
+
+# ---- .mcp.json is per machine: never shared through git ----
+def _git(p, *a): return subprocess.run(["git", "-C", str(p), "-c", "user.name=t", "-c", "user.email=t@t", *a], capture_output=True, text=True, check=True).stdout
+
+
+def _init_in(proj, tmp_path, tool_dir=None, hub="https://h.example/s/ZZZ", agent="alice", token="tok-secret-1"):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))} | {"HOME": str(tmp_path / "home"), "PATH": (f"{tool_dir}:" if tool_dir else "") + "/usr/bin:/bin"}
+    (tmp_path / "home").mkdir(exist_ok=True)
+    return subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", hub, "--agent-id", agent, "--role", "dev", "--token", token, "--dir", str(proj)], env=env, capture_output=True, text=True, check=True), env
+
+
+def _stub_claude(tmp_path):
+    d = tmp_path / "stub"; d.mkdir(); (d / "claude").write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/claude-calls.txt\nexit 0\n'); (d / "claude").chmod(0o755); return d
+
+
+def test_an_untracked_mcp_json_is_written_but_kept_out_of_git(tmp_path):
+    proj = tmp_path / "repo"; proj.mkdir(); _git(proj, "init", "-q"); (proj / "a.txt").write_text("x"); _git(proj, "add", "a.txt"); _git(proj, "commit", "-qm", "base")
+    out, _ = _init_in(proj, tmp_path); assert "added to .mcp.json" in out.stdout and (proj / ".mcp.json").exists()
+    assert subprocess.run(["git", "-C", str(proj), "check-ignore", ".mcp.json"], capture_output=True).returncode == 0                  # a teammate's clone never receives it
+    listed = _git(proj, "status", "--porcelain", "-uall"); assert ".claude/.gitignore" in listed                                  # the guard file itself is fine to commit
+    assert ".mcp.json" not in listed and "settings.local.json" not in listed and "teambus-state.json" not in listed
+
+
+def test_a_tracked_mcp_json_is_never_edited_the_server_goes_to_local_scope(tmp_path):
+    proj = tmp_path / "repo"; proj.mkdir(); _git(proj, "init", "-q"); shared = json.dumps({"mcpServers": {"shared-tool": {"type": "http", "url": "https://s.example/mcp"}}}, indent=2) + "\n"
+    (proj / ".mcp.json").write_text(shared); _git(proj, "add", ".mcp.json"); _git(proj, "commit", "-qm", "shared servers")
+    stub = _stub_claude(tmp_path); out, env = _init_in(proj, tmp_path, stub)
+    assert (proj / ".mcp.json").read_text() == shared and _git(proj, "status", "--porcelain").count(".mcp.json") == 0              # the shared file is byte-for-byte untouched
+    assert "tracked by git" in out.stdout and "local scope" in out.stdout
+    calls = (tmp_path / "claude-calls.txt").read_text(); assert "mcp add --scope local --transport http teambus https://h.example/s/ZZZ/mcp --header Authorization: Bearer tok-secret-1" in calls and "mcp remove --scope local teambus" in calls
+    out2, _ = _init_in(proj, tmp_path, None)                                                                                  # no claude CLI at all: say exactly what to run, change nothing shared
+    assert "claude CLI was not found" in out2.stdout and "claude mcp add --scope local --transport http teambus https://h.example/s/ZZZ/mcp" in out2.stdout and (proj / ".mcp.json").read_text() == shared
+    assert "tok-secret-1" not in out2.stdout                                                                                  # the manual command never prints the token
+
+
+def test_doctor_recognises_a_server_registered_in_local_scope(tmp_path):
+    proj = tmp_path / "repo"; proj.mkdir(); _git(proj, "init", "-q"); (proj / ".mcp.json").write_text('{"mcpServers": {}}\n'); _git(proj, "add", ".mcp.json"); _git(proj, "commit", "-qm", "empty shared")
+    _, env = _init_in(proj, tmp_path, _stub_claude(tmp_path))
+    d = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout; assert "[FAIL] .mcp.json registers `teambus`" in d      # nothing registered yet
+    (tmp_path / "home" / ".claude.json").write_text(json.dumps({"projects": {str(proj.resolve()): {"mcpServers": {"teambus": {"type": "http", "url": "https://h.example/s/ZZZ/mcp"}}}}}))
+    d = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout
+    assert "[PASS] teambus MCP server is registered in Claude's local scope" in d and "[PASS] the MCP server points at the same hub" in d, d
