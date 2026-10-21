@@ -246,6 +246,12 @@ def who_of(ctx):
     """The authenticated identity record of the caller (agent_id, role, and flags such as can_create)."""
     req = getattr(getattr(ctx, "request_context", None), "request", ctx); return (getattr(req, "scope", None) or {}).get("teambus") or {}
 
+def hub_url_of(ctx):
+    """The address this hub is reachable at, as the caller sees it: set by the sandbox proxy (X-TeamBus-Base), else TEAMBUS_PUBLIC_URL, else the address the request itself used."""
+    req = getattr(getattr(ctx, "request_context", None), "request", ctx)
+    try: return (req.headers.get("x-teambus-base") or E("TEAMBUS_PUBLIC_URL") or str(req.base_url)).rstrip("/")
+    except Exception: return (E("TEAMBUS_PUBLIC_URL") or "").rstrip("/")
+
 def _tokens_raw():
     try: return {t: ({"agent_id": v} if isinstance(v, str) else dict(v)) for t, v in json.load(open(TOKENS)).items()}
     except OSError: return {}
@@ -277,8 +283,9 @@ def create_agent(name: str, role: str, brief: str = "", spawn: bool = False, ctx
     out_spawn = {}
     if spawn: out_spawn = {"spawn_id": run("INSERT INTO spawns(ts,requested_by,agent_id,role,brief) VALUES(?,?,?,?,?)", time.time(), a, name, role, text[:4000]),
                            "spawn": "requested: a `teambus worker` running for you will start this agent's session. If none is running, the request stays pending until your user starts one."}
-    return {"agent_id": name, "role": role, "token": tok, "created_by": a, **out_spawn,
-            "join": f'teambus-join --hub "$TEAMBUS_URL" --agent-id {name} --role {role} --token {tok}',
+    hub = hub_url_of(ctx)
+    return {"agent_id": name, "role": role, "token": tok, "created_by": a, "hub": hub, **out_spawn,
+            "join": f"teambus-join --hub {hub} --agent-id {name} --role {role} --token {tok}",
             "next": "Run `join` in the project folder where the new agent's Claude session will work (it sets up that folder), then start `claude` there. The brief, if you gave one, is in its inbox."}
 
 def list_spawns(status: str = "pending", ctx: Context | None = None):

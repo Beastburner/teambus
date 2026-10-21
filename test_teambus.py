@@ -627,7 +627,7 @@ def test_only_allowed_agents_can_create_agents_and_the_new_one_works_at_once(hub
     assert "may not create agents" in api("ta", "create_agent", name="sneaky-bot", role="x")["error"]                      # an ordinary agent
     assert "sneaky-bot" not in open(hub / "tokens.json").read()
     r = api("tl", "create_agent", name="newbie-one", role="tester", brief="Test the checkout flow. SECRET_KEY=sk_live_abcdef123456")
-    assert r["agent_id"] == "newbie-one" and r["created_by"] == "lena-lead" and f"--token {r['token']}" in r["join"] and "$TEAMBUS_URL" in r["join"]
+    assert r["agent_id"] == "newbie-one" and r["created_by"] == "lena-lead" and f"--token {r['token']}" in r["join"] and f"--hub {URL} " in r["join"] and r["hub"] == URL
     who = api(r["token"], "whoami"); assert who["agent_id"] == "newbie-one" and who["role"] == "tester"                       # the running hub knew the token at once
     inbox = api(r["token"], "inbox"); assert [m["from_agent"] for m in inbox] == ["lena-lead"] and "Test the checkout flow" in inbox[0]["body"] and "sk_live_abcdef123456" not in inbox[0]["body"]   # brief delivered, scrubbed
     assert api(r["token"], "create_agent", name="grandchild", role="x")["error"].startswith("you may not create agents")      # no chains

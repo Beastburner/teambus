@@ -559,7 +559,7 @@ async def proxy(request: Request):
         body += chunk
         if len(body) > MAX_BODY: return JSONResponse({"error": "request too large"}, 413)
     up = client.build_request(request.method, f"http://127.0.0.1:{sb['port']}/{request.path_params.get('rest', '')}", params=request.query_params, content=body,
-                              headers={k: v for k, v in request.headers.items() if k.lower() not in HOP})
+                              headers={**{k: v for k, v in request.headers.items() if k.lower() not in HOP | {"x-teambus-base"}}, "X-TeamBus-Base": f"{public_base(request)}/s/{sb['id']}"})   # tells the hub its public address (a client cannot set this itself)
     r = await client.send(up, stream=True)
     return StreamingResponse(r.aiter_raw(), r.status_code, {k: v for k, v in r.headers.items() if k.lower() not in HOP}, background=BackgroundTask(r.aclose))
 

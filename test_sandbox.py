@@ -777,6 +777,10 @@ def test_orchestrator_can_create_agents_others_cannot_and_the_owner_sees_them(mg
     m = mgr(SANDBOX_MAX_AGENTS=5); sb = call("POST", m.url + "/new", {"agents": [{"agent_id": "lead-ann", "role": "orchestrator"}, {"agent_id": "dev-bo", "role": "backend"}]})[1]
     assert "may not create agents" in call("POST", sb["hub_url"] + "/api/create_agent", {"name": "x-bot", "role": "r"}, tok(sb, "dev-bo"))[1]["error"]
     out = mcp_create(sb, "lead-ann", "scout-one", "researcher", "look into the docs"); assert out["agent_id"] == "scout-one" and out["join"].count("--token") == 1      # through the real MCP tool
+    assert out["hub"] == sb["hub_url"] and f"--hub {sb['hub_url']} " in out["join"]                                                                                                       # the join line carries the real public address, usable from another computer
+    r = urllib.request.Request(sb["hub_url"] + "/api/create_agent", json.dumps({"name": "spoof-two", "role": "x"}).encode(), {"Content-Type": "application/json", "Authorization": "Bearer " + tok(sb, "lead-ann"), "X-TeamBus-Base": "https://evil.example"})
+    assert json.load(urllib.request.urlopen(r))["hub"] == sb["hub_url"]                                                                                                                    # a client-sent header cannot change it
+    assert call("POST", sb["hub_url"] + "/api/remove_agent", {"name": "spoof-two"}, tok(sb, "lead-ann"))[1] == {"removed": "spoof-two"}
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, out["token"])[1]["agent_id"] == "scout-one"
     st, d = call("GET", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[:2]; names = {a["agent_id"]: a for a in d["agents"]}
     assert set(names) == {"lead-ann", "dev-bo", "scout-one"} and names["scout-one"]["token"] == out["token"] and "--agent-id scout-one" in names["scout-one"]["join"]    # the owner's list picks up what the agent made
