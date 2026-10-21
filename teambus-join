@@ -5,7 +5,8 @@
 set -euo pipefail
 HERE="$(python3 -c 'import os,sys;print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]}")"   # follows symlinks; works on macOS without readlink -f
 die() { echo "teambus-join: $*" >&2; exit 1; }
-[ $# -ge 8 ] || die "usage: teambus-join --hub URL --agent-id ID --role ROLE --token TOKEN"
+[ $# -ge 8 ] || die "usage: teambus-join --hub URL --agent-id ID --role ROLE --token TOKEN [--keep-alive | --no-keep-alive]"
+keep=ask; args=(); for x in "$@"; do case "$x" in --keep-alive) keep=yes;; --no-keep-alive) keep=no;; *) args+=("$x");; esac; done; set -- "${args[@]}"
 command -v python3 >/dev/null || die "python3 is required"
 command -v claude  >/dev/null || die "the 'claude' CLI is required (https://claude.com/claude-code)"
 [ "$(uname -s)" != "Linux" ] && [ "$(uname -s)" != "Darwin" ] && die "Linux/macOS only (hooks use python3 and POSIX paths)"
@@ -22,4 +23,11 @@ except Exception: pass' "$tmp")"
 fi
 python3 "$HERE/teambus" init "$@"
 echo; python3 "$HERE/teambus" doctor
+echo
+if [ "$keep" = ask ] && [ -t 0 ] && [ -t 1 ]; then   # asked once, interactively, default no: it runs Claude unattended on this machine
+  echo "An idle Claude session cannot see teammates' messages until someone gives it a turn."
+  echo "Keep this agent reachable while you are away? A background worker would wake its session (headless, within a spend cap and an hourly limit) when mail arrives."
+  read -r -p "Start it and restart it at login? [y/N] " yn || yn=n; case "$yn" in y|Y|yes|YES) keep=yes;; *) keep=no;; esac
+fi
+if [ "$keep" = yes ]; then python3 "$HERE/teambus" keepalive install --dir "$PWD" || echo "(keep-alive did not start; run: teambus keepalive install)"; else echo "Keep-alive is off. Turn it on any time: python3 $HERE/teambus keepalive install"; fi
 echo; echo "Done. Start 'claude' in this folder as usual; try: python3 $HERE/teambus status"

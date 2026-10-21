@@ -1,5 +1,5 @@
 """Regression tests (pytest). Spins up a real hub on :8799 with a temp DB/tokens and drives it over REST, MCP and the hook script."""
-import asyncio, json, os, subprocess, sys, time, urllib.error, urllib.request
+import asyncio, json, os, shutil, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 import pytest
 from mcp import ClientSession
@@ -748,3 +748,65 @@ def wait_for_wk_calls(log, n, timeout=20):
         if len(_wk_calls(log)) >= n: return True
         time.sleep(0.3)
     return False
+
+
+# ---- keepalive: the worker as a background service, asked once at join ----
+def _ka(proj, home, *args, path=None, input=None):
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))}, "HOME": str(home), **({"PATH": path} if path else {})}
+    return subprocess.run([sys.executable, CLI, "keepalive", *args, "--dir", str(proj)], env=env, capture_output=True, text=True, input=input, timeout=30)
+
+def _fake_bin(tmp, name="bin", systemctl_ok=True):
+    """A PATH directory whose systemctl is a recorder (never the real one); with systemctl_ok=False it reports that no user manager exists."""
+    b = tmp / name; b.mkdir(exist_ok=True); log = tmp / f"{name}.log"
+    (b / "systemctl").write_text(f'#!/bin/sh\necho "systemctl $@" >> {log}\n' + ('exit 0\n' if systemctl_ok else 'exit 1\n')); (b / "systemctl").chmod(0o755)
+    for n in ("python3", "git", "sh", "env", "ls", "cat"):
+        real = shutil.which(n)
+        if real and not (b / n).exists(): (b / n).symlink_to(real)
+    return b, log
+
+def test_keepalive_installs_a_systemd_user_unit_with_limits_and_no_token_and_stop_removes_it(hub, tmp_path):
+    if sys.platform == "darwin": pytest.skip("systemd path")
+    proj = _wk_project(tmp_path, "ka1", "tf", "frank", "docs"); stub, _ = _wk_stub(tmp_path); b, log = _fake_bin(tmp_path); home = tmp_path / "home"; path = f"{b}:{os.environ['PATH']}"
+    assert "off" in _ka(proj, home, "status", path=path).stdout
+    r = _ka(proj, home, "install", "--claude", str(stub), "--max-wakes", "3", "--budget", "0.5", path=path); assert r.returncode == 0, r.stderr
+    assert "at most 3 turns/hour, $0.5 per turn" in r.stdout and "never --dangerously-skip-permissions" in r.stdout and "teambus keepalive stop" in r.stdout          # limits shown before anything runs
+    unit = next((home / ".config/systemd/user").glob("teambus-worker-*.service")); body = unit.read_text()
+    assert f"WorkingDirectory={proj}" in body and " worker " in body and "--max-wakes 3" in body and "--budget 0.5" in body and "Restart=on-failure" in body and "WantedBy=default.target" in body
+    assert "--token" not in body and "dangerously" not in body and "tf" not in body.split("ExecStart=")[1].split()                                                         # no token in the unit
+    calls = log.read_text(); assert "systemctl --user daemon-reload" in calls and f"systemctl --user enable --now {unit.name}" in calls
+    assert "systemd user service" in _ka(proj, home, "status", path=path).stdout
+    assert "systemd service removed" in _ka(proj, home, "stop", path=path).stdout and not unit.exists() and f"disable --now {unit.name}" in log.read_text()
+    assert "was not on" in _ka(proj, home, "stop", path=path).stdout
+
+def test_keepalive_needs_a_joined_folder_and_claude_and_falls_back_to_a_detached_process(hub, tmp_path):
+    if sys.platform == "darwin": pytest.skip("launchd path")
+    empty = tmp_path / "nothing"; empty.mkdir(); assert "run teambus-join first" in _ka(empty, tmp_path / "h", "install").stderr
+    proj = _wk_project(tmp_path, "ka2", "tf", "frank", "docs"); home = tmp_path / "home2"; b, log = _fake_bin(tmp_path, "nosystemd", systemctl_ok=False); path = str(b)         # a PATH where no systemd user manager answers
+    assert "claude` command was not found" in _ka(proj, home, "install", path=path).stderr
+    stub, _ = _wk_stub(tmp_path)
+    r = _ka(proj, home, "install", "--claude", str(stub), path=path)
+    try:
+        assert "detached process" in r.stdout and "will not survive a reboot" in r.stdout, r.stdout + r.stderr
+        assert not list((home / ".config/systemd/user").glob("*")) if (home / ".config/systemd/user").exists() else True
+        pid = int((proj / ".claude" / "teambus-worker.pid").read_text()); os.kill(pid, 0)
+        assert "detached process" in _ka(proj, home, "status", path=path).stdout
+        assert "already running" in _ka(proj, home, "install", "--claude", str(stub), path=path).stdout
+    finally:
+        assert "worker process stopped" in _ka(proj, home, "stop", path=path).stdout
+
+def test_teambus_join_asks_once_and_defaults_to_no():
+    src = (Path(HERE) / "teambus-join").read_text()
+    assert "[y/N]" in src and "--keep-alive" in src and "--no-keep-alive" in src and "[ -t 0 ]" in src                                                       # interactive only, default no, explicit flags for scripts
+    assert "keepalive install" in src and "Keep-alive is off" in src
+
+
+def test_a_token_that_starts_with_a_dash_still_joins(hub, tmp_path):
+    """Random URL-safe tokens start with '-' about 1 time in 64; argparse used to reject those with 'expected one argument'."""
+    p = tmp_path / "dash"; p.mkdir(); home = tmp_path / "home"; home.mkdir()
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))}, "HOME": str(home)}
+    r = subprocess.run([sys.executable, CLI, "init", "--hub", URL, "--agent-id", "dash-agent", "--role", "r", "--token", "-leading-dash-token_x", "--dir", str(p)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert json.load(open(p / ".claude" / "settings.local.json"))["env"]["TEAMBUS_TOKEN"] == "-leading-dash-token_x"
+    (tmp_path / "claude").write_text("#!/bin/sh\nexit 0\n"); (tmp_path / "claude").chmod(0o755)                          # teambus-join insists on a claude command
+    r = subprocess.run(["bash", f"{HERE}/teambus-join", "--hub", URL, "--agent-id", "dash-two", "--role", "r", "--token", "-another-dash", "--no-keep-alive"], cwd=tmp_path, env={**env, "PATH": f"{tmp_path}:{os.environ['PATH']}"}, capture_output=True, text=True)
+    assert "expected one argument" not in r.stdout + r.stderr and "teambus init:" in r.stdout and json.load(open(tmp_path / ".claude" / "settings.local.json"))["env"]["TEAMBUS_TOKEN"] == "-another-dash"

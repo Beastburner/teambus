@@ -57,6 +57,11 @@ Local dev without Docker: `pip install 'mcp<2'`, then `TEAMBUS_TOKENS=tokens.jso
 
 Hooks: `SessionStart` (identity, protocol, what's new, unread mail) · `UserPromptSubmit` (only what's new since the last prompt) · `PreToolUse` Edit/Write (**blocks a conflicting edit until the agent has actually messaged the teammate** — the hub checks; 3 blocks max so a broken MCP can't lock editing; hub down = never blocks) · `PostToolUse` (records edits; Bash build passes; **delivers a teammate's new message to an agent that is busy working**, within a tool call) · `PostToolUseFailure` (failed builds, from the real exit code) · `Stop` (**if a teammate wrote while the agent worked, hands it over once before the agent finishes**; never loops). A project's own settings always win over an inherited environment, and each join carries its token in a variable unique to that join, so agents started from another TeamBus project or a shell that exports `TEAMBUS_*` can't authenticate as the wrong agent.
 
+## What is automatic, and what is not
+**Automatic once an agent has joined (hooks, no one has to do anything):** conflict blocking when two sessions touch the same file, the team feed (who is editing what) before each prompt and tool call, contract warnings for API/schema changes, and shared build/test results. This is what keeps agents from colliding.
+
+**Not automatic:** waking an idle session. Nothing can start a Claude session that is waiting at its prompt, so a message to an idle agent stays unread until that session next runs. `teambus-join` asks once whether to keep the agent reachable; answer yes and a background worker (`teambus keepalive`) wakes it when mail arrives, within a spend cap. If you do not want unattended Claude runs, the automatic parts above still work; for delegating work that returns answers inside one session, use that session's own subagents instead.
+
 ## Messages and idle agents
 A message reaches an agent only when its session runs: when its user submits a prompt, when it uses a tool, or when it finishes a turn. A session sitting at an empty prompt runs nothing, and nothing can wake it, so mail to an idle agent stays **unread** until its user gives it a turn. TeamBus tells you this: `ask_teammate_agent` says whether the recipient is working or idle, and the dashboard shows the reason next to every unread message.
 
@@ -77,7 +82,9 @@ An agent can add teammates to its own team, with the `create_agent` MCP tool (an
 - **What you get back:** the new agent's token, plus the exact `teambus-join --hub <this hub's real address> --agent-id … --role … --token …` command (usable from another computer), and an optional `brief` delivered to the new agent as its first message. TeamBus creates the identity; a human (or a script you trust) still starts that agent's own Claude session by running the join command in its project folder, because the hub cannot start sessions.
 - The creator is recorded (`created_by`), the sandbox owner sees new agents in the dialog, and they survive a sleep and wake.
 
-## `teambus worker`: agents that run without a human
+## `teambus keepalive` and `teambus worker`: agents that run without a human
+`teambus-join` asks once (default no) whether to keep the agent reachable. Yes runs `teambus keepalive install`: the worker below as a background service that restarts at login (a systemd user unit on Linux, a launchd agent on macOS, a detached process otherwise; the unit holds no token and states its limits). `teambus keepalive status` shows it, `teambus keepalive stop` removes it; scripts can pass `--keep-alive` or `--no-keep-alive` to `teambus-join`. Only the Linux path is tested here (systemd and the detached fallback, with a stand-in `systemctl`); the macOS launchd path is written but untested.
+
 An idle Claude session runs nothing, so nobody can be "called". `teambus worker` is the heartbeat: run it next to an agent's project folder and it watches the hub for that agent's unread mail. When some is waiting it runs **one headless turn** (`claude -p`, resuming the same session so context carries on) with a fixed prompt that tells the agent to read its inbox, do the work and reply.
 ```bash
 cd ~/project-dana-backend && teambus worker                  # wake this agent when mail arrives

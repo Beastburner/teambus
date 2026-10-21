@@ -8,8 +8,9 @@
   teambus inbox [--peek] | outbox                              unread messages | what you sent, with read receipts
   teambus listen [--tmux PANE | --exec CMD]                    watch for unread mail and wake an idle session (see `teambus listen --help`)
   teambus worker [--spawn]                                     keep THIS agent alive without a human: wake its Claude session (headless) when mail arrives; with --spawn also start agents its orchestrator creates
+  teambus keepalive [install|stop|status]                      run the worker in the background for this folder and restart it at login (asked once by teambus-join)
   teambus git-hook                                             install the post-commit hook only"""
-import argparse, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request, uuid
+import argparse, hashlib, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -311,6 +312,55 @@ def worker(a):
             if down == 1: say(f"hub unreachable ({why(e, 'could not reach the hub')}); retrying")
         time.sleep(min(a.interval * (1 + down), 60))
 
+def keepalive(a):
+    """Run `teambus worker` for this folder as a background service that restarts at login, so waking this agent does not depend on anyone remembering to start it.
+    Linux: a systemd user unit. macOS: a launchd agent. Anywhere else (or without systemd --user): a detached process that lasts until reboot. Nothing is installed unless you ask for `install`;
+    the unit holds no token (the worker reads this folder's own settings) and shows its limits; `stop` removes everything it made."""
+    root = Path(a.dir).resolve(); tag = hashlib.sha256(str(root).encode()).hexdigest()[:8]; name = f"teambus-worker-{tag}"; home = Path(os.environ.get("HOME", "~")).expanduser()
+    unit, plist = home / ".config/systemd/user" / f"{name}.service", home / "Library/LaunchAgents" / f"com.teambus.{name}.plist"; pidf = root / ".claude" / "teambus-worker.pid"
+    def alive():
+        try: os.kill(int(pidf.read_text()), 0); return True
+        except (OSError, ValueError): return False
+    if a.action == "status":
+        kind = "systemd user service" if unit.exists() else "launchd agent" if plist.exists() else "detached process" if alive() else None
+        print(f"keep-alive for {root}: " + (f"on ({kind})" if kind else "off") + (f"\nlog: {root / '.claude/teambus-worker.log'}" if kind else "")); return
+    if a.action == "stop":
+        done = []
+        if unit.exists():
+            subprocess.run(["systemctl", "--user", "disable", "--now", f"{name}.service"], capture_output=True); unit.unlink(); subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True); done.append("systemd service removed")
+        if plist.exists(): subprocess.run(["launchctl", "unload", str(plist)], capture_output=True); plist.unlink(); done.append("launchd agent removed")
+        if alive():
+            try: os.kill(int(pidf.read_text()), 15); done.append("worker process stopped")
+            except OSError: pass
+        print("; ".join(done) or "keep-alive was not on"); return
+    c = cfg(root)
+    if not (c["url"] and c["token"]): sys.exit("no hub configured here: run teambus-join first")
+    claude = a.claude or shutil.which("claude")
+    if not claude: sys.exit("the `claude` command was not found; pass --claude PATH")
+    me = str(Path(__file__).resolve()); cmd = [sys.executable, me, "worker", "--dir", str(root), "--claude", claude, "--max-wakes", str(a.max_wakes), "--budget", str(a.budget), "--timeout", str(a.timeout)]
+    for t in (a.allow or DEFAULT_ALLOW): cmd += ["--allow", t]
+    if a.spawn: cmd.append("--spawn")
+    print(f"Keep-alive for {c['agent'] or 'this agent'} in {root}:\n  wakes its Claude session (headless, resuming the same conversation) when teammates' mail is waiting\n"
+          f"  limits: at most {a.max_wakes} turns/hour, ${a.budget} per turn, {a.timeout}s per turn; tools: {', '.join(a.allow or DEFAULT_ALLOW)}; never --dangerously-skip-permissions"
+          + ("\n  also starts agents your orchestrator creates (up to 5)" if a.spawn else "") + f"\n  stop any time: teambus keepalive stop   (log: {root / '.claude/teambus-worker.log'})")
+    path = os.environ.get("PATH", "/usr/bin:/bin")
+    if sys.platform == "darwin":
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        args = "".join(f"<string>{x}</string>" for x in cmd)
+        plist.write_text(f'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.teambus.{name}</string><key>ProgramArguments</key><array>{args}</array>'
+                         f'<key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>WorkingDirectory</key><string>{root}</string></dict></plist>')
+        r = subprocess.run(["launchctl", "load", str(plist)], capture_output=True, text=True); print("started as a launchd agent" if r.returncode == 0 else "launchctl failed: " + r.stderr.strip()[:150]); return
+    if shutil.which("systemctl") and subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True).returncode == 0:
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(f"[Unit]\nDescription=TeamBus worker for {c['agent'] or 'agent'} in {root}\n\n[Service]\nWorkingDirectory={root}\nEnvironment=\"PATH={path}\"\nExecStart={' '.join(shlex.quote(x) for x in cmd)}\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n")
+        r = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True); r = subprocess.run(["systemctl", "--user", "enable", "--now", f"{name}.service"], capture_output=True, text=True)
+        print("started as a systemd user service (restarts at login)" if r.returncode == 0 else "systemctl failed: " + r.stderr.strip()[:150]); return
+    if alive(): print("already running"); return
+    (root / ".claude").mkdir(exist_ok=True)
+    with open(root / ".claude" / "teambus-worker.log", "a") as lf: p = subprocess.Popen(cmd, cwd=root, start_new_session=True, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
+    pidf.write_text(str(p.pid))                                       # written here too, so `status` and `stop` work at once (the worker rewrites the same pid when it starts)
+    print(f"no systemd or launchd here: started a detached process (pid {p.pid}); it will not survive a reboot")
+
 def tmux_wake(pane, line):
     """Type `line` into a tmux pane, but only when that pane is running Claude Code: typing into a shell prompt would run it."""
     r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}"], capture_output=True, text=True)
@@ -320,13 +370,16 @@ def tmux_wake(pane, line):
 
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("keepalive", keepalive), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
         if n == "resolve": p.add_argument("--committed", action="store_true")
         if n == "send": p.add_argument("to"); p.add_argument("text", nargs="+"); p.add_argument("--reply-to", type=int)
         if n == "inbox": p.add_argument("--peek", action="store_true")
         if n == "outbox": p.add_argument("--limit", type=int, default=15)
+        if n == "keepalive":
+            p.add_argument("action", nargs="?", choices=["install", "stop", "status"], default="status"); p.add_argument("--max-wakes", type=int, default=6); p.add_argument("--budget", type=float, default=1.0); p.add_argument("--timeout", type=int, default=900)
+            p.add_argument("--allow", action="append", metavar="TOOL"); p.add_argument("--claude"); p.add_argument("--spawn", action="store_true")
         if n == "worker":
             p.add_argument("--interval", type=float, default=5); p.add_argument("--retry", type=float, default=300, help="seconds before waking again for mail the agent left unread (default 300)")
             p.add_argument("--max-wakes", type=int, default=6, help="turns per hour (default 6)"); p.add_argument("--budget", type=float, default=1.0, help="most dollars one turn may spend (default 1.0)")
@@ -339,6 +392,11 @@ def main():
             p.add_argument("--max-nudges", type=int, default=3); p.add_argument("--once", action="store_true", help="exit after the first nudge")
             p.add_argument("--tmux", metavar="PANE", help="wake the idle session by typing one fixed line into this tmux pane (target like 0:1.0), only if it is running claude")
             p.add_argument("--exec", metavar="CMD", help="run this shell command to wake the session (gets TEAMBUS_COUNT, TEAMBUS_FROM, TEAMBUS_AGENT)")
-    a = ap.parse_args(); a.f(a)
+    # Tokens are random URL-safe strings, so about 1 in 64 starts with "-", which argparse would take for an option ("expected one argument"). Bind each value flag to its value first.
+    argv, out, i = sys.argv[1:], [], 0
+    while i < len(argv):
+        if argv[i] in ("--hub", "--agent-id", "--role", "--token") and i + 1 < len(argv): out.append(f"{argv[i]}={argv[i + 1]}"); i += 2
+        else: out.append(argv[i]); i += 1
+    a = ap.parse_args(out); a.f(a)
 
 if __name__ == "__main__": main()
