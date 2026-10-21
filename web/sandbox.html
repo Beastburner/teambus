@@ -190,6 +190,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
   <label class="fl" for="lbl">Name <span class="hint">optional</span></label>
   <input class="in" id="lbl" maxlength="40" placeholder="for example: checkout rewrite" autocomplete="off">
   <span class="fl">Agents <span class="hint">2 to __MAX_AGENTS__. Names: lowercase letters, numbers, dashes. Roles: letters, numbers, dashes.</span></span>
+  <datalist id="roles"><option value="orchestrator"><option value="frontend"><option value="backend"><option value="fullstack"><option value="mobile"><option value="devops"><option value="qa"><option value="reviewer"><option value="design"><option value="data"><option value="security"></datalist>
   <div id="agrows"></div>
   <button class="ghost" id="addrow" type="button">Add agent</button>
   <p class="err" id="nerr" role="alert"></p>
@@ -238,7 +239,7 @@ setInterval(pollSelected,4000);
 
 /* builder */
 function addRow(name="",role=""){const rows=$("agrows");if(rows.children.length>=MAXA)return;const r=mk("div","agrow"),n=mk("input","in"),o=mk("input","in"),x=mk("button","ghost sq","x");
- n.placeholder="agent-name";n.value=name;n.maxLength=31;n.autocomplete="off";n.setAttribute("aria-label","Agent name");o.placeholder="role";o.value=role;o.maxLength=24;o.autocomplete="off";o.setAttribute("aria-label","Role");
+ n.placeholder="agent-name";n.value=name;n.maxLength=31;n.autocomplete="off";n.setAttribute("aria-label","Agent name");o.placeholder="role";o.value=role;o.maxLength=24;o.autocomplete="off";o.setAttribute("aria-label","Role");o.setAttribute("list","roles");
  x.type="button";x.setAttribute("aria-label","Remove this agent");x.onclick=()=>{if(rows.children.length>2){r.remove();syncRows()}};r.append(n,o,x);rows.append(r);syncRows()}
 function syncRows(){const rows=$("agrows"),n=rows.children.length;$("addrow").disabled=n>=MAXA;[...rows.querySelectorAll(".sq")].forEach((b)=>{b.disabled=n<=2})}
 function resetBuilder(){$("lbl").value="";$("agrows").replaceChildren();DEFAULTS.forEach(([n,r])=>addRow(n,r));$("nerr").textContent=""}
@@ -273,7 +274,7 @@ function renderList(){
  const parts=[meta,mk("p","exp","Expires in "+minsLeft(b)+" minutes. Run one command in each project folder:"),list,inst];
  if(NOTICE)parts.splice(2,0,mk("p","notice",NOTICE));
  if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
-  n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ad.type="button";
+  n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ro.setAttribute("list","roles");ad.type="button";
   const er=mk("p","err");er.setAttribute("role","alert");ad.onclick=async()=>{er.textContent="";ad.disabled=true;
    try{const rs=await fetch("manage/"+b.id+"/agents",{method:"POST",headers:{...auth(b),"Content-Type":"application/json"},body:JSON.stringify({agent_id:n.value.trim(),role:ro.value.trim()})});let d={};try{d=await rs.json()}catch(e){}
     if(!rs.ok){er.textContent=d.error||"Something went wrong.";return}b.agents.push(d);save();renderList()}catch(e){er.textContent="Could not reach the sandbox service."}finally{ad.disabled=false}};

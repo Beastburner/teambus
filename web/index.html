@@ -57,7 +57,7 @@ async function load() {
     fill("questions", d.questions.filter((q) => !q.answered), (li, q) => { li.append(span("", q.from_agent + " → " + q.to_agent), span("m", "  " + ago(q.ts, n)), pre(q.body)); });
     fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
     fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });
-    fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok) li.append(pre(b.log_tail || "")); });
+    fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", "  fixed after " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + " min")); if (!b.ok) li.append(pre(b.log_tail || "")); });
     fill("feed", d.feed, (li, f) => { li.append(span("m", f.type + " "), span("", f.agent_id + " "), span("m", f.text), f.status ? span("tag", f.status) : "", span("m", "  " + ago(f.ts, n))); });
     $("upd").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }

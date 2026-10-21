@@ -51,8 +51,9 @@ Local dev without Docker: `pip install 'mcp<2'`, then `TEAMBUS_TOKENS=tokens.jso
 | `post_intent`, `resolve_intent` | "I'm editing these files" (auto-posted by hooks; resolved on `git commit`, by the agent, or after `TEAMBUS_INTENT_TTL`) |
 | `publish_contract(name, spec, files, source_files)`, `resolve_contract` | announce an API/schema change; consumers get blocked + warned until each consumer file is **committed** (git hook) or the publisher resolves it |
 | `check_conflicts` | same file · contract consumer · same directory + same function names · imports a file a teammate is changing |
+| `outbox`, `wait_for_messages(timeout_seconds)` | read receipts for what you sent (read? when? answered? replies); wait up to 55 s for an answer instead of polling |
 | `ask_teammate_agent(to_agent, question, reply_to?)`, `check_inbox`, `thread` | async Q&A with threads; replies mark the question answered; warns if the recipient is offline >24 h |
-| `team_feed`, `report_build`, `whoami` | presence + activity, build results, identity |
+| `team_feed`, `report_build`, `whoami` | presence + activity, build results (first line of the command only, credentials removed; a passing run is linked to the failure it fixed), identity |
 
 Hooks: `SessionStart` (identity, protocol, what's new, unread mail) · `UserPromptSubmit` (only what's new since the last prompt) · `PreToolUse` Edit/Write (**blocks a conflicting edit until the agent has actually messaged the teammate** — the hub checks; 3 blocks max so a broken MCP can't lock editing; hub down = never blocks) · `PostToolUse` (records edits; Bash build passes; **delivers a teammate's new message to an agent that is busy working**, within a tool call) · `PostToolUseFailure` (failed builds, from the real exit code) · `Stop` (**if a teammate wrote while the agent worked, hands it over once before the agent finishes**; never loops). A project's own settings always win over an inherited environment, and each join carries its token in a variable unique to that join, so agents started from another TeamBus project or a shell that exports `TEAMBUS_*` can't authenticate as the wrong agent.
 
@@ -78,3 +79,6 @@ The real-session evidence (actual `claude -p` runs, with the bugs they exposed) 
 
 ## Licence
 MIT, see `LICENSE`. Vendored libraries and fonts in `web/assets/` keep their own licences (`web/assets/THIRD-PARTY.txt`); review GSAP's before redistributing commercially.
+
+## When the MCP tools do not load
+Hooks work without them, and so does the shell: `teambus send <agent> "text" [--reply-to N]`, `teambus inbox`, `teambus outbox` use the same hub. Run `/mcp` in Claude Code to reconnect (a sleeping free-tier hub, or a token the server rejected, are the usual causes; `teambus doctor` says which). Anything that looks like a credential is removed from messages, build commands and logs before it is stored, and the sender is told.

@@ -4,6 +4,8 @@
   teambus doctor                                               pass/fail checklist
   teambus status                                               team feed, presence and your inbox in the terminal
   teambus resolve [--committed]                                mark your open intents done (used by the git post-commit hook)
+  teambus send TO TEXT... [--reply-to N]                       message a teammate's agent from the shell (works when the MCP tools did not load)
+  teambus inbox [--peek] | outbox                              unread messages | what you sent, with read receipts
   teambus git-hook                                             install the post-commit hook only"""
 import argparse, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
@@ -35,8 +37,12 @@ def token_var(hub, agent_id):
     import hashlib; return "TEAMBUS_TOKEN_" + hashlib.sha256(f"{hub.rstrip('/')}|{agent_id}".encode()).hexdigest()[:8].upper()
 
 def hook_cmd(mode):
-    """Guarded: if TeamBus is uninstalled or moved, the hook does nothing (a missing script would otherwise exit 2, which Claude Code treats as a blocking error)."""
-    h = shlex.quote(str(HOOK)); return f"[ -f {h} ] && python3 {h} {mode} || true"
+    """Guarded: if TeamBus is uninstalled or moved, the hook must not block (a missing script would otherwise exit 2, which Claude Code treats as a blocking error). But it must not be
+    SILENT either: at session start a missing script says so, because people would otherwise believe they are coordinated when they are not."""
+    h = shlex.quote(str(HOOK))
+    if mode != "start": return f"[ -f {h} ] && python3 {h} {mode} || true"
+    msg = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": f"TeamBus is OFF in this session: its hook script is missing or failed ({HOOK}). Teammates cannot see your work or reach you. Install TeamBus on this machine (curl -fsSL https://raw.githubusercontent.com/Beastburner/teambus/main/install.sh | sh) and run teambus-join again; until then do not assume you are coordinated."}})
+    return f"[ -f {h} ] && python3 {h} start || echo {shlex.quote(msg)}"
 def has_hook(entries): return any("hooks/hook.py" in h.get("command", "") for e in entries for h in e.get("hooks", []))
 
 def init(a):
@@ -61,6 +67,9 @@ def init(a):
                     else ".mcp.json updated: the MCP token now travels in a variable only this join uses")
     md = root / "CLAUDE.md"
     if "## TeamBus" not in (md.read_text() if md.exists() else ""): md.open("a").write(("\n" if md.exists() else "") + SNIPPET.read_text()); done.append("CLAUDE.md snippet")
+    gi = root / ".claude" / ".gitignore"                                                   # the token lives in settings.local.json: keep it (and the per-machine state) out of git even if this folder is not a repo yet
+    want = ["settings.local.json", "settings.local.json.bak", "teambus-state.json"]; have = gi.read_text().splitlines() if gi.exists() else []
+    if any(w not in have for w in want): gi.write_text("\n".join(have + [w for w in want if w not in have]) + "\n"); done.append(".claude/.gitignore keeps the token file and local state out of git")
     if (root / ".git").exists(): done.append(git_hook(root)); done.append(git_exclude(root))
     print("teambus init:\n  " + "\n  ".join(done or ["nothing to do (already set up)"]) + "\nNext: `teambus doctor`")
 
@@ -151,12 +160,37 @@ def doctor(a):
     for st, name, fix in res: print(f"[{st}] {name}" + (f"  -> {fix}" if fix else ""))
     bad = sum(r[0] == "FAIL" for r in res); print(f"\n{len(res) - bad - sum(r[0] == 'WARN' for r in res)} passed, {sum(r[0] == 'WARN' for r in res)} warnings, {bad} failed"); sys.exit(1 if bad else 0)
 
+def _project_call(a, name, body):
+    c = cfg(Path(a.dir).resolve())
+    if not (c["url"] and c["token"]): sys.exit("no hub configured here: run teambus-join first")
+    try: return call(c, name, body)
+    except Exception as e: sys.exit(f"cannot use hub {c['url']}: {why(e, 'could not reach the hub')}")
+
+def send(a):
+    """Message a teammate's agent without the MCP tools (they may not have loaded): same hub call, from the shell."""
+    r = _project_call(a, "api/ask", {"to_agent": a.to, "question": " ".join(a.text), **({"reply_to": a.reply_to} if a.reply_to else {})})
+    if r.get("error"): sys.exit("not sent: " + r["error"])
+    print(f"sent #{r['id']} to {r['to']} ({r.get('recipient', '')})" + (f"\nwarning: {r['warning']}" if r.get("warning") else ""))
+
+def inbox(a):
+    msgs = _project_call(a, "api/inbox", {"peek": a.peek})
+    for m in msgs: print(f"#{m['id']} from {m['from_agent']}" + (f" (reply to #{m['reply_to']})" if m.get("reply_to") else "") + f": {m['body']}")
+    if not msgs: print("no unread messages")
+
+def outbox(a):
+    for m in _project_call(a, "api/outbox", {"limit": a.limit})["sent"]:
+        st = "answered" if m["answered"] else f"read {m['read_s_ago']}s ago" if m["read"] else "NOT READ yet"
+        print(f"#{m['id']} to {m['to']} ({m['sent_s_ago']}s ago, {st}): {m['body']}")
+
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
         if n == "resolve": p.add_argument("--committed", action="store_true")
+        if n == "send": p.add_argument("to"); p.add_argument("text", nargs="+"); p.add_argument("--reply-to", type=int)
+        if n == "inbox": p.add_argument("--peek", action="store_true")
+        if n == "outbox": p.add_argument("--limit", type=int, default=15)
     a = ap.parse_args(); a.f(a)
 
 if __name__ == "__main__": main()
