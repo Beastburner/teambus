@@ -90,6 +90,14 @@ def me(ctx, claimed=""):
 def known():
     return {v["agent_id"]: v.get("role", "") for v in tokens().values() if v.get("agent_id")} | {r["agent_id"]: r["role"] for r in rows("SELECT agent_id, role FROM agents")}
 
+def delivery_note(p):
+    """What the sender should expect: an agent only sees mail when its session runs (a prompt, a tool call or the end of a turn). An idle one waits for its user."""
+    if not p or p.get("last_seen_ago") is None: return "never connected" + ("" if p.get("hook_ago") is not None else "; their hooks have never reported, so they only see this when they call check_inbox")
+    mins = lambda t: f"{int(t)} s" if t < 90 else f"{int(t / 60)} min"; state = p["state"]
+    note = (f"{state}, seen {mins(p['last_seen_ago'])} ago: " + ("they get it on their next tool call or prompt" if state == "working" else
+            "it stays unread until their session next runs (their user types something, or the agent polls with wait_for_messages); nothing can wake an idle session"))
+    return note + ("" if p.get("hook_ago") is not None else "; their hooks have never reported, so they only see this when they call check_inbox")
+
 def presence():
     """Per agent: when it was last seen, from which side (hooks, MCP tools), what it was last doing, and a plain state."""
     rs = {r["agent_id"]: r for r in rows("SELECT * FROM agents")}; now = time.time(); out = []
@@ -197,9 +205,8 @@ def ask_teammate_agent(to_agent: str = "", question: str = "", reply_to: int | N
     body, removed = scrub(question)
     mid = run("INSERT INTO messages(ts,from_agent,to_agent,body,reply_to) VALUES(?,?,?,?,?)", time.time(), a, to, body, reply_to)
     if parent and parent["to_agent"] == a: run("UPDATE messages SET answered=1 WHERE id=?", reply_to)
-    p = next((x for x in presence() if x["agent_id"] == to), {}); seen = None if p.get("last_seen_ago") is None else time.time() - p["last_seen_ago"]; out = {"id": mid, "to": to}
-    out["recipient"] = ("never connected" if seen is None else f"{p['state']}, seen {int(p['last_seen_ago'])}s ago" if p["last_seen_ago"] < ACTIVE else f"{p['state']}, last seen {int(p['last_seen_ago'] / 60)} min ago") \
-                       + ("" if p.get("hook_ago") is not None else "; their hooks have never reported, so they only see this when they call check_inbox")
+    p = next((x for x in presence() if x["agent_id"] == to), {}); seen = None if p.get("last_seen_ago") is None else time.time() - p["last_seen_ago"]
+    out = {"id": mid, "to": to, "recipient": delivery_note(p)}
     warn = []
     if seen is None or time.time() - seen > OFFLINE: warn.append(f"{to} has " + ("never connected" if seen is None else f"been offline {int((time.time() - seen) / 3600)}h") + "; the answer may take a while. Continue other work and check_inbox later.")
     if removed: warn.append(f"removed {removed} value(s) that looked like credentials from your message; share secrets out of band, never through TeamBus.")
@@ -263,10 +270,13 @@ def digest(since: float = 0.0, agent_id: str = "", ctx: Context | None = None):
 
 def status(ctx=None):
     """Everything the web view shows (read-only)."""
-    now = time.time(); q = rows("SELECT * FROM messages WHERE reply_to IS NULL ORDER BY id DESC LIMIT 30")
-    return {"now": now, "agents": presence(), "intents": rows("SELECT * FROM intents WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", now - INTENT_TTL),
+    now = time.time(); q = rows("SELECT * FROM messages WHERE reply_to IS NULL ORDER BY id DESC LIMIT 30"); pres = presence(); by = {p["agent_id"]: p for p in pres}
+    d = {"now": now, "agents": pres, "intents": rows("SELECT * FROM intents WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", now - INTENT_TTL),
             "contracts": rows("SELECT * FROM contracts WHERE ts>? AND status='open' ORDER BY ts DESC LIMIT 20", now - CONTRACT_TTL), "builds": rows("SELECT * FROM builds ORDER BY ts DESC LIMIT 20"),
-            "questions": [{**m, "answered": bool(m["answered"])} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
+            "questions": [{**m, "answered": bool(m["answered"]), **({} if m["read"] else {"waiting": delivery_note(by.get(m["to_agent"], {}))})} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
+    for f in d["feed"]:
+        if f["type"] == "message" and f["status"] == "unread": f["note"] = delivery_note(by.get(f["text"][3:f["text"].index(":")], {}))
+    return d
 
 # ---- MCP tools (docstrings are what agents read) ----
 def check_inbox_tool(peek: bool = False, agent_id: str = "", ctx: Context | None = None):

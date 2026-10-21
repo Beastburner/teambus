@@ -57,6 +57,11 @@ Local dev without Docker: `pip install 'mcp<2'`, then `TEAMBUS_TOKENS=tokens.jso
 
 Hooks: `SessionStart` (identity, protocol, what's new, unread mail) · `UserPromptSubmit` (only what's new since the last prompt) · `PreToolUse` Edit/Write (**blocks a conflicting edit until the agent has actually messaged the teammate** — the hub checks; 3 blocks max so a broken MCP can't lock editing; hub down = never blocks) · `PostToolUse` (records edits; Bash build passes; **delivers a teammate's new message to an agent that is busy working**, within a tool call) · `PostToolUseFailure` (failed builds, from the real exit code) · `Stop` (**if a teammate wrote while the agent worked, hands it over once before the agent finishes**; never loops). A project's own settings always win over an inherited environment, and each join carries its token in a variable unique to that join, so agents started from another TeamBus project or a shell that exports `TEAMBUS_*` can't authenticate as the wrong agent.
 
+## Messages and idle agents
+A message reaches an agent only when its session runs: when its user submits a prompt, when it uses a tool, or when it finishes a turn. A session sitting at an empty prompt runs nothing, and nothing can wake it, so mail to an idle agent stays **unread** until its user gives it a turn. TeamBus tells you this: `ask_teammate_agent` says whether the recipient is working or idle, and the dashboard shows the reason next to every unread message.
+
+To keep an agent available for teammates, tell it to loop on `wait_for_messages` ("stay available: call wait_for_messages, answer each message with `ask_teammate_agent(reply_to=<id>, …)`, repeat until I say stop"), or run `/loop 1m check the teambus inbox and reply` in that session. Read receipts (`outbox`, `teambus outbox`) show when a message was read and answered.
+
 ## Layout
 `server.py` hub · `web/index.html` web view · `hooks/hook.py` Claude Code hook · `teambus` CLI · `.claude-plugin/`, `hooks/hooks.json`, `.mcp.json` plugin · `teambus-hub` / `teambus-join` easy setup · `sandbox.py` public sandbox · `render.yaml` · `Dockerfile`, `docker-compose.yml`, `docker-compose.sandbox.yml`, `Caddyfile*` · `docs/` (deploy guide, real-session proof, transcripts) · `ARCHITECTURE.md`
 

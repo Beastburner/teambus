@@ -113,6 +113,18 @@ def test_presence_by_source(hub):
     hook("stop", "tf", {"cwd": str(hub)}, hub); p = pr("frank"); assert p["event"] == "stop" and p["state"] == "idle"
     
 
+def test_idle_recipient_is_told_mail_waits_for_their_session(hub):
+    hook("stop", "tf", {"cwd": str(hub)}, hub)                                              # frank finished a turn: idle at the prompt
+    r = api("ta", "ask", to_agent="frank", question="status please?")
+    assert "idle" in r["recipient"] and "stays unread until their session next runs" in r["recipient"]
+    d = api("viewer", "status", method="GET")
+    assert "stays unread" in next(q for q in d["questions"] if q["id"] == r["id"])["waiting"]
+    assert "stays unread" in next(f for f in d["feed"] if f["type"] == "message" and f["status"] == "unread" and "status please?" in f["text"])["note"]
+    api("tf", "inbox"); d = api("viewer", "status", method="GET")                           # read it: the explanation goes away
+    assert "waiting" not in next(q for q in d["questions"] if q["id"] == r["id"])
+    hook("prompt", "tf", {"prompt": "go on", "cwd": str(hub)}, hub)                          # their user gave them a turn: working again
+    assert "next tool call" in api("ta", "ask", to_agent="frank", question="and now?")["recipient"]   # working: it will see it soon
+
 # ---- digest cursor ----
 def test_digest_cursor(hub):
     d1 = api("td", "digest", since=0); api("tb", "post_intent", files=["cur.py"], summary="new thing")
