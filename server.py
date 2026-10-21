@@ -1,7 +1,7 @@
 """TeamBus hub: MCP tools + REST mirror (for hooks/CLI) + read-only web view over one SQLite DB.
 Auth: every request needs a bearer token. TEAMBUS_TOKENS (json file) maps token -> agent (identity is derived from it, never from arguments).
 TEAMBUS_TOKEN is a shared read-only token (web view / status). TEAMBUS_NOAUTH=1 disables auth (local dev only)."""
-import json, os, sqlite3, sys, time
+import hashlib, json, os, sqlite3, sys, time
 from urllib.parse import parse_qs
 import uvicorn
 from mcp.server.fastmcp import FastMCP, Context
@@ -9,6 +9,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 
 E = os.environ.get
 DB, TOKENS, VIEWER, NOAUTH = E("TEAMBUS_DB", "teambus.db"), E("TEAMBUS_TOKENS", "tokens.json"), E("TEAMBUS_TOKEN"), E("TEAMBUS_NOAUTH") == "1"
+VIEWER_SHA256 = {h.strip().lower() for h in E("TEAMBUS_TOKEN_SHA256", "").split(",") if h.strip()}   # read-only tokens known only by their SHA-256 (a resumed sandbox)
 INTENT_TTL, CONTRACT_TTL = float(E("TEAMBUS_INTENT_TTL", 4 * 3600)), float(E("TEAMBUS_CONTRACT_TTL", 3 * 86400))
 ACTIVE, OFFLINE = float(E("TEAMBUS_ACTIVE_SECS", 900)), float(E("TEAMBUS_OFFLINE_SECS", 86400))
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
@@ -46,9 +47,14 @@ def tokens():
     except OSError: _tok[1] = {}
     return _tok[1]
 
+def sha256(t): return hashlib.sha256(t.encode()).hexdigest()
+
 def ident(tok):
-    if tok and tok in tokens(): return tokens()[tok]
-    if tok and VIEWER and tok == VIEWER: return {"viewer": True}
+    """token -> identity. tokens.json is keyed by the raw token, or by "sha256:<hex digest>" when the token itself is not stored (a stolen file is then useless)."""
+    if tok:
+        t = tokens(); v = t.get(tok) or t.get("sha256:" + sha256(tok))
+        if v: return v
+        if VIEWER and tok == VIEWER or VIEWER_SHA256 and sha256(tok) in VIEWER_SHA256: return {"viewer": True}
     return {"agent_id": None} if NOAUTH else None
 
 def me(ctx, claimed=""):

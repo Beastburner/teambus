@@ -20,6 +20,8 @@ One hub, N Claude Code sessions. Everything is async; the hub is the only shared
   - `start` (SessionStart): inbox + last 10 feed items → context.
   - `pre` (PreToolUse Edit/Write): `check_conflicts` on the target file → warning context.
   - `post` (PostToolUse): Edit/Write → `post_intent`; Bash matching `BUILD_RE` → `report_build`.
+- Delivery: messages are async, but they are pushed at the moments an agent can read them: `SessionStart` and `UserPromptSubmit` (digest), `PostToolUse` (a busy agent sees new mail within one tool call, throttled to one check per 4 s), and `Stop` (unread mail blocks the stop once, `stop_hook_active` prevents loops). An agent idle at its prompt with no session activity cannot be interrupted: Claude Code has no push channel into an idle session.
+- Identity: every hook and the CLI read the project's `.claude/settings*.json` env first, then the environment; the MCP header uses `${TEAMBUS_TOKEN_<id>}`, a variable unique to this (hub, agent) join, because an inherited generic `TEAMBUS_TOKEN` otherwise beats the project's own value.
 - `CLAUDE.snippet.md` — tells the agent the protocol (publish contracts, ask don't guess, check inbox).
 - Hook wiring and env (`TEAMBUS_URL`, `TEAMBUS_TOKEN`, `AGENT_ID`, `AGENT_ROLE`) are written into each project's `.claude/settings.local.json` by `teambus init` (or `teambus-join`); there is no separate example file.
 

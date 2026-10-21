@@ -143,7 +143,7 @@ def test_cli_init_merges_and_is_idempotent(hub, tmp_path):
     s = json.loads((tmp_path / ".claude/settings.local.json").read_text())
     assert s["permissions"] == {"allow": ["Bash(ls:*)"]} and s["env"]["MY"] == "1" and s["env"]["TEAMBUS_TOKEN"] == "ta"
     assert [h["command"] for e in s["hooks"]["PreToolUse"] for h in e["hooks"]][0] == "echo mine" and len(s["hooks"]["PreToolUse"]) == 2
-    assert set(s["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure"}
+    assert set(s["hooks"]) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
     assert (tmp_path / "CLAUDE.md").read_text().startswith("# mine\n") and "## TeamBus" in (tmp_path / "CLAUDE.md").read_text()
     cli(tmp_path, "init", "--hub", URL, "--agent-id", "alice", "--role", "frontend", "--token", "ta")                # second run changes nothing
     s2 = json.loads((tmp_path / ".claude/settings.local.json").read_text()); assert {k: len(v) for k, v in s2["hooks"].items()} == {k: len(v) for k, v in s["hooks"].items()}
@@ -245,7 +245,7 @@ def test_init_writes_guarded_hooks_and_is_still_idempotent(tmp_path):
     for _ in range(2): subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", URL, "--agent-id", "alice", "--role", "frontend", "--token", "ta", "--dir", str(proj)], env=env, capture_output=True, text=True, check=True)
     s = json.loads((proj / ".claude" / "settings.local.json").read_text())
     cmds = [h["command"] for ev in s["hooks"].values() for e in ev for h in e["hooks"]]
-    assert len(cmds) == 5 and all(c.startswith("[ -f ") and c.endswith("|| true") and "hooks/hook.py" in c for c in cmds)
+    assert len(cmds) == 6 and all(c.startswith("[ -f ") and c.endswith("|| true") and "hooks/hook.py" in c for c in cmds)
 
 
 def test_install_script_installs_links_and_updates(tmp_path):
@@ -273,7 +273,8 @@ def test_rejoining_another_hub_updates_mcp_json_even_without_the_claude_cli(tmp_
     mcp = lambda: json.loads((proj / ".mcp.json").read_text())["mcpServers"]
     assert "added to .mcp.json" in init("https://h.example/s/AAAA", "ta") and mcp()["teambus"]["url"] == "https://h.example/s/AAAA/mcp"
     out = init("https://h.example/s/BBBB", "tb"); assert ".mcp.json updated" in out and "AAAA" in out and mcp()["teambus"]["url"] == "https://h.example/s/BBBB/mcp"     # the old sandbox is not kept
-    assert mcp()["other"]["url"] == "https://o.example/mcp" and mcp()["teambus"]["headers"] == {"Authorization": "Bearer ${TEAMBUS_TOKEN}"}                  # others untouched, token stays a placeholder
+    import re as _re; var = _re.search(r"\$\{(\w+)\}", mcp()["teambus"]["headers"]["Authorization"]).group(1); assert var.startswith("TEAMBUS_TOKEN_") and var != "TEAMBUS_TOKEN"
+    assert mcp()["other"]["url"] == "https://o.example/mcp" and json.loads((proj / ".claude" / "settings.local.json").read_text())["env"][var] == "tb"                  # others untouched, token stays a placeholder
     before = (proj / ".mcp.json").read_text(); init("https://h.example/s/BBBB", "tb"); assert (proj / ".mcp.json").read_text() == before                      # idempotent
     assert json.loads((proj / ".claude" / "settings.local.json").read_text())["env"]["TEAMBUS_URL"] == "https://h.example/s/BBBB"
 
@@ -285,3 +286,97 @@ def test_doctor_flags_an_mcp_json_that_points_at_a_different_hub(tmp_path):
     p = proj / ".mcp.json"; d = json.loads(p.read_text()); d["mcpServers"]["teambus"]["url"] = "https://dead.example/s/OLD/mcp"; p.write_text(json.dumps(d))
     bad = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout
     assert "[FAIL] .mcp.json points at the same hub" in bad and "dead.example" in bad and "run teambus-join" in bad
+
+
+def test_hub_accepts_tokens_stored_only_as_sha256(tmp_path):
+    import hashlib
+    sha = lambda t: hashlib.sha256(t.encode()).hexdigest()
+    (tmp_path / "tokens.json").write_text(json.dumps({"sha256:" + sha("agent-secret"): {"agent_id": "zed", "role": "ops"}, "plain-tok": {"agent_id": "amy", "role": "web"}}))
+    port = 8798; u = f"http://127.0.0.1:{port}"
+    env = {**os.environ, "TEAMBUS_DB": str(tmp_path / "h.db"), "TEAMBUS_TOKENS": str(tmp_path / "tokens.json"), "TEAMBUS_TOKEN": "internal-viewer", "TEAMBUS_TOKEN_SHA256": sha("user-viewer") + "," + sha("other"), "PORT": str(port), "HOST": "127.0.0.1"}
+    for k in ("TEAMBUS_NOAUTH",): env.pop(k, None)
+    p = subprocess.Popen([sys.executable, f"{HERE}/server.py"], env=env, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(60):
+            try: urllib.request.urlopen(u + "/healthz"); break
+            except Exception: time.sleep(.2)
+        def post(tok, ep="whoami"):
+            r = urllib.request.Request(f"{u}/api/{ep}", b"{}", {"Content-Type": "application/json", **({"Authorization": "Bearer " + tok} if tok else {})})
+            try:
+                with urllib.request.urlopen(r) as x: return x.status, json.loads(x.read())
+            except urllib.error.HTTPError as e: return e.code, None
+        assert post("agent-secret") == (200, {"agent_id": "zed", "role": "ops"})          # authenticates by hash, the file never held the token
+        assert post("plain-tok")[1]["agent_id"] == "amy"                                  # raw entries still work
+        assert post("wrong")[0] == 401 and post(sha("agent-secret"))[0] == 401 and post(None)[0] == 401      # the hash itself is not a credential
+        def status(tok):
+            r = urllib.request.Request(u + "/api/status", headers={"Authorization": "Bearer " + tok})
+            try:
+                with urllib.request.urlopen(r) as x: return x.status
+            except urllib.error.HTTPError as e: return e.code
+        assert status("user-viewer") == 200 and status("internal-viewer") == 200 and status("nope") == 401   # read-only viewer by hash and by value
+        assert post("user-viewer", "post_intent")[0] == 403                               # and still read-only
+    finally: p.terminate(); p.wait(10)
+
+
+# ---- messages between agents: identity can't be hijacked by the environment, and mail reaches a busy agent ----
+def _proj(tmp_path, agent="alice", tok="ta", name="p"):
+    proj = tmp_path / name; proj.mkdir(); clean = {k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))} | {"HOME": str(tmp_path)}
+    subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", URL, "--agent-id", agent, "--role", "frontend", "--token", tok, "--dir", str(proj)], env=clean, capture_output=True, text=True, check=True)
+    return proj, clean
+
+
+def _hook(mode, proj, env, payload=None):
+    r = subprocess.run([sys.executable, HOOK, mode], input=json.dumps(payload or {}), capture_output=True, text=True, timeout=20, env={**env, "CLAUDE_PROJECT_DIR": str(proj)}); assert r.returncode == 0
+    return r.stdout.strip()
+
+
+def test_each_join_gets_its_own_token_variable_and_rejoining_replaces_it(hub, tmp_path):
+    a, _ = _proj(tmp_path, "alice", "ta", "a"); b, _ = _proj(tmp_path, "bob", "tb", "b")
+    var = lambda p: next(k for k in json.loads((p / ".claude" / "settings.local.json").read_text())["env"] if k.startswith("TEAMBUS_TOKEN_"))
+    assert var(a) != var(b)                                                                  # two agents on one machine never share a variable name
+    hdr = lambda p: json.loads((p / ".mcp.json").read_text())["mcpServers"]["teambus"]["headers"]["Authorization"]
+    assert hdr(a) == "Bearer ${" + var(a) + "}" and hdr(b) == "Bearer ${" + var(b) + "}"
+    old = var(a); env = {k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))} | {"HOME": str(tmp_path)}
+    subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", URL, "--agent-id", "alice2", "--role", "frontend", "--token", "ta", "--dir", str(a)], env=env, capture_output=True, text=True, check=True)
+    keys = [k for k in json.loads((a / ".claude" / "settings.local.json").read_text())["env"] if k.startswith("TEAMBUS_TOKEN_")]; assert keys == [var(a)] and var(a) != old   # the stale variable is gone
+
+
+def test_a_project_is_not_hijacked_by_another_projects_environment(hub, tmp_path):
+    proj, clean = _proj(tmp_path, "alice", "ta")
+    hijack = {**clean, "TEAMBUS_URL": "http://127.0.0.1:1", "TEAMBUS_TOKEN": "somebody-elses-token", "AGENT_ID": "mallory"}          # what a parent session or a shell can leave behind
+    ctx = json.loads(_hook("start", proj, hijack))["hookSpecificOutput"]["additionalContext"]
+    assert "identifies you as agent 'alice'" in ctx and "offline" not in ctx                  # the project's own settings won
+    d = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=hijack, capture_output=True, text=True).stdout
+    assert "[PASS] token accepted (hub says you are alice)" in d and "[WARN] your environment does not disagree" in d and "TEAMBUS_TOKEN" in d    # and doctor says so
+
+
+def test_doctor_warns_about_the_shared_token_variable_and_a_missing_one(hub, tmp_path):
+    proj, clean = _proj(tmp_path)
+    p = proj / ".mcp.json"; d = json.loads(p.read_text()); d["mcpServers"]["teambus"]["headers"]["Authorization"] = "Bearer ${TEAMBUS_TOKEN}"; p.write_text(json.dumps(d))
+    out = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=clean, capture_output=True, text=True).stdout
+    assert "[WARN] MCP token variable has a name no other session is likely to set" in out and "run teambus-join again" in out
+    d["mcpServers"]["teambus"]["headers"]["Authorization"] = "Bearer ${TEAMBUS_TOKEN_DEADBEEF}"; p.write_text(json.dumps(d))
+    out = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=clean, capture_output=True, text=True).stdout
+    assert "[FAIL] MCP token variable is defined in this project's settings" in out
+
+
+def test_a_message_reaches_a_busy_agent_mid_task_exactly_once(hub, tmp_path):
+    proj, env = _proj(tmp_path, "alice", "ta"); api("tb", "ask", to_agent="alice", question="mid-task ping: which port?")
+    tool = {"tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {"stdout": "x"}}
+    out = _hook("post", proj, env, tool); ctx = json.loads(out)["hookSpecificOutput"]; assert ctx["hookEventName"] == "PostToolUse" and "mid-task ping: which port?" in ctx["additionalContext"] and "from bob" in ctx["additionalContext"]
+    assert _hook("post", proj, env, tool) == ""                                              # already delivered (and throttled): never twice
+    assert api("ta", "inbox", peek=True) == []                                               # marked read on the hub
+
+
+def test_stop_hook_hands_over_unread_mail_once_and_never_loops(hub, tmp_path):
+    proj, env = _proj(tmp_path, "alice", "ta"); assert _hook("stop", proj, env, {}) == ""    # nothing waiting: the agent just finishes
+    api("tb", "ask", to_agent="alice", question="before you go: did the build pass?")
+    assert _hook("stop", proj, env, {"stop_hook_active": True}) == ""                        # already continuing because of this hook: never block twice
+    out = json.loads(_hook("stop", proj, env, {})); assert out["decision"] == "block" and "did the build pass?" in out["reason"] and "from bob" in out["reason"]
+    assert _hook("stop", proj, env, {}) == ""                                                # delivered once, now the agent may stop
+
+
+def test_stop_and_post_hooks_stay_silent_when_the_hub_is_down(tmp_path):
+    proj = tmp_path / "p"; proj.mkdir(); clean = {k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))} | {"HOME": str(tmp_path)}
+    subprocess.run([sys.executable, f"{HERE}/teambus", "init", "--hub", "http://127.0.0.1:1", "--agent-id", "alice", "--role", "r", "--token", "x", "--dir", str(proj)], env=clean, capture_output=True, text=True, check=True)
+    assert _hook("stop", proj, clean, {}) == "" and _hook("post", proj, clean, {"tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {}}) == ""   # exit 0 and no output: a dead hub never blocks or nags

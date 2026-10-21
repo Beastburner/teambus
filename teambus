@@ -5,14 +5,14 @@
   teambus status                                               team feed, presence and your inbox in the terminal
   teambus resolve [--committed]                                mark your open intents done (used by the git post-commit hook)
   teambus git-hook                                             install the post-commit hook only"""
-import argparse, json, os, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
+import argparse, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HOOK = HERE / "hooks" / "hook.py"
 SNIPPET = HERE / "CLAUDE.snippet.md"
 EVENTS = {"SessionStart": (None, "start"), "UserPromptSubmit": (None, "prompt"), "PreToolUse": ("Edit|Write|MultiEdit", "pre"),
-          "PostToolUse": ("Edit|Write|MultiEdit|Bash", "post"), "PostToolUseFailure": ("Bash", "fail")}
+          "PostToolUse": ("Edit|Write|MultiEdit|Bash", "post"), "PostToolUseFailure": ("Bash", "fail"), "Stop": (None, "stop")}
 GIT_MARK = "# teambus-post-commit"
 
 def jload(p):
@@ -20,13 +20,19 @@ def jload(p):
     except (OSError, ValueError): return {}
 
 def cfg(root):
-    """Hub settings: environment first, then the project's .claude/settings.local.json / settings.json env blocks."""
-    env = {**jload(root / ".claude" / "settings.json").get("env", {}), **jload(root / ".claude" / "settings.local.json").get("env", {}), **{k: v for k, v in os.environ.items() if k.startswith(("TEAMBUS_", "AGENT_"))}}
+    """Hub settings: the project's .claude/settings.json / settings.local.json env blocks win; the environment fills in what they do not set (so a shell that
+    exports TEAMBUS_*, or a parent session from another project, cannot redirect this project to a different hub or identity)."""
+    env = {**{k: v for k, v in os.environ.items() if k.startswith(("TEAMBUS_", "AGENT_"))}, **jload(root / ".claude" / "settings.json").get("env", {}), **jload(root / ".claude" / "settings.local.json").get("env", {})}
     return {"url": env.get("TEAMBUS_URL", "").rstrip("/"), "token": env.get("TEAMBUS_TOKEN", ""), "agent": env.get("AGENT_ID", ""), "role": env.get("AGENT_ROLE", "")}
 
 def call(c, name, body=None, method="POST", timeout=5):
     r = urllib.request.Request(f"{c['url']}/{name}", json.dumps(body or {}).encode() if method == "POST" else None, {"Content-Type": "application/json", "Authorization": f"Bearer {c['token']}"}, method=method)
     return json.load(urllib.request.urlopen(r, timeout=timeout))
+
+def token_var(hub, agent_id):
+    """Name of the environment variable that carries this join's token into the MCP header. Unique per (hub, agent): the generic TEAMBUS_TOKEN is exactly what a parent
+    session or a shell may already export for something else, and an inherited value beats the project's own setting (the agent then authenticates as the wrong one, or gets a 401)."""
+    import hashlib; return "TEAMBUS_TOKEN_" + hashlib.sha256(f"{hub.rstrip('/')}|{agent_id}".encode()).hexdigest()[:8].upper()
 
 def hook_cmd(mode):
     """Guarded: if TeamBus is uninstalled or moved, the hook does nothing (a missing script would otherwise exit 2, which Claude Code treats as a blocking error)."""
@@ -40,16 +46,19 @@ def init(a):
     for ev, (matcher, mode) in EVENTS.items():
         lst = s.setdefault("hooks", {}).setdefault(ev, [])
         if not has_hook(lst): lst.append(({"matcher": matcher} if matcher else {}) | {"hooks": [{"type": "command", "command": hook_cmd(mode)}]}); done.append(f"hook {ev}")
-    s.setdefault("env", {}).update({"TEAMBUS_URL": a.hub.rstrip("/"), "TEAMBUS_TOKEN": a.token, "AGENT_ID": a.agent_id, "AGENT_ROLE": a.role})
+    tv = token_var(a.hub, a.agent_id); e = s.setdefault("env", {})
+    for k in [k for k in e if k.startswith("TEAMBUS_TOKEN_") and k != tv]: del e[k]          # an earlier join's variable
+    e.update({"TEAMBUS_URL": a.hub.rstrip("/"), "TEAMBUS_TOKEN": a.token, tv: a.token, "AGENT_ID": a.agent_id, "AGENT_ROLE": a.role})
     if "teambus" not in s.setdefault("enabledMcpjsonServers", []): s["enabledMcpjsonServers"].append("teambus")
     sp.write_text(json.dumps(s, indent=2)); done.append("env + enabledMcpjsonServers in .claude/settings.local.json")
     # project-scope MCP server, written directly (no dependency on the claude CLI) and UPDATED when the hub changes: rejoining another hub or sandbox must not leave
-    # Claude Code connecting to the old one. The URL is not secret; the token stays a ${TEAMBUS_TOKEN} placeholder (a ${VAR} inside `url` is rejected by Claude Code).
-    mp = root / ".mcp.json"; mj = jload(mp); entry = {"type": "http", "url": a.hub.rstrip("/") + "/mcp", "headers": {"Authorization": "Bearer ${TEAMBUS_TOKEN}"}}
+    # Claude Code connecting to the old one. The URL is not secret; the token stays a ${TEAMBUS_TOKEN_<id>} placeholder (a ${VAR} inside `url` is rejected by Claude Code).
+    mp = root / ".mcp.json"; mj = jload(mp); entry = {"type": "http", "url": a.hub.rstrip("/") + "/mcp", "headers": {"Authorization": "Bearer ${" + tv + "}"}}
     cur = mj.get("mcpServers", {}).get("teambus")
     if cur != entry:
         mj.setdefault("mcpServers", {})["teambus"] = entry; mp.write_text(json.dumps(mj, indent=2) + "\n")
-        done.append("teambus MCP server added to .mcp.json" if cur is None else f".mcp.json updated: teambus MCP server now points at {entry['url']} (was {str((cur or {}).get('url'))[:80]})")
+        done.append("teambus MCP server added to .mcp.json" if cur is None else f".mcp.json updated: teambus MCP server now points at {entry['url']} (was {str(cur.get('url'))[:80]})" if cur.get("url") != entry["url"]
+                    else ".mcp.json updated: the MCP token now travels in a variable only this join uses")
     md = root / "CLAUDE.md"
     if "## TeamBus" not in (md.read_text() if md.exists() else ""): md.open("a").write(("\n" if md.exists() else "") + SNIPPET.read_text()); done.append("CLAUDE.md snippet")
     if (root / ".git").exists(): done.append(git_hook(root)); done.append(git_exclude(root))
@@ -126,6 +135,13 @@ def doctor(a):
     chk(f"hook script exists ({HOOK})", HOOK.exists(), "reinstall teambus")
     chk(".mcp.json registers `teambus`", "teambus" in jload(root / ".mcp.json").get("mcpServers", {}), "run teambus init")
     mu = jload(root / ".mcp.json").get("mcpServers", {}).get("teambus", {}).get("url", ""); cfg_url = c["url"]
+    hdr = jload(root / ".mcp.json").get("mcpServers", {}).get("teambus", {}).get("headers", {}).get("Authorization", ""); m = re.search(r"\$\{(\w+)\}", hdr)
+    penv = {**jload(root / ".claude" / "settings.json").get("env", {}), **jload(root / ".claude" / "settings.local.json").get("env", {})}
+    if m:
+        chk("MCP token variable is defined in this project's settings", m.group(1) in penv, f".mcp.json sends ${{{m.group(1)}}} but settings.local.json does not define it: run teambus-join again")
+        chk("MCP token variable has a name no other session is likely to set", m.group(1) != "TEAMBUS_TOKEN", "it uses the shared name TEAMBUS_TOKEN, which a parent session or your shell can override with another project's token (agents then authenticate as the wrong one): run teambus-join again", warn=True)
+    amb = {k: v for k, v in os.environ.items() if k in ("TEAMBUS_URL", "TEAMBUS_TOKEN") and penv.get(k) and v != penv[k]}
+    chk("your environment does not disagree with this project's settings", not amb, f"{', '.join(sorted(amb))} is exported in your shell or parent session with a different value; this project's settings win for hooks and this CLI, but anything that reads the environment would use the other one", warn=True)
     if mu and cfg_url: chk(".mcp.json points at the same hub as your settings", mu == cfg_url + "/mcp", f".mcp.json connects to {mu} but TEAMBUS_URL is {cfg_url}: run teambus-join (or teambus init) again with your current invite")
     if mu: chk(".mcp.json url is a literal http(s) URL", mu.startswith("http") and "${" not in mu, "Claude Code rejects ${VAR} inside url; rerun teambus init after deleting the teambus entry from .mcp.json")
     chk("claude CLI on PATH", bool(shutil.which("claude")), "install Claude Code", warn=True)

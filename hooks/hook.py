@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""TeamBus Claude Code hook. Usage: hook.py {start|prompt|pre|post|fail}. Env: TEAMBUS_URL, TEAMBUS_TOKEN (identity comes from the token), AGENT_ID/AGENT_ROLE (display only).
+"""TeamBus Claude Code hook. Usage: hook.py {start|prompt|pre|post|fail|stop}. Env: TEAMBUS_URL, TEAMBUS_TOKEN (identity comes from the token), AGENT_ID/AGENT_ROLE (display only).
 Any hub error is swallowed: a down hub must never break or block a session."""
 import ast, json, os, re, sys, textwrap, time, urllib.error, urllib.request
 
-E = lambda k, o="": os.environ.get(k) or os.environ.get("CLAUDE_PLUGIN_OPTION_" + o) or ""  # settings env, or the plugin's userConfig (exported as CLAUDE_PLUGIN_OPTION_<KEY>)
+def _project_env():
+    """The project's own .claude/settings*.json env block. It WINS over the ambient environment: a session started from another TeamBus project (a parent Claude
+    session, or a shell exporting TEAMBUS_*) must never make this project talk to somebody else's hub, or authenticate as somebody else."""
+    root, out = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), {}
+    for f in ("settings.json", "settings.local.json"):
+        try: out.update(json.load(open(os.path.join(root, ".claude", f))).get("env") or {})
+        except Exception: pass
+    return out
+PE = _project_env()
+E = lambda k, o="": PE.get(k) or os.environ.get(k) or os.environ.get("CLAUDE_PLUGIN_OPTION_" + o) or ""  # project settings, then the environment, then the plugin's userConfig (CLAUDE_PLUGIN_OPTION_<KEY>)
 URL, TOKEN = (E("TEAMBUS_URL", "HUB_URL") or "http://localhost:8765").rstrip("/"), E("TEAMBUS_TOKEN", "TOKEN")
 ME, ROLE = E("AGENT_ID", "AGENT_ID") or "agent", E("AGENT_ROLE", "ROLE") or "dev"
 PROTOCOL = ("Protocol: if an edit is blocked with a TEAMBUS CONFLICT, call ask_teammate_agent to the named teammate (exact agent_id), then retry the edit. Before changing an API/schema/shared interface call publish_contract(name, spec, files=consumers, source_files=yours). "
@@ -75,6 +84,13 @@ def digest_lines(dg, cap=10):
     items = [fmt(x) for x in (dg.get("items") or [])[-cap:]]
     return L + (["Team activity:"] + items if items else [])
 
+def unread_note(throttle=4.0):
+    """Unread messages for this agent as text, or "" (also when the hub is down). Marks them read on the hub. Throttled so a burst of tool calls costs one request."""
+    st = state()
+    if time.time() - st.get("inbox_ts", 0) < throttle: return ""
+    st["inbox_ts"] = time.time(); save(st)
+    return "\n".join(digest_lines({"inbox": api("inbox") or []}))
+
 def main(mode):
     d = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     ti = d.get("tool_input") or {}
@@ -106,12 +122,19 @@ def main(mode):
                 rec["n"] += 1; save(st)
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": f"Still blocked (attempt {rec['n']}/3): you have not sent {' or '.join(who)} a message since the first block. Call ask_teammate_agent(to_agent={who[0]!r}, question=...) first, then retry the edit.\n" + "\n".join(lines[:-1])}}))
             else: ctx("PreToolUse", "\n".join(lines[:-1]) + "\nYou have contacted a teammate (or the hub is unreachable): proceeding.")
+    elif mode == "stop":
+        # About to finish. If a teammate wrote while we worked, hand it over once instead of going idle with unread mail (stop_hook_active: we already did, so never loop).
+        if not d.get("stop_hook_active"):
+            note = unread_note(0)
+            if note: print(json.dumps({"decision": "block", "reason": "TeamBus: before you finish, a teammate's agent wrote to you. Read and answer it (or say why not):\n" + note}))
     elif mode == "post":
         if path: api("post_intent", files=[path], summary=f"edited {os.path.basename(path)}", symbols=symbols(ti, path.endswith(".py")), role=ROLE)
         elif d.get("tool_name") == "Bash" and BUILD_RE.search(ti.get("command", "")):  # PostToolUse only fires for commands that exited 0
             out = d.get("tool_response") or {}; text = ((out.get("stdout") or "") + (out.get("stderr") or "")) if isinstance(out, dict) else str(out); cmd = ti["command"]
             masked = re.search(r"(?<!\|)\|(?!\|)", cmd) and "pipefail" not in cmd  # `make test | tail` exits 0 whatever make did: only then fall back to output markers
             api("build", ok=not out.get("interrupted") and not (masked and FAIL_RE.search(text)), cmd=cmd, log_tail=text)
+        note = unread_note()      # mid-task delivery: a teammate's message reaches a busy agent within a tool call, not only at its next prompt
+        if note: ctx("PostToolUse", "TeamBus: a teammate wrote to you while you were working.\n" + note)
     elif mode == "fail" and d.get("tool_name") == "Bash" and BUILD_RE.search(ti.get("command", "")) and not d.get("is_interrupt"):  # PostToolUseFailure: non-zero exit, `error` starts "Exit code N"
         api("build", ok=False, cmd=ti["command"], log_tail=d.get("error") or "")
 
