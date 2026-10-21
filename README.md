@@ -62,6 +62,14 @@ A message reaches an agent only when its session runs: when its user submits a p
 
 To keep an agent available for teammates, tell it to loop on `wait_for_messages` ("stay available: call wait_for_messages, answer each message with `ask_teammate_agent(reply_to=<id>, …)`, repeat until I say stop"), or run `/loop 1m check the teambus inbox and reply` in that session. Read receipts (`outbox`, `teambus outbox`) show when a message was read and answered.
 
+**`teambus listen`** watches the hub for your unread mail from a spare terminal in the project folder, so you do not have to notice it yourself:
+```bash
+teambus listen                      # prints a line, rings the bell, and sends a desktop notification when mail waits for an idle session
+teambus listen --tmux 0:1.0         # also types one fixed line into that tmux pane to give the idle session a turn (only if the pane runs claude)
+teambus listen --exec './wake.sh'   # or run your own command (gets TEAMBUS_COUNT, TEAMBUS_FROM, TEAMBUS_AGENT)
+```
+It leaves a working session alone (its hooks deliver within seconds), reminds you at most 3 times, and never puts message text in the notification or the typed line, only the count and sender names, so a teammate's words cannot become keystrokes. Run Claude Code inside tmux (`tmux new -s alice`, then `claude`) to use `--tmux`; find the pane with `tmux list-panes -a`. Checking every few seconds also keeps a free-tier sandbox host awake while you work.
+
 ## Layout
 `server.py` hub · `web/index.html` web view · `hooks/hook.py` Claude Code hook · `teambus` CLI · `.claude-plugin/`, `hooks/hooks.json`, `.mcp.json` plugin · `teambus-hub` / `teambus-join` easy setup · `sandbox.py` public sandbox · `render.yaml` · `Dockerfile`, `docker-compose.yml`, `docker-compose.sandbox.yml`, `Caddyfile*` · `docs/` (deploy guide, real-session proof, transcripts) · `ARCHITECTURE.md`
 

@@ -125,6 +125,34 @@ def test_idle_recipient_is_told_mail_waits_for_their_session(hub):
     hook("prompt", "tf", {"prompt": "go on", "cwd": str(hub)}, hub)                          # their user gave them a turn: working again
     assert "next tool call" in api("ta", "ask", to_agent="frank", question="and now?")["recipient"]   # working: it will see it soon
 
+def _listen(env_tok, extra, secs=25, path=None, proj="/nonexistent-so-no-project-settings"):
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))}, "TEAMBUS_URL": URL, "TEAMBUS_TOKEN": env_tok, "AGENT_ID": "frank", **({"PATH": path} if path else {})}
+    try: r = subprocess.run([sys.executable, CLI, "listen", "--dir", str(proj), "--interval", "0.5", *extra], env=env, capture_output=True, text=True, timeout=secs); return r.stdout
+    except subprocess.TimeoutExpired as e: return (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+
+def test_listen_wakes_an_idle_session_but_not_a_working_one(hub, tmp_path):
+    out = tmp_path / "woke"; cmd = f'echo "$TEAMBUS_COUNT $TEAMBUS_FROM" > {out}'
+    api("tf", "inbox"); hook("prompt", "tf", {"prompt": "go on", "cwd": str(hub)}, hub)           # frank is mid-turn: his hooks will deliver, nobody should poke him
+    api("ta", "ask", to_agent="frank", question="SECRET-BODY please look")
+    _listen("tf", ["--exec", cmd, "--once"], secs=4); assert not out.exists()
+    api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub)                              # turn finished with nothing waiting: idle at the prompt
+    api("ta", "ask", to_agent="frank", question="SECRET-BODY are you there?")                   # mail that arrives while the session is idle stays unread: nothing runs to deliver it
+    shown = _listen("tf", ["--exec", cmd, "--once"]); assert out.read_text().split() == ["1", "alice"] and "unread from alice" in shown
+    assert "SECRET-BODY" not in shown and "SECRET-BODY" not in out.read_text()                  # message text never leaves the hub through this path
+    assert api("tf", "inbox", peek=True)                                                        # watching did not consume or mark anything read
+
+def test_listen_only_types_into_a_tmux_pane_running_claude(hub, tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "tmux.log"
+    (bindir / "tmux").write_text(f'#!/bin/sh\necho "$@" >> {log}\n[ "$1" = display-message ] && echo "$STUB_CMD"\nexit 0\n'); (bindir / "tmux").chmod(0o755)
+    path = f"{bindir}:{os.environ['PATH']}"; api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="SECRET-BODY ping")
+    os.environ["STUB_CMD"] = "bash"
+    try:
+        shown = _listen("tf", ["--tmux", "0:1.0", "--once"], path=path, secs=4); assert "not typing into tmux pane" in shown and "send-keys" not in log.read_text()      # a shell prompt must never receive keystrokes
+        log.unlink(); os.environ["STUB_CMD"] = "claude"; _listen("tf", ["--tmux", "0:1.0", "--once"], path=path)
+    finally: os.environ.pop("STUB_CMD", None)
+    lines = log.read_text().splitlines(); typed = next(l for l in lines if "-l" in l.split())
+    assert "send-keys -t 0:1.0 -l TeamBus: you have" in typed and "from alice" in typed and "SECRET-BODY" not in typed and any(l.endswith("Enter") for l in lines)
+
 # ---- digest cursor ----
 def test_digest_cursor(hub):
     d1 = api("td", "digest", since=0); api("tb", "post_intent", files=["cur.py"], summary="new thing")

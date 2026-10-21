@@ -6,6 +6,7 @@
   teambus resolve [--committed]                                mark your open intents done (used by the git post-commit hook)
   teambus send TO TEXT... [--reply-to N]                       message a teammate's agent from the shell (works when the MCP tools did not load)
   teambus inbox [--peek] | outbox                              unread messages | what you sent, with read receipts
+  teambus listen [--tmux PANE | --exec CMD]                    watch for unread mail and wake an idle session (see `teambus listen --help`)
   teambus git-hook                                             install the post-commit hook only"""
 import argparse, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
@@ -202,15 +203,59 @@ def outbox(a):
         st = "answered" if m["answered"] else f"read {m['read_s_ago']}s ago" if m["read"] else "NOT READ yet"
         print(f"#{m['id']} to {m['to']} ({m['sent_s_ago']}s ago, {st}): {m['body']}")
 
+def listen(a):
+    """An agent only sees mail when its session runs, and an idle session runs nothing. This watches the hub for YOUR unread mail and, when some is waiting and the session is idle,
+    tells you (terminal line, bell, desktop notification) and optionally wakes the session: types one fixed line into its tmux pane (--tmux), or runs your command (--exec).
+    The line never contains message text, only counts and sender names, so a teammate's words cannot become keystrokes."""
+    root = Path(a.dir).resolve(); c = cfg(root)
+    if not (c["url"] and c["token"]): sys.exit("no hub configured here: run teambus-join first")
+    if a.tmux and not shutil.which("tmux"): sys.exit("--tmux needs tmux installed")
+    nudged, down = {}, 0       # message id -> (times nudged, when last)
+    print(f"listening for mail to {c['agent'] or 'this agent'} on {c['url']} every {a.interval}s (Ctrl-C to stop)" + (f"; will type into tmux pane {a.tmux} when the session is idle" if a.tmux else ""), flush=True)
+    while True:
+        try:
+            msgs = call(c, "api/inbox", {"peek": True}, timeout=10); down = 0
+            if not msgs: nudged.clear()
+            else:
+                now = time.time(); new = [m for m in msgs if m["id"] not in nudged]
+                due = new or [m for m in msgs if nudged[m["id"]][0] < a.max_nudges and now - nudged[m["id"]][1] >= a.repeat]
+                me = next((p for p in call(c, "api/feed", {"since": now}, timeout=10).get("agents", []) if p["agent_id"] == c["agent"]), {}) if due else {}
+                if due and me.get("state") != "working":              # a working session gets its mail from the hooks within seconds
+                    senders = ", ".join(sorted({re.sub(r"[^\w.-]", "", m["from_agent"])[:30] for m in msgs}))
+                    line = f"TeamBus: you have {len(msgs)} unread message(s) from {senders}. Read them (check_inbox, or `teambus inbox`) and reply with ask_teammate_agent(reply_to=<id>)."
+                    print(time.strftime("%H:%M:%S"), f"{len(msgs)} unread from {senders}; session is {me.get('state', 'unknown')}", flush=True); print("\a", end="", flush=True)
+                    if shutil.which("notify-send"): subprocess.run(["notify-send", "TeamBus", f"{len(msgs)} unread from {senders}"], capture_output=True)
+                    if a.tmux: tmux_wake(a.tmux, line)
+                    if a.exec: subprocess.run(a.exec, shell=True, env={**os.environ, "TEAMBUS_COUNT": str(len(msgs)), "TEAMBUS_FROM": senders, "TEAMBUS_AGENT": c["agent"]})
+                    for m in msgs: nudged[m["id"]] = (nudged.get(m["id"], (0, 0))[0] + 1, now)
+                    if a.once: return
+        except KeyboardInterrupt: return
+        except Exception as e:
+            down += 1
+            if down == 1: print(f"hub unreachable ({why(e, 'could not reach the hub')}); retrying", flush=True)
+        time.sleep(min(a.interval * (1 + down), 60))
+
+def tmux_wake(pane, line):
+    """Type `line` into a tmux pane, but only when that pane is running Claude Code: typing into a shell prompt would run it."""
+    r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}"], capture_output=True, text=True)
+    cmd = r.stdout.strip()
+    if r.returncode or not re.search(r"claude|node", cmd): print(f"not typing into tmux pane {pane}: it is running {cmd or 'nothing I can see'!r}, not Claude Code", flush=True); return
+    subprocess.run(["tmux", "send-keys", "-t", pane, "-l", line]); subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"])
+
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
         if n == "resolve": p.add_argument("--committed", action="store_true")
         if n == "send": p.add_argument("to"); p.add_argument("text", nargs="+"); p.add_argument("--reply-to", type=int)
         if n == "inbox": p.add_argument("--peek", action="store_true")
         if n == "outbox": p.add_argument("--limit", type=int, default=15)
+        if n == "listen":
+            p.add_argument("--interval", type=float, default=5, help="seconds between checks (default 5)"); p.add_argument("--repeat", type=float, default=180, help="seconds before reminding about mail still unread (default 180)")
+            p.add_argument("--max-nudges", type=int, default=3); p.add_argument("--once", action="store_true", help="exit after the first nudge")
+            p.add_argument("--tmux", metavar="PANE", help="wake the idle session by typing one fixed line into this tmux pane (target like 0:1.0), only if it is running claude")
+            p.add_argument("--exec", metavar="CMD", help="run this shell command to wake the session (gets TEAMBUS_COUNT, TEAMBUS_FROM, TEAMBUS_AGENT)")
     a = ap.parse_args(); a.f(a)
 
 if __name__ == "__main__": main()
