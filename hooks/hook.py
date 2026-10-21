@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TeamBus Claude Code hook. Usage: hook.py {start|prompt|pre|post|fail}. Env: TEAMBUS_URL, TEAMBUS_TOKEN (identity comes from the token), AGENT_ID/AGENT_ROLE (display only).
 Any hub error is swallowed: a down hub must never break or block a session."""
-import ast, json, os, re, sys, textwrap, time, urllib.request
+import ast, json, os, re, sys, textwrap, time, urllib.error, urllib.request
 
 E = lambda k, o="": os.environ.get(k) or os.environ.get("CLAUDE_PLUGIN_OPTION_" + o) or ""  # settings env, or the plugin's userConfig (exported as CLAUDE_PLUGIN_OPTION_<KEY>)
 URL, TOKEN = (E("TEAMBUS_URL", "HUB_URL") or "http://localhost:8765").rstrip("/"), E("TEAMBUS_TOKEN", "TOKEN")
@@ -15,11 +15,19 @@ IMP_JS = re.compile(r"""(?:from\s+|import\s*\(?\s*|require\(\s*)['"](\.{1,2}/[^'
 IMP_PY = re.compile(r"^\s*(?:from\s+(\.*[\w.]*)\s+import\s+([\w, ]+)|import\s+([\w.]+))", re.M)
 EXT = ["", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json", ".py"]
 
+WHY = ""   # why the last call failed, in words (filled by api())
+
 def api(name, **kw):
+    global WHY
     try:
         req = urllib.request.Request(f"{URL}/api/{name}", json.dumps(kw).encode(), {"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"})
         return json.load(urllib.request.urlopen(req, timeout=3))
-    except Exception: return None
+    except urllib.error.HTTPError as e:
+        try: msg = (json.loads(e.read()) or {}).get("message") or ""          # a sandbox explains itself: expired, deleted, lost in a restart, never existed
+        except Exception: msg = ""
+        WHY = msg or ("the hub rejected the token" if e.code in (401, 403) else f"the hub answered HTTP {e.code}")
+        return None
+    except Exception: WHY = "the hub is unreachable"; return None
 
 def ctx(event, text): print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
 
@@ -77,7 +85,7 @@ def main(mode):
         st = state(); dg = api("digest", since=st.get("cursor", 0))
         if dg is not None: st["cursor"] = dg["now"]; save(st)
         L = digest_lines(dg or {})
-        if mode == "start": ctx("SessionStart", "\n".join([f"TeamBus: the hub identifies you as agent '{dg['me']}' (from your token), so agent_id arguments are optional." + " " + PROTOCOL if dg else "TeamBus is offline (hub unreachable or token rejected): continue without it; do not retry its tools."] + L))
+        if mode == "start": ctx("SessionStart", "\n".join([f"TeamBus: the hub identifies you as agent '{dg['me']}' (from your token), so agent_id arguments are optional." + " " + PROTOCOL if dg else f"TeamBus is offline ({WHY or 'hub unreachable or token rejected'}). Continue without it; do not retry its tools."] + L))
         elif L: ctx("UserPromptSubmit", "TeamBus update since your last prompt:\n" + "\n".join(L))
     elif mode == "pre" and path:
         try: text = open(os.path.join(root, path)).read() + " " + str(ti.get("content") or "")

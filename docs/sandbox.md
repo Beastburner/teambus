@@ -78,6 +78,6 @@ The compose service is read-only, drops all capabilities, runs as a non-root use
    - If `derived_ip` is a Render or Cloudflare address (the same for everyone), raise `SANDBOX_TRUST_PROXY_HOPS` to 2, or set `SANDBOX_CLIENT_IP_HEADER=cf-connecting-ip` if that header appears in the output.
    - If a visitor could change `derived_ip` by sending their own `X-Forwarded-For`, the hop count is too low.
 3. Create a sandbox from the page and check the invite starts with `https://` and your host. If it shows `http://`, set `SANDBOX_PUBLIC_URL=https://<your-service>.onrender.com`.
-4. Set `SANDBOX_DEBUG_IP` to `0` (or delete it).
+4. `SANDBOX_DEBUG_IP` is off by default now (the Render values are verified); turn it on only to inspect proxy headers at `/_ip`.
 
 **Not verified on Render:** whether its proxy keeps the long-lived streaming connection a Claude Code session holds open (MCP over streamable HTTP) for as long as a session needs. Test one real `claude` session through the deployed URL before announcing it.

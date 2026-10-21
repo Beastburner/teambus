@@ -446,3 +446,30 @@ def test_a_failing_probe_does_not_skip_the_restart_cleanup(mgr, fake):
     fake.docs["old2"] = {k: registry_mod.to_fs(v) for k, v in {"id": "old2", "state": "active", "boot_id": "earlier-run", "agents": [], "joined": {}}.items()}
     orig = fake.mode; fake.reject_probe = True
     m = mgr(**fake.env()); assert wait_for(lambda: fake.doc("old2")["state"] == "lost"), "cleanup still ran"
+
+
+# ---- the hook, doctor and status say WHY TeamBus cannot be used ----
+def _hook_start(url, token="x"):
+    r = subprocess.run([sys.executable, str(HERE / "hooks" / "hook.py"), "start"], input="{}", capture_output=True, text=True, timeout=20,
+                       env={**os.environ, "TEAMBUS_URL": url, "TEAMBUS_TOKEN": token, "CLAUDE_PROJECT_DIR": tempfile.mkdtemp()})
+    assert r.returncode == 0                                               # never breaks a session
+    return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_start_says_why_the_sandbox_is_gone_and_other_failures_in_words(mgr):
+    m = mgr(); sb = call("POST", m.url + "/new")[1]; dead = sb["hub_url"]
+    call("DELETE", m.url + "/manage/" + sb["id"], token=sb["manage_token"])
+    t = _hook_start(dead); assert "TeamBus is offline (This sandbox was deleted" in t and "Create a new one at" in t and "do not retry its tools" in t
+    assert "no record of a sandbox" in _hook_start(f"{m.url}/s/0123456789ab")                          # a link the server never issued
+    live = call("POST", m.url + "/new")[1]; assert "rejected the token" in _hook_start(live["hub_url"], "wrong-token")
+    assert "hub is unreachable" in _hook_start("http://127.0.0.1:1")
+    ok = _hook_start(live["hub_url"], live["agents"][0]["token"]); assert "identifies you as agent 'alice-frontend'" in ok and "offline" not in ok      # a healthy sandbox is unchanged
+
+
+def test_doctor_and_status_explain_a_gone_sandbox(mgr, tmp_path):
+    m = mgr(); sb = call("POST", m.url + "/new")[1]; call("DELETE", m.url + "/manage/" + sb["id"], token=sb["manage_token"])
+    env = {**os.environ, "HOME": str(tmp_path), "TEAMBUS_URL": sb["hub_url"], "TEAMBUS_TOKEN": "x", "AGENT_ID": "alice-frontend", "AGENT_ROLE": "frontend"}
+    d = subprocess.run([sys.executable, str(HERE / "teambus"), "doctor", "--dir", str(tmp_path)], capture_output=True, text=True, env=env, timeout=30)
+    assert "[FAIL] hub reachable" in d.stdout and "This sandbox was deleted" in d.stdout and "Create a new one at" in d.stdout, d.stdout
+    s = subprocess.run([sys.executable, str(HERE / "teambus"), "status", "--dir", str(tmp_path)], capture_output=True, text=True, env=env, timeout=30)
+    assert s.returncode != 0 and "This sandbox was deleted" in s.stderr, s.stderr

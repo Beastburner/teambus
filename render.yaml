@@ -15,7 +15,7 @@ services:
       - {key: SANDBOX_TRUST_PROXY, value: "1"}        # TLS is terminated by Render's load balancer
       - {key: SANDBOX_CLIENT_IP_HEADER, value: "cf-connecting-ip"}   # verified on a live deploy: Render sits behind Cloudflare
       - {key: SANDBOX_TRUST_PROXY_HOPS, value: "3"}   # fallback if that header is missing: XFF is "client, cloudflare, render-internal"
-      - {key: SANDBOX_DEBUG_IP, value: "1"}           # turn OFF once the per-visitor address looks right
+      - {key: SANDBOX_DEBUG_IP, value: "0"}           # set to 1 only to inspect proxy headers at /_ip (verified on Render: the client is CF-Connecting-IP)
       - {key: SANDBOX_WARM, value: "1"}               # keep one hub pre-started: a hub takes ~15 s to import at 0.1 CPU
       - {key: SANDBOX_START_TIMEOUT, value: "90"}
       - {key: SANDBOX_MAX, value: "8"}                # ~40 MiB each: measured 230 MiB with 4 sandboxes + a spare under a 512 MB / 0.1 CPU limit (8 + spare is about 390 MiB)

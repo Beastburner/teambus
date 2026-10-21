@@ -82,7 +82,7 @@ def ago(s): return "never" if s is None else f"{int(s)}s ago" if s < 120 else f"
 def status(a):
     c = cfg(Path(a.dir).resolve())
     try: f = call(c, "api/feed", {"since": 0}); inbox = call(c, "api/inbox", {"peek": True}); me = call(c, "api/whoami")
-    except Exception as e: sys.exit(f"cannot reach hub {c['url']}: {e}")
+    except Exception as e: sys.exit(f"cannot use hub {c['url']}: {why(e, 'could not reach the hub')}")
     print(f"you: {me['agent_id']}  hub: {c['url']}\n\nTEAM")
     for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<20} {p['role']:<10} last seen {ago(p['last_seen_ago'])}")
     print(f"\nINBOX ({len(inbox)} unread)")
@@ -91,8 +91,11 @@ def status(a):
     for x in f["items"][-15:]: print(f"  {time.strftime('%H:%M:%S', time.localtime(x['ts']))} [{x['type']}] {x['agent_id']}: " + (x.get("summary") or x.get("name") or ("build ok" if x.get("ok") else "build FAILED")) + (f"  ({x['status']})" if x.get("status") == "resolved" else ""))
 
 def why(e, what="request failed"):
-    """Say what actually went wrong: a refused token, an untrusted TLS certificate, or a network problem (they need different fixes)."""
-    if isinstance(e, urllib.error.HTTPError): return f"hub answered HTTP {e.code} ({'token rejected' if e.code in (401, 403) else what})"
+    """Say what actually went wrong: a sandbox that no longer exists (with its own explanation), a refused token, an untrusted TLS certificate, or a network problem."""
+    if isinstance(e, urllib.error.HTTPError):
+        try: m = (json.loads(e.read()) or {}).get("message") or ""
+        except Exception: m = ""
+        return m or f"hub answered HTTP {e.code} ({'token rejected' if e.code in (401, 403) else what})"
     r = getattr(e, "reason", e)
     if isinstance(r, ssl.SSLError): return f"TLS problem, not the token: {r}. If the hub uses a private CA, point SSL_CERT_FILE at its root certificate."
     return f"{what}: {r}"
@@ -104,7 +107,7 @@ def doctor(a):
     if not (c["url"] and c["token"]): chk("hub reachable / token / MCP endpoint", False, "skipped: no hub config yet")
     else:
         try: chk("hub reachable", json.load(urllib.request.urlopen(c["url"] + "/healthz", timeout=4)).get("ok"), "")
-        except Exception as e: chk("hub reachable", False, f"{c['url']}/healthz: {e}")
+        except Exception as e: chk("hub reachable", False, f"{c['url']}/healthz: {why(e, 'could not reach the hub')}")
         try:
             w = call(c, "api/whoami"); chk(f"token accepted (hub says you are {w['agent_id']})", bool(w.get("agent_id")), "token not in the hub's tokens file")
             chk("token matches AGENT_ID", w.get("agent_id") == c["agent"], f"AGENT_ID={c['agent']} but token belongs to {w.get('agent_id')}", warn=True)
