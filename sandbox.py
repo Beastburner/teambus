@@ -86,13 +86,26 @@ def store_tokens(sb, toks):
     path = sb["dir"] / "tokens.json"; prev = path.stat().st_mtime if path.exists() else 0
     tmp = sb["dir"] / "tokens.tmp"; tmp.write_text(json.dumps(toks)); tmp.chmod(0o600); os.replace(tmp, path)
     os.utime(path, (max(time.time(), prev + 1),) * 2)          # guarantee a new mtime so the hub notices
-    sb["tokens"] = toks
+    sb["tokens"] = toks; sb["tok_mtime"] = path.stat().st_mtime_ns
+
+def entry(agent_id, role, **extra):
+    """A token entry. The `orchestrator` role may create further agents through the MCP tool (create_agent); no other role can."""
+    return {"agent_id": agent_id, "role": role, **({"can_create": True} if role.lower() == "orchestrator" else {}), **extra}
+
+def sync_tokens(sb):
+    """The hub can add agents itself (create_agent writes its token file): that file is the truth, so read it before showing, saving or changing the list."""
+    p = sb["dir"] / "tokens.json"
+    try: m = p.stat().st_mtime_ns
+    except OSError: return
+    if sb.get("tok_mtime") == m: return
+    try: sb["tokens"] = json.loads(p.read_text()); sb["tok_mtime"] = m
+    except Exception: pass
 
 def write_tokens(sb, agents):                                  # a new set of agents: fresh tokens for all of them
-    store_tokens(sb, {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in agents})
+    store_tokens(sb, {secrets.token_urlsafe(24): entry(a, r) for a, r in agents})
 
 def add_token(sb, agent_id, role):                             # one more agent: every existing token keeps working
-    tok = secrets.token_urlsafe(24); store_tokens(sb, {**sb["tokens"], tok: {"agent_id": agent_id, "role": role}}); return tok
+    sync_tokens(sb); tok = secrets.token_urlsafe(24); store_tokens(sb, {**sb["tokens"], tok: entry(agent_id, role)}); return tok
 
 def sha(t): return hashlib.sha256(t.encode()).hexdigest()
 
@@ -160,6 +173,7 @@ async def reg_get(sid):
     except Exception as e: REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:160]; return None
 
 def record(sb, state="active", reason="", ended=0):
+    sync_tokens(sb)
     return {"id": sb["id"], "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "state": state, "reason": reason, "ended_at": int(ended),
             "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {})), "resumable": False, "owner": sb.get("owner", "")}
 
@@ -195,7 +209,7 @@ async def launch(sid=None, toks=None, viewer_hash=None, db=None):
         toks = toks or {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in AGENTS}; viewer = secrets.token_urlsafe(18)
         (d / "tokens.json").write_text(json.dumps(toks)); (d / "tokens.json").chmod(0o600)
         if db is not None: (d / "hub.db").write_bytes(db)
-        env = {**os.environ, "HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(d / "hub.db"), "TEAMBUS_TOKENS": str(d / "tokens.json"), "TEAMBUS_TOKEN": viewer,
+        env = {**os.environ, "HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(d / "hub.db"), "TEAMBUS_TOKENS": str(d / "tokens.json"), "TEAMBUS_TOKEN": viewer, "TEAMBUS_MAX_AGENTS": str(MAX_AGENTS),
                **({"TEAMBUS_TOKEN_SHA256": viewer_hash} if viewer_hash else {})}
         proc = subprocess.Popen([sys.executable, str(HERE / "server.py")], cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
         sb = dict(id=sid, dir=d, port=port, proc=proc, expires=None, hits=collections.deque(), tokens=toks, viewer=viewer, viewer_hash=viewer_hash or sha(viewer))   # viewer: what this service uses itself
@@ -225,12 +239,13 @@ def fingerprint(sb):
 async def snapshot(sb):
     """Store everything needed to bring this sandbox back: its data, its tokens as hashes only (never the tokens themselves), and how much lifetime it has left. True if stored."""
     if not can_resume() or "manage_hash" not in sb: return False
+    sync_tokens(sb)
     fp = fingerprint(sb); data = await asyncio.to_thread(dump_db, sb["dir"] / "hub.db")
     if data is None or len(data) > SNAP_MAX: return False
     now = time.time()
     await REG.put_snapshot(sb["id"], {"id": sb["id"], "taken_at": int(now), "db": data, "remaining": max(0, int(sb["until"] - now)), "hard": int(sb["hard"]), "created": int(sb.get("created", now)),
         "label": sb.get("label", ""), "joined": dict(sb.get("joined", {})), "manage_hash": sb["manage_hash"], "viewer_hash": sb["viewer_hash"], "owner": sb.get("owner", ""),
-        "agents": [{"key": k if k.startswith("sha256:") else "sha256:" + sha(k), "agent_id": v["agent_id"], "role": v["role"]} for k, v in sb["tokens"].items()]})
+        "agents": [{"key": k if k.startswith("sha256:") else "sha256:" + sha(k), "agent_id": v["agent_id"], "role": v["role"], **{x: v[x] for x in ("can_create", "created_by", "owner") if x in v}} for k, v in sb["tokens"].items()]})
     await REG.update(sb["id"], resumable=True, snapshot_at=int(now)); sb["snap_fp"] = fp; return True
 
 async def snapshotter():
@@ -263,7 +278,7 @@ async def wake(sid):
         if now >= snap["hard"]:
             track(REG.update(sid, state="expired", reason=f"it reached the {fmt_span(MAX_AGE)} maximum age", ended_at=int(now), resumable=False)); track(REG.delete_snapshot(sid)); return None, None
         if len(SBX) >= MAX: return None, JSONResponse({"error": "this sandbox is asleep and the service is full right now; try again in a few minutes"}, 503, headers={"Retry-After": "30"})
-        toks = {a["key"]: {"agent_id": a["agent_id"], "role": a["role"]} for a in snap["agents"]}
+        toks = {a["key"]: {"agent_id": a["agent_id"], "role": a["role"], **{x: a[x] for x in ("can_create", "created_by", "owner") if x in a}} for a in snap["agents"]}
         try: db = zlib.decompress(base64.b64decode(snap["db"]))
         except Exception: return None, None
         sb = await launch(sid, toks, snap["viewer_hash"], db)
@@ -303,6 +318,7 @@ async def create(ip, agents=None, label="", lifetime=None, owner=""):
 def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
 
 def describe(sb, base):
+    sync_tokens(sb)
     url = f"{base}/s/{sb['id']}"
     return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
             "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")), "owned": bool(sb.get("owner")),
@@ -421,7 +437,7 @@ async def my_reissue(request: Request):
     """Fresh tokens for every agent (the old join lines stop working) and a fresh manage token: how an owner recovers access after losing the browser that held them."""
     sb, err = await owned(request, write=True)
     if err: return err
-    fresh = {secrets.token_urlsafe(24): {"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()}; store_tokens(sb, fresh)
+    sync_tokens(sb); fresh = {secrets.token_urlsafe(24): dict(v) for v in sb["tokens"].values()}; store_tokens(sb, fresh)         # same entries (role, creator, flags), new tokens
     m = secrets.token_urlsafe(24); sb["manage"], sb["manage_hash"] = m, sha(m)
     track(snapshot(sb)); d = describe(sb, public_base(request)); d["web_view"] = f"{public_base(request)}/s/{sb['id']}/?token={sb['viewer']}"; return JSONResponse(d)
 
@@ -481,7 +497,7 @@ async def manage_add_agent(request: Request):
     if err: return err
     c = clean_agent(body if isinstance(body, dict) else None)
     if isinstance(c, str): return JSONResponse({"error": c}, 400)
-    cur = [(v["agent_id"], v["role"]) for v in sb["tokens"].values()]
+    sync_tokens(sb); cur = [(v["agent_id"], v["role"]) for v in sb["tokens"].values()]
     if len(cur) >= MAX_AGENTS: return JSONResponse({"error": f"a sandbox can have at most {MAX_AGENTS} agents"}, 400)
     if any(a == c[0] for a, _ in cur): return JSONResponse({"error": f"agent name {c[0]!r} already exists in this sandbox"}, 400)
     add_token(sb, *c); track(REG.update(sb["id"], agents=record(sb)["agents"])); d = describe(sb, public_base(request))
@@ -517,7 +533,7 @@ async def status(request: Request):
     if len(h) >= 120: return JSONResponse({"error": "too many status requests"}, 429, headers={"Retry-After": "10"})
     h.append(now); sid = request.path_params["sid"]; sb = SBX.get(sid)
     if sb and sb["expires"] >= now:
-        seen = await observe_joins(sb)
+        sync_tokens(sb); seen = await observe_joins(sb)
         return JSONResponse({"id": sid, "state": "active", "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "max_expires_at": int(sb["hard"]), "expires_in_seconds": int(sb["expires"] - now),
                              "agents": [{"agent_id": v["agent_id"], "role": v["role"], "joined": v["agent_id"] in sb["joined"], "joined_at": sb["joined"].get(v["agent_id"]), "last_seen_ago": seen.get(v["agent_id"])} for v in sb["tokens"].values()],
                              "registry": REG.kind})

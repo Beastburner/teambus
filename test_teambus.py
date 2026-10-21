@@ -6,7 +6,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 HERE = os.path.dirname(os.path.abspath(__file__)); HOOK = f"{HERE}/hooks/hook.py"; URL = "http://127.0.0.1:8799"
-TOK = {"ta": {"agent_id": "alice", "role": "frontend", "owner": "alice"}, "tg": {"agent_id": "alice-tests", "role": "tests", "owner": "alice"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}}
+TOK = {"ta": {"agent_id": "alice", "role": "frontend", "owner": "alice"}, "tg": {"agent_id": "alice-tests", "role": "tests", "owner": "alice"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}, "tl": {"agent_id": "lena-lead", "role": "lead", "can_create": True}}
 
 @pytest.fixture(scope="module")
 def hub(tmp_path_factory):
@@ -620,3 +620,44 @@ def test_many_agents_at_once_are_served_without_errors_or_long_waits(hub):
             if isinstance(r, dict) and r.get("http"): errs.append((ep, r))
     th = [threading.Thread(target=agent, args=(i,)) for i in range(20)]; [x.start() for x in th]; [x.join() for x in th]
     assert not errs and len(lat) > 100 and sorted(lat)[int(len(lat) * .95)] < 1.0, (errs[:3], len(lat))
+
+
+# ---- agents creating agents ----
+def test_only_allowed_agents_can_create_agents_and_the_new_one_works_at_once(hub):
+    assert "may not create agents" in api("ta", "create_agent", name="sneaky-bot", role="x")["error"]                      # an ordinary agent
+    assert "sneaky-bot" not in open(hub / "tokens.json").read()
+    r = api("tl", "create_agent", name="newbie-one", role="tester", brief="Test the checkout flow. SECRET_KEY=sk_live_abcdef123456")
+    assert r["agent_id"] == "newbie-one" and r["created_by"] == "lena-lead" and f"--token {r['token']}" in r["join"] and "$TEAMBUS_URL" in r["join"]
+    who = api(r["token"], "whoami"); assert who["agent_id"] == "newbie-one" and who["role"] == "tester"                       # the running hub knew the token at once
+    inbox = api(r["token"], "inbox"); assert [m["from_agent"] for m in inbox] == ["lena-lead"] and "Test the checkout flow" in inbox[0]["body"] and "sk_live_abcdef123456" not in inbox[0]["body"]   # brief delivered, scrubbed
+    assert api(r["token"], "create_agent", name="grandchild", role="x")["error"].startswith("you may not create agents")      # no chains
+    assert any(p["agent_id"] == "newbie-one" for p in api("viewer", "status", method="GET")["agents"])
+    assert oct(os.stat(hub / "tokens.json").st_mode & 0o777) == "0o600"
+    ent = next(v for v in json.load(open(hub / "tokens.json")).values() if v["agent_id"] == "newbie-one"); assert ent["created_by"] == "lena-lead" and "can_create" not in ent
+
+def test_agent_creation_is_validated_and_capped(hub):
+    for bad in ("Bad Name", "x", "UPPER", "has_underscore", "a" * 40, "", "../etc", "ok name"): assert "name must be" in api("tl", "create_agent", name=bad, role="x")["error"], bad
+    for bad in ("", "bad role", "r" * 30, "a;b"): assert "role must be" in api("tl", "create_agent", name="valid-name", role=bad)["error"], bad
+    assert "already exists" in api("tl", "create_agent", name="bob", role="x")["error"] and "already exists" in api("tl", "create_agent", name="newbie-one", role="x")["error"]
+    made = sum(1 for v in json.load(open(hub / "tokens.json")).values() if v.get("created_by") == "lena-lead")
+    for i in range(5 - made): assert "token" in api("tl", "create_agent", name=f"helper-{i}", role="helper")
+    assert "already created 5" in api("tl", "create_agent", name="one-too-many", role="helper")["error"]                      # the per-creator cap
+
+def _clear_lenas(hub):
+    for v in list(json.load(open(hub / "tokens.json")).values()):
+        if v.get("created_by") == "lena-lead": api("tl", "remove_agent", name=v["agent_id"])
+
+def test_an_agent_can_remove_only_agents_it_created(hub):
+    _clear_lenas(hub); r = api("tl", "create_agent", name="temp-pair", role="temp"); assert "token" in r
+    assert api("tb", "remove_agent", name="temp-pair")["error"].startswith("no agent")                                         # bob did not create it
+    assert api("tl", "remove_agent", name="bob")["error"].startswith("no agent")                                              # nor can lena remove a seeded agent
+    assert api(r["token"], "whoami")["agent_id"] == "temp-pair"
+    assert api("tl", "remove_agent", name="temp-pair") == {"removed": "temp-pair"} and api(r["token"], "whoami")["http"] == 401   # its token is dead at once
+
+def test_create_agent_is_an_mcp_tool(hub):
+    async def go():
+        async with streamablehttp_client(f"{URL}/mcp", headers={"Authorization": "Bearer tl"}) as (r, w, _):
+            async with ClientSession(r, w) as s:
+                await s.initialize(); names = {t.name for t in (await s.list_tools()).tools}
+                res = await s.call_tool("create_agent", {"name": "mcp-made", "role": "scout"}); return names, json.loads(res.content[0].text)
+    _clear_lenas(hub); names, out = asyncio.run(go()); assert {"create_agent", "remove_agent"} <= names and out.get("agent_id") == "mcp-made"

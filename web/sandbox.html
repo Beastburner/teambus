@@ -193,7 +193,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
   <input class="in" id="lbl" maxlength="40" placeholder="for example: checkout rewrite" autocomplete="off">
   <label class="fl" for="life">Lifetime <span class="hint">deleted after this, or sooner after __IDLE__ minutes unused</span></label>
   <select class="in" id="life"><option value="__MINS__">__MINS__ minutes</option><option value="120">2 hours</option><option value="480">8 hours</option><option value="1440">24 hours</option></select>
-  <span class="fl">Agents <span class="hint">2 to __MAX_AGENTS__. Names: lowercase letters, numbers, dashes. Roles: letters, numbers, dashes.</span></span>
+  <span class="fl">Agents <span class="hint">2 to __MAX_AGENTS__. Names: lowercase letters, numbers, dashes. Roles: letters, numbers, dashes. An agent with the role <b>orchestrator</b> can create more agents.</span></span>
   <datalist id="roles"><option value="orchestrator"><option value="frontend"><option value="backend"><option value="fullstack"><option value="mobile"><option value="devops"><option value="qa"><option value="reviewer"><option value="design"><option value="data"><option value="security"></datalist>
   <div id="agrows"></div>
   <button class="ghost" id="addrow" type="button">Add agent</button>

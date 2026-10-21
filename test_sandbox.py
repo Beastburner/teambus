@@ -763,3 +763,32 @@ def test_firebase_mode_takes_the_project_from_the_stored_service_account(mgr, fa
     assert cfg["mode"] == "firebase" and cfg["firebase"]["projectId"] == "proj" and cfg["firebase"]["authDomain"] == "proj.firebaseapp.com"
     assert acall("POST", m.url + "/auth/google", {"credential": fb_token(google, project="proj")})[0] == 200
     assert acall("POST", m.url + "/auth/google", {"credential": fb_token(google, project="demo-proj")})[0] == 401
+
+
+# ---- agents creating agents, inside a sandbox ----
+def mcp_create(sb, who, name, role, brief=""):
+    async def go():
+        async with streamablehttp_client(sb["hub_url"] + "/mcp", headers={"Authorization": "Bearer " + tok(sb, who)}) as (r, w, _):
+            async with ClientSession(r, w) as s:
+                await s.initialize(); res = await s.call_tool("create_agent", {"name": name, "role": role, "brief": brief}); return json.loads(res.content[0].text)
+    return asyncio.run(go())
+
+def test_orchestrator_can_create_agents_others_cannot_and_the_owner_sees_them(mgr):
+    m = mgr(SANDBOX_MAX_AGENTS=5); sb = call("POST", m.url + "/new", {"agents": [{"agent_id": "lead-ann", "role": "orchestrator"}, {"agent_id": "dev-bo", "role": "backend"}]})[1]
+    assert "may not create agents" in call("POST", sb["hub_url"] + "/api/create_agent", {"name": "x-bot", "role": "r"}, tok(sb, "dev-bo"))[1]["error"]
+    out = mcp_create(sb, "lead-ann", "scout-one", "researcher", "look into the docs"); assert out["agent_id"] == "scout-one" and out["join"].count("--token") == 1      # through the real MCP tool
+    assert call("POST", sb["hub_url"] + "/api/whoami", {}, out["token"])[1]["agent_id"] == "scout-one"
+    st, d = call("GET", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[:2]; names = {a["agent_id"]: a for a in d["agents"]}
+    assert set(names) == {"lead-ann", "dev-bo", "scout-one"} and names["scout-one"]["token"] == out["token"] and "--agent-id scout-one" in names["scout-one"]["join"]    # the owner's list picks up what the agent made
+    assert {a["agent_id"] for a in call("GET", m.url + "/status/" + sb["id"])[1]["agents"]} == {"lead-ann", "dev-bo", "scout-one"}
+    assert mcp_create(sb, "lead-ann", "scout-two", "researcher")["agent_id"] == "scout-two" and mcp_create(sb, "lead-ann", "scout-three", "researcher")["agent_id"] == "scout-three"
+    assert "team is full (5 agents)" in mcp_create(sb, "lead-ann", "scout-four", "researcher").get("error", "")                                                                          # the sandbox agent cap (5) holds
+    assert call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "extra-one", "role": "x"}, token=sb["manage_token"])[0] == 400                                    # and the owner's own add respects it too
+
+def test_created_agents_survive_sleep_with_their_creator_and_flags(mgr, fake):
+    m1 = mgr(**fake.env()); sb = call("POST", m1.url + "/new", {"agents": [{"agent_id": "lead-ann", "role": "orchestrator"}, {"agent_id": "dev-bo", "role": "backend"}]})[1]; sid = sb["id"]
+    out = mcp_create(sb, "lead-ann", "scout-one", "researcher"); m1.stop()
+    m2 = mgr(**fake.env()); hub = f"{m2.url}/s/{sid}"
+    st, who = call("POST", hub + "/api/whoami", {}, out["token"])[:2]; assert st == 200 and who["agent_id"] == "scout-one"                       # the created agent's token still works after the wake
+    assert call("POST", hub + "/api/create_agent", {"name": "grandchild", "role": "x"}, out["token"])[1]["error"].startswith("you may not create")
+    again = call("POST", hub + "/api/create_agent", {"name": "scout-two", "role": "researcher"}, tok(sb, "lead-ann"))[1]; assert again.get("agent_id") == "scout-two", again       # the orchestrator flag survived too

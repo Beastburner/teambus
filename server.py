@@ -1,7 +1,7 @@
 """TeamBus hub: MCP tools + REST mirror (for hooks/CLI) + read-only web view over one SQLite DB.
 Auth: every request needs a bearer token. TEAMBUS_TOKENS (json file) maps token -> agent (identity is derived from it, never from arguments).
 TEAMBUS_TOKEN is a shared read-only token (web view / status). TEAMBUS_NOAUTH=1 disables auth (local dev only)."""
-import asyncio, difflib, hashlib, json, os, re, sqlite3, sys, time
+import asyncio, difflib, hashlib, json, os, re, secrets, sqlite3, sys, threading, time
 from urllib.parse import parse_qs
 import uvicorn
 from mcp.server.fastmcp import FastMCP, Context
@@ -97,6 +97,9 @@ def owner_of(a):
     t = next((v for v in tokens().values() if v.get("agent_id") == a), {}); return t.get("owner") or (a.split("-")[0] if "-" in a else "")
 
 MAX_GROUP = 12
+MAX_AGENTS_HUB, MAX_CREATED = int(E("TEAMBUS_MAX_AGENTS", 50)), int(E("TEAMBUS_MAX_CREATED", 5))     # total agents on this hub; most one agent may create
+AGENT_ID_RE, AGENT_ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict: ids and roles end up in shell commands and in other agents' context
+_tokfile = threading.Lock()
 
 def delivery_note(p):
     """What the sender should expect: an agent only sees mail when its session runs (a prompt, a tool call or the end of a turn). An idle one waits for its user."""
@@ -238,6 +241,52 @@ def _ask_group(a, to, question, reply_to, k):
     if removed: out["warning"] = f"removed {removed} value(s) that looked like credentials from your message; share secrets out of band, never through TeamBus."
     return out
 
+def who_of(ctx):
+    """The authenticated identity record of the caller (agent_id, role, and flags such as can_create)."""
+    req = getattr(getattr(ctx, "request_context", None), "request", ctx); return (getattr(req, "scope", None) or {}).get("teambus") or {}
+
+def _tokens_raw():
+    try: return {t: ({"agent_id": v} if isinstance(v, str) else dict(v)) for t, v in json.load(open(TOKENS)).items()}
+    except OSError: return {}
+
+def _write_tokens(d):
+    prev = os.path.getmtime(TOKENS) if os.path.exists(TOKENS) else 0; tmp = TOKENS + ".tmp"
+    with open(tmp, "w") as f: json.dump(d, f, indent=1)
+    os.chmod(tmp, 0o600); os.replace(tmp, TOKENS); os.utime(TOKENS, (max(time.time(), prev + 1),) * 2)       # a guaranteed new mtime, so the running hub reloads at once
+
+def create_agent(name: str, role: str, brief: str = "", ctx: Context | None = None):
+    """Create a new agent on this team and get its token (only agents the hub owner allowed may; in a sandbox that is the `orchestrator` role).
+    `name` is lowercase letters, digits and dashes (2 to 31 characters); `role` is letters, digits, dashes, underscores. `brief` is delivered to the new agent as its first message, from you.
+    Returns the new agent's token and the exact `teambus-join` command to run, in the project folder where that new agent's Claude session will work. Give the token only to that session; never
+    post it in a message. Limits: you can create a few agents, not unlimited ones, and agents you create cannot create more."""
+    w = who_of(ctx); a = w.get("agent_id") or ""
+    if not a: return {"error": "no identity: connect through a token"}
+    if not w.get("can_create"): return {"error": "you may not create agents. The hub owner must allow it for your agent (in a sandbox, give it the role `orchestrator`; on your own hub, set \"can_create\": true on its token)."}
+    name, role = (name or "").strip(), (role or "").strip()
+    if not AGENT_ID_RE.fullmatch(name): return {"error": "name must be 2 to 31 characters: a lowercase letter first, then lowercase letters, digits or dashes"}
+    if not AGENT_ROLE_RE.fullmatch(role): return {"error": "role must be 1 to 24 characters: letters, digits, dashes or underscores"}
+    with _tokfile:
+        d = _tokens_raw(); ids = {v.get("agent_id") for v in d.values()} | set(known())
+        if name in ids: return {"error": f"an agent named {name!r} already exists; pick another name"}
+        if sum(1 for v in d.values() if v.get("created_by") == a) >= MAX_CREATED: return {"error": f"you have already created {MAX_CREATED} agents, the most one agent may create; remove one with remove_agent or ask your user"}
+        if len(ids) >= MAX_AGENTS_HUB: return {"error": f"this team is full ({MAX_AGENTS_HUB} agents)"}
+        tok = secrets.token_urlsafe(24); d[tok] = {"agent_id": name, "role": role, "created_by": a, **({"owner": w["owner"]} if w.get("owner") else {})}; _write_tokens(d)
+    text, _ = scrub(brief)
+    if text.strip(): run("INSERT INTO messages(ts,from_agent,to_agent,body,reply_to) VALUES(?,?,?,?,NULL)", time.time(), a, name, text[:4000])
+    return {"agent_id": name, "role": role, "token": tok, "created_by": a,
+            "join": f'teambus-join --hub "$TEAMBUS_URL" --agent-id {name} --role {role} --token {tok}',
+            "next": "Run `join` in the project folder where the new agent's Claude session will work (it sets up that folder), then start `claude` there. The brief, if you gave one, is in its inbox."}
+
+def remove_agent(name: str, ctx: Context | None = None):
+    """Remove an agent that YOU created (its token stops working at once). You cannot remove agents you did not create."""
+    a = who_of(ctx).get("agent_id") or ""
+    with _tokfile:
+        d = _tokens_raw(); hit = [t for t, v in d.items() if v.get("agent_id") == (name or "").strip() and v.get("created_by") == a and a]
+        if not hit: return {"error": f"no agent {name!r} created by you"}
+        for t in hit: del d[t]
+        _write_tokens(d)
+    return {"removed": name}
+
 def outbox(limit: int = 15, agent_id: str = "", ctx: Context | None = None):
     """Messages you sent, newest first, with read receipts: whether the recipient has read each one (and when), whether they answered, and the ids of the replies."""
     a = me(ctx, agent_id); now = time.time(); out = []
@@ -319,11 +368,11 @@ async def wait_for_messages(timeout_seconds: int = 30, agent_id: str = "", ctx: 
         await asyncio.sleep(1.5)
 mcp.tool(name="wait_for_messages")(wait_for_messages)
 
-for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts): mcp.tool()(fn)
+for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent): mcp.tool()(fn)
 
 # ---- REST mirror so hooks/CLI (plain scripts) call the same functions, plus the web view ----
 API = dict(whoami=whoami, post_intent=post_intent, resolve=resolve_intent, resolve_contract=resolve_contract, asked=asked, feed=team_feed, ask=ask_teammate_agent, inbox=check_inbox, outbox=outbox, thread=thread,
-           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest)
+           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent)
 
 def _route(name):
     async def h(request):
@@ -344,12 +393,12 @@ async def _index(request): return HTMLResponse(open(WEB).read()) if os.path.exis
 
 app = mcp.streamable_http_app(); app.add_middleware(Auth)
 
-def add_agent(agent_id, role, owner=""):
-    """`python server.py add-agent ID ROLE [OWNER]`: append a new token to the tokens file and print it (the running hub picks it up on its next request)."""
+def add_agent(agent_id, role, owner="", can_create=False):
+    """`python server.py add-agent ID ROLE [OWNER] [--can-create]`: append a new token to the tokens file and print it (the running hub picks it up on its next request)."""
     import secrets; t = secrets.token_urlsafe(24); d = json.load(open(TOKENS)) if os.path.exists(TOKENS) else {}
-    d[t] = {"agent_id": agent_id, "role": role, **({"owner": owner} if owner else {})}; json.dump(d, open(TOKENS, "w"), indent=1); os.chmod(TOKENS, 0o600); print(t)
+    d[t] = {"agent_id": agent_id, "role": role, **({"owner": owner} if owner else {}), **({"can_create": True} if can_create else {})}; json.dump(d, open(TOKENS, "w"), indent=1); os.chmod(TOKENS, 0o600); print(t)
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["add-agent"]: sys.exit(add_agent(*sys.argv[2:5]))
+    if sys.argv[1:2] == ["add-agent"]: sys.exit(add_agent(*[x for x in sys.argv[2:] if x != "--can-create"][:3], can_create="--can-create" in sys.argv[2:]))
     if not (NOAUTH or VIEWER or os.path.exists(TOKENS)): sys.exit(f"refusing to start without auth: create {TOKENS} (token -> agent map) and/or set TEAMBUS_TOKEN, or TEAMBUS_NOAUTH=1 for local dev")
     uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port, log_level="warning")

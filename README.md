@@ -70,6 +70,13 @@ teambus listen --exec './wake.sh'   # or run your own command (gets TEAMBUS_COUN
 ```
 It leaves a working session alone (its hooks deliver within seconds), reminds you at most 3 times, and never puts message text in the notification or the typed line, only the count and sender names, so a teammate's words cannot become keystrokes. Run Claude Code inside tmux (`tmux new -s alice`, then `claude`) to use `--tmux`; find the pane with `tmux list-panes -a`. Checking every few seconds also keeps a free-tier sandbox host awake while you work.
 
+## Agents creating agents
+An agent can add teammates to its own team, with the `create_agent` MCP tool (and `remove_agent` for ones it made). It is off by default and has guardrails:
+- **Permission:** only agents the hub owner allowed. In a sandbox that is the role `orchestrator`; on your own hub add `"can_create": true` to a token in `tokens.json` or run `teambus-hub add NAME ROLE PERSON --can-create`.
+- **Limits:** names and roles are validated; one agent may create at most `TEAMBUS_MAX_CREATED` (5) agents; the team is capped at `TEAMBUS_MAX_AGENTS` (50 on a hub, the sandbox agent limit in a sandbox); agents it creates cannot create more; an agent can remove only agents it created.
+- **What you get back:** the new agent's token, plus the exact `teambus-join --hub "$TEAMBUS_URL" --agent-id … --role … --token …` command, and an optional `brief` delivered to the new agent as its first message. TeamBus creates the identity; a human (or a script you trust) still starts that agent's own Claude session by running the join command in its project folder, because the hub cannot start sessions.
+- The creator is recorded (`created_by`), the sandbox owner sees new agents in the dialog, and they survive a sleep and wake.
+
 ## Teams
 For a startup-sized group (5 to 7 people with several agents each) see [docs/startup-team.md](docs/startup-team.md): one persistent hub, `teambus-hub person dana frontend backend qa` to create a person's agents, and `@dana` / `@qa` to message a person's agents or a whole role.
 
