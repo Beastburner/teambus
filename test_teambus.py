@@ -6,7 +6,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 HERE = os.path.dirname(os.path.abspath(__file__)); HOOK = f"{HERE}/hooks/hook.py"; URL = "http://127.0.0.1:8799"
-TOK = {"ta": {"agent_id": "alice", "role": "frontend"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}}
+TOK = {"ta": {"agent_id": "alice", "role": "frontend", "owner": "alice"}, "tg": {"agent_id": "alice-tests", "role": "tests", "owner": "alice"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}}
 
 @pytest.fixture(scope="module")
 def hub(tmp_path_factory):
@@ -152,6 +152,18 @@ def test_listen_only_types_into_a_tmux_pane_running_claude(hub, tmp_path):
     finally: os.environ.pop("STUB_CMD", None)
     lines = log.read_text().splitlines(); typed = next(l for l in lines if "-l" in l.split())
     assert "send-keys -t 0:1.0 -l TeamBus: you have" in typed and "from alice" in typed and "SECRET-BODY" not in typed and any(l.endswith("Enter") for l in lines)
+
+def test_group_addressing_by_person_and_role(hub):
+    r = api("tb", "ask", to_agent="@alice", question="both of your agents please")                # one message per agent that works for alice
+    assert sorted(r["recipients"]) == ["alice", "alice-tests"] and len(r["ids"]) == 2 and r["to"] == "@alice"
+    assert [m["body"] for m in api("tg", "inbox")] == ["both of your agents please"] and [m["body"] for m in api("ta", "inbox")] == ["both of your agents please"]   # each reads their own copy
+    assert {x["to"] for x in api("tb", "outbox")["sent"][:2]} == {"alice", "alice-tests"} and all(x["read"] for x in api("tb", "outbox")["sent"][:2])     # receipts are per agent
+    assert api("ta", "ask", to_agent="@backend", question="role group")["recipients"].keys() == {"bob"}       # a role reaches everyone who holds it
+    e = api("ta", "ask", to_agent="@nobody", question="x")["error"]; assert "no group '@nobody'" in e and "@alice" in e and "@backend" in e
+    assert "reply to the sender" in api("tb", "ask", to_agent="@alice", question="x", reply_to=1)["error"]
+    assert "that is you" not in str(api("ta", "ask", to_agent="@alice", question="note to my other agent")) and list(api("ta", "ask", to_agent="@alice", question="y")["recipients"]) == ["alice-tests"]   # never to yourself
+    assert next(p for p in api("viewer", "status", method="GET")["agents"] if p["agent_id"] == "alice-tests")["owner"] == "alice"
+    assert next(p for p in api("viewer", "status", method="GET")["agents"] if p["agent_id"] == "dave")["owner"] == ""      # no dash, no owner: nothing is guessed
 
 # ---- digest cursor ----
 def test_digest_cursor(hub):
@@ -472,7 +484,7 @@ def test_read_receipts_outbox_and_feed_tags(hub):
 
 
 def test_a_mistyped_agent_or_role_gets_a_did_you_mean(hub):
-    e = api("ta", "ask", to_agent="bobb", question="x")["error"]; assert "Did you mean 'bob'" in e and "Teammates:" in e and "alice" not in e.split("Teammates:")[1]
+    e = api("ta", "ask", to_agent="bobb", question="x")["error"]; assert "Did you mean 'bob'" in e and "Teammates:" in e and "alice (frontend)" not in e.split("Teammates:")[1]
     e = api("ta", "ask", to_agent="backnd", question="x")["error"]; assert "role 'backend' (bob)" in e
     assert "that is you" in api("ta", "ask", to_agent="alice", question="x")["error"]
     e = api("ta", "ask", question="no recipient given")["error"]; assert "to_agent is empty" in e and "bob (backend)" in e
@@ -578,3 +590,33 @@ def test_doctor_recognises_a_server_registered_in_local_scope(tmp_path):
     (tmp_path / "home" / ".claude.json").write_text(json.dumps({"projects": {str(proj.resolve()): {"mcpServers": {"teambus": {"type": "http", "url": "https://h.example/s/ZZZ/mcp"}}}}}))
     d = subprocess.run([sys.executable, f"{HERE}/teambus", "doctor", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout
     assert "[PASS] teambus MCP server is registered in Claude's local scope" in d and "[PASS] the MCP server points at the same hub" in d, d
+
+
+def test_teambus_hub_person_creates_one_agent_per_role_with_an_owner(tmp_path):
+    state = tmp_path / "state"; (state / "venv" / "bin").mkdir(parents=True)
+    (state / "venv" / "bin" / "python").write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n'); (state / "venv" / "bin" / "python").chmod(0o755)        # stands in for the hub's own venv
+    env = {**os.environ, "TEAMBUS_HUB_DIR": str(state), "TEAMBUS_HOST": "10.0.0.5"}
+    run = lambda *a: subprocess.run([f"{HERE}/teambus-hub", *a], env=env, capture_output=True, text=True)
+    r = run("person", "dana", "frontend", "backend", "qa"); assert r.returncode == 0, r.stderr
+    toks = json.load(open(state / "tokens.json")); got = {v["agent_id"]: (v["role"], v.get("owner")) for v in toks.values()}
+    assert got == {"dana-frontend": ("frontend", "dana"), "dana-backend": ("backend", "dana"), "dana-qa": ("qa", "dana")}
+    assert r.stdout.count("teambus-join --hub http://10.0.0.5:8765") == 3 and "--agent-id dana-qa --role qa --token" in r.stdout
+    again = run("person", "dana", "qa"); assert again.returncode != 0 and "dana-qa' already exists" in again.stderr                  # never silently re-issues a token
+    assert run("person", "Bad Name", "x").returncode != 0 and run("person", "erin", "bad role").returncode != 0
+    assert run("add", "erin-ops", "ops", "erin").returncode == 0 and any(v.get("owner") == "erin" for v in json.load(open(state / "tokens.json")).values())
+
+
+def test_many_agents_at_once_are_served_without_errors_or_long_waits(hub):
+    """Smoke test: 20 agents hammering the hub together (reads and writes) get no errors and no long waits. (It passes without WAL at this size; the next assertion is what pins WAL mode,
+    which is what the measured gain at 100 agents came from: 53 -> 162 requests per second.)"""
+    import sqlite3; assert sqlite3.connect(hub / "h.db").execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    import threading, random; errs, lat = [], []
+    def agent(i):
+        tok = ["ta", "tb", "td", "te"][i % 4]; end = time.time() + 3
+        while time.time() < end:
+            t0 = time.time(); ep = random.choice(["digest", "inbox", "post_intent", "feed", "ask"])
+            kw = {"digest": {"since": 0}, "inbox": {"peek": True}, "feed": {"since": 0}, "post_intent": {"files": [f"load/{i}.py"], "summary": "w"}, "ask": {"to_agent": "frank", "question": "ping"}}[ep]
+            r = api(tok, ep, **kw); lat.append(time.time() - t0)
+            if isinstance(r, dict) and r.get("http"): errs.append((ep, r))
+    th = [threading.Thread(target=agent, args=(i,)) for i in range(20)]; [x.start() for x in th]; [x.join() for x in th]
+    assert not errs and len(lat) > 100 and sorted(lat)[int(len(lat) * .95)] < 1.0, (errs[:3], len(lat))

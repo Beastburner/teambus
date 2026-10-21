@@ -47,7 +47,9 @@ def scrub(text):
     return out, n
 
 def db():
-    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row; return c
+    c = sqlite3.connect(DB, timeout=10); c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL"); c.execute("PRAGMA synchronous=NORMAL")      # readers no longer wait for writers: many agents poll while a few write
+    return c
 
 with db() as c:  # create + add any column an older DB lacks
     for t, cols in SCHEMA.items():
@@ -90,6 +92,12 @@ def me(ctx, claimed=""):
 def known():
     return {v["agent_id"]: v.get("role", "") for v in tokens().values() if v.get("agent_id")} | {r["agent_id"]: r["role"] for r in rows("SELECT agent_id, role FROM agents")}
 
+def owner_of(a):
+    """The person an agent works for: `owner` in tokens.json, else the part of the agent id before the first dash (alice-frontend -> alice)."""
+    t = next((v for v in tokens().values() if v.get("agent_id") == a), {}); return t.get("owner") or (a.split("-")[0] if "-" in a else "")
+
+MAX_GROUP = 12
+
 def delivery_note(p):
     """What the sender should expect: an agent only sees mail when its session runs (a prompt, a tool call or the end of a turn). An idle one waits for its user."""
     if not p or p.get("last_seen_ago") is None: return "never connected" + ("" if p.get("hook_ago") is not None else "; their hooks have never reported, so they only see this when they call check_inbox")
@@ -107,7 +115,7 @@ def presence():
         state = ("never connected" if seen is None else "offline" if now - seen > OFFLINE else "working" if ev in ("pre", "post", "prompt", "tool", "fail", "start") and ev_ago is not None and ev_ago < 120
                  else "idle" if ev == "stop" and ev_ago is not None and ev_ago < ACTIVE else "active" if now - seen < ACTIVE else "quiet")
         out.append({"agent_id": a, "role": role, "last_seen_ago": ago(seen), "active": seen is not None and now - seen < ACTIVE, "state": state,
-                    "hook_ago": ago(r["last_hook"]) if r else None, "mcp_ago": ago(r["last_mcp"]) if r else None, "event": ev, "event_ago": ev_ago})
+                    "owner": owner_of(a), "hook_ago": ago(r["last_hook"]) if r else None, "mcp_ago": ago(r["last_mcp"]) if r else None, "event": ev, "event_ago": ev_ago})
     return out
 
 class Auth:
@@ -188,12 +196,13 @@ def _suggest(to, k):
     return out
 
 def ask_teammate_agent(to_agent: str = "", question: str = "", reply_to: int | None = None, from_agent: str = "", ctx: Context | None = None):
-    """Send a teammate's agent a message (async). `to_agent` is an agent_id (or a role held by one agent). To answer a message, set reply_to=<its id>; the asker then sees it as answered.
+    """Send a teammate's agent a message (async). `to_agent` is an agent_id, a role held by one agent, or a group: `@alice` reaches every agent that works for alice, `@backend` every agent with that role (one message each, up to 12). To answer a message, set reply_to=<its id>; the asker then sees it as answered.
     It reaches them at their next prompt, tool call or when they finish; use `outbox` for read receipts, `wait_for_messages` to wait for the answer."""
     a = me(ctx, from_agent); parent = (rows("SELECT * FROM messages WHERE id=?", reply_to) or [None])[0] if reply_to else None
     if reply_to and not parent: return {"error": f"no message #{reply_to}"}
     to = (to_agent or "").strip() or (parent and parent["from_agent"]) or ""; k = known()
     if to == a: return {"error": "that is you; address a teammate"}
+    if to.startswith("@"): return _ask_group(a, to, question, reply_to, k)
     if to not in k:
         byrole = [x for x, r in k.items() if r == to and x != a]
         if len(byrole) > 1: return {"error": f"role {to!r} is held by {sorted(byrole)}; address one of them by agent_id"}
@@ -211,6 +220,22 @@ def ask_teammate_agent(to_agent: str = "", question: str = "", reply_to: int | N
     if seen is None or time.time() - seen > OFFLINE: warn.append(f"{to} has " + ("never connected" if seen is None else f"been offline {int((time.time() - seen) / 3600)}h") + "; the answer may take a while. Continue other work and check_inbox later.")
     if removed: warn.append(f"removed {removed} value(s) that looked like credentials from your message; share secrets out of band, never through TeamBus.")
     if warn: out["warning"] = " ".join(warn)
+    return out
+
+def _ask_group(a, to, question, reply_to, k):
+    """@alice = every agent that works for alice; @backend = every agent with that role. One message per recipient, so read receipts and replies stay per agent."""
+    if reply_to: return {"error": "reply_to answers one message; reply to the sender by agent_id, not to a group"}
+    g = to[1:].strip().lower(); others = {x: r for x, r in k.items() if x != a}
+    owners, roles = sorted(x for x in others if owner_of(x).lower() == g), sorted(x for x, r in others.items() if (r or "").lower() == g)
+    if owners and roles and owners != roles: return {"error": f"{to} is both a person ({owners}) and a role ({roles}); address them by agent_id"}
+    members = owners or roles
+    if not members:
+        groups = sorted({"@" + owner_of(x) for x in others if owner_of(x)} | {"@" + r for r in others.values() if r}); return {"error": f"no group {to!r}. Groups: {', '.join(groups) or 'none'}. Teammates: {', '.join(sorted(others))}"}
+    if len(members) > MAX_GROUP: return {"error": f"{to} has {len(members)} agents; the most one message may reach is {MAX_GROUP}. Address fewer, by agent_id"}
+    body, removed = scrub(question); pres = {p["agent_id"]: p for p in presence()}; now = time.time()
+    ids = [run("INSERT INTO messages(ts,from_agent,to_agent,body,reply_to) VALUES(?,?,?,?,NULL)", now, a, m, body) for m in members]
+    out = {"id": ids[0], "ids": ids, "to": to, "recipients": {m: delivery_note(pres.get(m, {})) for m in members}}
+    if removed: out["warning"] = f"removed {removed} value(s) that looked like credentials from your message; share secrets out of band, never through TeamBus."
     return out
 
 def outbox(limit: int = 15, agent_id: str = "", ctx: Context | None = None):
@@ -319,12 +344,12 @@ async def _index(request): return HTMLResponse(open(WEB).read()) if os.path.exis
 
 app = mcp.streamable_http_app(); app.add_middleware(Auth)
 
-def add_agent(agent_id, role):
-    """`python server.py add-agent ID ROLE`: append a new token to the tokens file and print it (the running hub picks it up on its next request)."""
+def add_agent(agent_id, role, owner=""):
+    """`python server.py add-agent ID ROLE [OWNER]`: append a new token to the tokens file and print it (the running hub picks it up on its next request)."""
     import secrets; t = secrets.token_urlsafe(24); d = json.load(open(TOKENS)) if os.path.exists(TOKENS) else {}
-    d[t] = {"agent_id": agent_id, "role": role}; json.dump(d, open(TOKENS, "w"), indent=1); os.chmod(TOKENS, 0o600); print(t)
+    d[t] = {"agent_id": agent_id, "role": role, **({"owner": owner} if owner else {})}; json.dump(d, open(TOKENS, "w"), indent=1); os.chmod(TOKENS, 0o600); print(t)
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["add-agent"]: sys.exit(add_agent(*sys.argv[2:4]))
+    if sys.argv[1:2] == ["add-agent"]: sys.exit(add_agent(*sys.argv[2:5]))
     if not (NOAUTH or VIEWER or os.path.exists(TOKENS)): sys.exit(f"refusing to start without auth: create {TOKENS} (token -> agent map) and/or set TEAMBUS_TOKEN, or TEAMBUS_NOAUTH=1 for local dev")
     uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port, log_level="warning")

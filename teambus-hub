@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # teambus-hub: run a TeamBus hub on this machine and invite teammates (Tailscale / VPN / LAN).
 #   ./teambus-hub start              first run sets everything up (venv, tokens, viewer token), then starts the hub in the background
-#   ./teambus-hub add NAME ROLE      create a token for a teammate and print their one-line invite   (e.g. add alice-frontend frontend)
+#   ./teambus-hub add NAME ROLE [PERSON]   create a token for one agent and print its one-line invite   (e.g. add alice-frontend frontend alice)
+#   ./teambus-hub person PERSON ROLE...    one person with several agents: person alice frontend backend qa  ->  alice-frontend, alice-backend, alice-qa (message them all with @alice)
 #   ./teambus-hub invite NAME        reprint an existing teammate's invite
 #   ./teambus-hub list | status | logs | stop | url
 # State lives in $TEAMBUS_HUB_DIR (default ~/.teambus-hub): venv, tokens.json, hub.db, hub.env, hub.log.
@@ -74,11 +75,23 @@ case "$cmd" in
     echo "Next: ./teambus-hub add alice-frontend frontend   (prints the invite to send)"
     echo "Only run this on a VPN (Tailscale) or trusted LAN: traffic is plain HTTP and the port has no rate limiting." ;;
   add)
-    [ $# -eq 2 ] || die "usage: add NAME ROLE"; ensure_venv; load_env
+    [ $# -ge 2 ] && [ $# -le 3 ] || die "usage: add NAME ROLE [PERSON]"; ensure_venv; load_env
     [ -f "$TOKENS" ] || echo '{}' > "$TOKENS"
     grep -q "\"agent_id\": *\"$1\"" "$TOKENS" && die "'$1' already exists; use: ./teambus-hub invite $1"
-    server add-agent "$1" "$2" >/dev/null; echo "added $1 ($2). Send this to them privately (it contains their token):"; echo; invite "$1"
+    server add-agent "$1" "$2" "${3:-}" >/dev/null; echo "added $1 ($2). Send this to them privately (it contains their token):"; echo; invite "$1"
     running || echo; running || echo "(hub is not running: ./teambus-hub start)" ;;
+  person)
+    [ $# -ge 2 ] || die "usage: person PERSON ROLE [ROLE...]   (creates PERSON-ROLE for each role)"; ensure_venv; load_env
+    [ -f "$TOKENS" ] || echo '{}' > "$TOKENS"; who="$1"; shift
+    echo "$who" | grep -Eq '^[a-z][a-z0-9]{1,20}$' || die "PERSON must be lowercase letters and digits (it becomes the start of each agent name)"
+    for r in "$@"; do
+      echo "$r" | grep -Eq '^[A-Za-z0-9_]{1,20}$' || die "role '$r' must be letters, digits or underscores"
+      grep -q "\"agent_id\": *\"$who-$r\"" "$TOKENS" && die "'$who-$r' already exists; use: ./teambus-hub invite $who-$r"
+    done
+    for r in "$@"; do server add-agent "$who-$r" "$r" "$who" >/dev/null; done
+    echo "added $# agent(s) for $who. Send each line to $who privately (each contains a token); run it in the project folder where that agent works:"; echo
+    for r in "$@"; do echo "# $who-$r"; invite "$who-$r"; echo; done
+    running || echo "(hub is not running: ./teambus-hub start)" ;;
   invite) [ $# -eq 1 ] || die "usage: invite NAME"; ensure_venv; load_env; invite "$1" ;;
   list)   ensure_venv; "$VENV/bin/python" - "$TOKENS" <<'PY'
 import json, sys

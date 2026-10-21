@@ -121,7 +121,7 @@ def status(a):
     try: f = call(c, "api/feed", {"since": 0}); inbox = call(c, "api/inbox", {"peek": True}); me = call(c, "api/whoami")
     except Exception as e: sys.exit(f"cannot use hub {c['url']}: {why(e, 'could not reach the hub')}")
     print(f"you: {me['agent_id']}  hub: {c['url']}\n\nTEAM")
-    for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<20} {p['role']:<10} {p.get('state', ''):<15} seen {ago(p['last_seen_ago'])}{'' if p.get('hook_ago') is not None else '  (hooks never reported)'}{'' if p.get('mcp_ago') is not None else '  (tools never connected)'}")
+    for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<22} {p['role']:<10} {p.get('owner', ''):<8} {p.get('state', ''):<15} seen {ago(p['last_seen_ago'])}{'' if p.get('hook_ago') is not None else '  (hooks never reported)'}{'' if p.get('mcp_ago') is not None else '  (tools never connected)'}")
     print(f"\nINBOX ({len(inbox)} unread)")
     for m in inbox: print(f"  #{m['id']} from {m['from_agent']}" + (f" (reply to #{m['reply_to']})" if m["reply_to"] else "") + f": {m['body']}")
     print("\nRECENT ACTIVITY")
