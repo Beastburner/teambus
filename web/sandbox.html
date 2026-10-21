@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark">
 <title>TeamBus sandbox</title>
-<meta name="description" content="Try TeamBus in a private sandbox that deletes itself in __MINS__ minutes.">
+<meta name="description" content="Try TeamBus in a private sandbox that you can delete whenever you like.">
 <link rel="preload" href="/assets/InstrumentSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
 <script type="importmap">{"imports":{"three":"/assets/three.module.min.js"}}</script>
 <style>
@@ -135,7 +135,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
      <p class="sub">It blocks conflicting edits across Claude Code sessions. Try it in a private sandbox.</p>
      <button class="btn" id="b" type="button" data-run>Create sandbox</button><button class="linkbtn" id="mine" type="button" hidden>Your sandboxes (<span id="mn">0</span>)</button>
      <p class="msg" id="msg" role="status"></p>
-     <p class="cap">Private hub. Deleted in __MINS__ minutes.</p>
+     <p class="cap">Private hub. You choose when it is deleted.</p>
     </div>
     <svg class="art hero-art" viewBox="0 0 640 440" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><g filter="url(#rough)"><path class="ink" d="M14 318 H626"/><path class="ink" d="M56 318 V396"/><path class="ink" d="M584 318 V396"/><path class="ink" d="M36 168 h106 a12 12 0 0 1 12 12 v86 a12 12 0 0 1 -12 12 h-106 a12 12 0 0 1 -12 -12 v-86 a12 12 0 0 1 12 -12z"/><path class="ink" d="M89.0 278 V318"/><path class="ink" d="M63.0 318 H115.0"/><path class="ink" d="M40 192 h96"/><path class="ink" d="M40 214 h72"/><path class="ink" d="M40 236 h108"/><path class="ink" d="M258 110 h146 a12 12 0 0 1 12 12 v116 a12 12 0 0 1 -12 12 h-146 a12 12 0 0 1 -12 -12 v-116 a12 12 0 0 1 12 -12z"/><path class="ink" d="M331.0 250 V318"/><path class="ink" d="M305.0 318 H357.0"/><path class="ink" d="M264 138 h100"/><path class="ink" d="M264 160 h58"/><path class="ink" d="M264 182 h126"/><path class="ink" d="M264 204 h84"/><path class="ink" d="M464 160 h130 a12 12 0 0 1 12 12 v88 a12 12 0 0 1 -12 12 h-130 a12 12 0 0 1 -12 -12 v-88 a12 12 0 0 1 12 -12z"/><path class="ink" d="M529.0 272 V318"/><path class="ink" d="M503.0 318 H555.0"/><path class="ink" d="M470 186 h100"/><path class="ink" d="M470 208 h70"/><path class="ink" d="M470 230 h118"/><path class="ink" d="M89 318 V416"/><path class="ink" d="M331 318 V416"/><path class="ink" d="M529 318 V416"/><path class="ink" d="M40 416 H600"/><path class="ink" d="M80 416 a9 9 0 1 0 18 0 a9 9 0 1 0 -18 0"/><path class="ink" d="M322 416 a9 9 0 1 0 18 0 a9 9 0 1 0 -18 0"/><path class="ink" d="M520 416 a9 9 0 1 0 18 0 a9 9 0 1 0 -18 0"/><path class="ink" d="M200 318 V248"/><path class="ink" d="M231.4 227.0 L213.0 245.4 L187.0 245.4 L168.6 227.0 L168.6 201.0 L187.0 182.6 L213.0 182.6 L231.4 201.0z"/><path class="ink" d="M184 214 H216"/><path class="ink" d="M486 56 h64 a16 16 0 0 1 16 16 v20 a16 16 0 0 1 -16 16 h-64 a16 16 0 0 1 -16 -16 v-20 a16 16 0 0 1 16 -16z"/><path class="ink" d="M500 108 L492 130 L520 108"/><path class="ink" d="M492 82 h.1 M518 82 h.1 M544 82 h.1"/></g></svg>
    </div>
@@ -168,7 +168,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
      <h2>What to expect</h2>
      <ul class="checks" id="checks">
       <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__PER_IP__ new sandboxes per hour, __MAX_ACTIVE__ at once</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
-      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__MINS__ minutes, then it is deleted</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
+      <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>You pick the lifetime, up to __MAXH__ hours</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
       <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>Up to __MAX_AGENTS__ agents each, with roles you choose</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
       <li><span class="cb"><svg class="tick" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="ink" d="M4 10.5 L8.5 15 L16.5 4.5"/></svg></span><span>__MAX_DB_MB__ MB of data, isolated from every other visitor</span><i class="hl"><svg class="hlsvg" viewBox="0 0 200 10" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="ink" d="M4 6 C50 2 120 9 196 4"/></svg></i></li>
      </ul>
@@ -189,6 +189,8 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
  <div id="view-new">
   <label class="fl" for="lbl">Name <span class="hint">optional</span></label>
   <input class="in" id="lbl" maxlength="40" placeholder="for example: checkout rewrite" autocomplete="off">
+  <label class="fl" for="life">Lifetime <span class="hint">deleted after this, or sooner after __IDLE__ minutes unused</span></label>
+  <select class="in" id="life"><option value="__MINS__">__MINS__ minutes</option><option value="120">2 hours</option><option value="480">8 hours</option><option value="1440">24 hours</option></select>
   <span class="fl">Agents <span class="hint">2 to __MAX_AGENTS__. Names: lowercase letters, numbers, dashes. Roles: letters, numbers, dashes.</span></span>
   <datalist id="roles"><option value="orchestrator"><option value="frontend"><option value="backend"><option value="fullstack"><option value="mobile"><option value="devops"><option value="qa"><option value="reviewer"><option value="design"><option value="data"><option value="security"></datalist>
   <div id="agrows"></div>
@@ -207,7 +209,8 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 /* Sandboxes. Plain script: it works even if WebGL or GSAP are unavailable. A visitor can hold several sandboxes (kept in this browser), choose each one's agents and roles,
    add agents later and delete a sandbox to free its slot. */
 const $=(i)=>document.getElementById(i),mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
-const INSTALL=__INSTALL__,NOTICE=__NOTICE__,LS="tb.sandboxes",DEFAULTS=[["alice-frontend","frontend"],["bob-backend","backend"],["carol-fullstack","fullstack"]],MAXA=__MAX_AGENTS__;
+const INSTALL=__INSTALL__,NOTICE=__NOTICE__,LS="tb.sandboxes",DEFAULTS=[["alice-frontend","frontend"],["bob-backend","backend"],["carol-fullstack","fullstack"]],MAXA=__MAX_AGENTS__,IDLE_M=__IDLE__,MAXMIN=__MAXH__*60;
+[...document.querySelectorAll("#life option")].forEach((o)=>{if(Number(o.value)>MAXMIN)o.remove()});
 const nowS=()=>Date.now()/1000;
 let boxes=[],sel=null,creating=false,delArmed=false;
 const load=()=>{try{const v=JSON.parse(localStorage.getItem(LS)||"[]");return Array.isArray(v)?v.filter((b)=>b&&b.id&&b.manage_token&&b.expires_at>nowS()):[]}catch(e){return[]}};
@@ -215,6 +218,8 @@ const save=()=>{try{localStorage.setItem(LS,JSON.stringify(boxes))}catch(e){}};
 boxes=load();
 const runs=[...document.querySelectorAll("[data-run]")];
 const animIn=(el)=>{if(window.gsap&&!matchMedia("(prefers-reduced-motion: reduce)").matches)gsap.fromTo(el,{opacity:0,y:-26,rotate:2.5,scale:.96},{opacity:1,y:0,rotate:0,scale:1,duration:.6,ease:"back.out(1.6)"})};
+const clock=(ts)=>new Date(ts*1000).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+const span=(m)=>m>=120?Math.round(m/60)+" hours":m+" min";
 const minsLeft=(b)=>Math.max(0,Math.round((b.expires_at-nowS())/60));
 function refreshMine(){boxes=boxes.filter((b)=>b.expires_at>nowS());$("mn").textContent=boxes.length;$("mine").hidden=boxes.length===0}
 function showView(v){$("view-new").hidden=v!=="new";$("view-list").hidden=v!=="list";$("ptitle").textContent=v==="new"?"New sandbox":"Your sandboxes";$("backlist").hidden=!boxes.length}
@@ -247,7 +252,7 @@ async function doCreate(){
  if(creating)return;const agents=[...$("agrows").children].map((r)=>({agent_id:r.children[0].value.trim(),role:r.children[1].value.trim()}));
  const btn=$("docreate");creating=true;btn.disabled=true;btn.textContent="Creating";$("nerr").textContent="";
  try{
-  const r=await fetch("new",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({label:$("lbl").value.trim(),agents})});let d={};try{d=await r.json()}catch(e){}
+  const r=await fetch("new",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({label:$("lbl").value.trim(),agents,lifetime_minutes:Number($("life").value)})});let d={};try{d=await r.json()}catch(e){}
   if(!r.ok){$("nerr").textContent=d.error||"Something went wrong.";return}
   boxes.unshift(d);save();sel=d.id;delArmed=false;refreshMine();renderList();showView("list");(btn.blur(),$("close").focus({preventScroll:true}))
  }catch(e){$("nerr").textContent="Could not reach the sandbox service."}
@@ -271,7 +276,7 @@ function renderList(){
  const inst=mk("div","inst"),il=mk("div","line"),ip=mk("pre","",INSTALL),ic=mk("button","copy","Copy");ic.type="button";
  ic.onclick=async()=>{try{await navigator.clipboard.writeText(INSTALL);ic.textContent="Copied"}catch(e){ic.textContent="Select"}setTimeout(()=>ic.textContent="Copy",1500)};
  il.append(ip,ic);inst.append(mk("span","fl","First time on this machine? Install TeamBus once:"),il);
- const parts=[meta,mk("p","exp","Expires in "+minsLeft(b)+" minutes. Run one command in each project folder:"),list,inst];
+ const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Run one command in each project folder:"),list,inst];
  if(NOTICE)parts.splice(2,0,mk("p","notice",NOTICE));
  if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
   n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ro.setAttribute("list","roles");ad.type="button";
@@ -279,6 +284,11 @@ function renderList(){
    try{const rs=await fetch("manage/"+b.id+"/agents",{method:"POST",headers:{...auth(b),"Content-Type":"application/json"},body:JSON.stringify({agent_id:n.value.trim(),role:ro.value.trim()})});let d={};try{d=await rs.json()}catch(e){}
     if(!rs.ok){er.textContent=d.error||"Something went wrong.";return}b.agents.push(d);save();renderList()}catch(e){er.textContent="Could not reach the sandbox service."}finally{ad.disabled=false}};
   r.append(n,ro,ad);f.append(mk("span","fl","Add an agent to this sandbox"),r,er);parts.push(f)}
+ const ext=mk("div","acts"),er2=mk("p","err");er2.setAttribute("role","alert");
+ for(const m of [30,120]){const x=mk("button","ghost","Add "+span(m));x.type="button";x.onclick=async()=>{er2.textContent="";x.disabled=true;
+   try{const rs=await fetch("manage/"+b.id+"/extend",{method:"POST",headers:{...auth(b),"Content-Type":"application/json"},body:JSON.stringify({minutes:m})});let d={};try{d=await rs.json()}catch(e){}
+    if(!rs.ok){er2.textContent=d.error||"Something went wrong.";return}b.expires_at=d.expires_at;b.max_expires_at=d.max_expires_at;save();renderList()}catch(e){er2.textContent="Could not reach the sandbox service."}finally{x.disabled=false}};ext.append(x)}
+ parts.push(ext,er2);
  const acts=mk("div","acts"),del=mk("button","ghost danger",delArmed?"Click again to delete":"Delete this sandbox");del.type="button";
  del.onclick=async()=>{if(!delArmed){delArmed=true;del.textContent="Click again to delete";return}
   del.disabled=true;try{const rs=await fetch("manage/"+b.id,{method:"DELETE",headers:auth(b)});if(rs.ok||rs.status===404||rs.status===401){boxes=boxes.filter((x)=>x.id!==b.id);save();delArmed=false;sel=null;renderList()}}catch(e){del.disabled=false;del.textContent="Could not reach the service, try again"}};

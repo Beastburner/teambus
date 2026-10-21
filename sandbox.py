@@ -24,6 +24,7 @@ INSTALL_CMD = E("SANDBOX_INSTALL_CMD", "curl -fsSL https://raw.githubusercontent
 IP_HEADER, TRUST_HOPS, DEBUG_IP = E("SANDBOX_CLIENT_IP_HEADER", "x-forwarded-for").lower(), max(1, int(E("SANDBOX_TRUST_PROXY_HOPS", 1))), E("SANDBOX_DEBUG_IP") == "1"
 PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
 AGENTS = [("alice-frontend", "frontend"), ("bob-backend", "backend"), ("carol-fullstack", "fullstack")]
+MAX_AGE, IDLE = int(E("SANDBOX_MAX_AGE", 86400)), int(E("SANDBOX_IDLE", 7200))   # hard ceiling on any sandbox's life; and how long without any request before it is dropped
 MAX_AGENTS, MAX_ACTIVE_PER_IP = max(2, int(E("SANDBOX_MAX_AGENTS", 5))), max(1, int(E("SANDBOX_MAX_ACTIVE_PER_IP", 3)))
 ID_RE, ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
 
@@ -88,6 +89,32 @@ def write_tokens(sb, agents):                                  # a new set of ag
 
 def add_token(sb, agent_id, role):                             # one more agent: every existing token keeps working
     tok = secrets.token_urlsafe(24); store_tokens(sb, {**sb["tokens"], tok: {"agent_id": agent_id, "role": role}}); return tok
+
+def deadline(sb):
+    """When this sandbox ends unless something changes: the earliest of its hard ceiling, the lifetime its owner chose, and `idle` seconds after its last request."""
+    return min(sb["hard"], sb["until"], sb["active"] + IDLE)
+
+def touch(sb):
+    """A real request reached the sandbox: push the idle deadline out."""
+    sb["active"] = time.time(); sb["expires"] = deadline(sb)
+
+def end_reason(sb):
+    """('expired', why) for whichever limit the sandbox ran into."""
+    now = time.time()
+    if now >= sb["hard"]: return "expired", f"it reached the {fmt_span(MAX_AGE)} maximum age"
+    if now >= sb["until"]: return "expired", "the lifetime its owner chose ran out"
+    return "expired", f"nothing used it for {fmt_span(IDLE)}"
+
+def fmt_span(secs): return f"{secs // 3600} h" if secs % 3600 == 0 and secs >= 3600 else f"{max(1, round(secs / 60))} min"
+
+def parse_lifetime(body):
+    """Seconds the owner asked for, from lifetime_minutes (or until_deleted: true = as long as allowed); (value, error)."""
+    if body.get("until_deleted") is True: return MAX_AGE, None
+    v = body.get("lifetime_minutes")
+    if v is None: return min(TTL, MAX_AGE), None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 1: return None, "lifetime_minutes must be a number of at least 1"
+    if v * 60 > MAX_AGE: return None, f"the longest a sandbox can live is {fmt_span(MAX_AGE)} (lifetime_minutes up to {MAX_AGE // 60})"
+    return int(v * 60), None
 
 def free_port():
     with socket.socket() as s: s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
@@ -178,7 +205,7 @@ async def refill():
 def kick():
     t = asyncio.create_task(refill()); BG.add(t); t.add_done_callback(BG.discard)
 
-async def create(ip, agents=None, label=""):
+async def create(ip, agents=None, label="", lifetime=None):
     global SPARE
     now = time.time(); log = NEW_LOG.setdefault(ip, collections.deque())
     while log and now - log[0] > 3600: log.popleft()
@@ -191,7 +218,8 @@ async def create(ip, agents=None, label=""):
     else: sb = await spawn()
     if not sb: return None, JSONResponse({"error": "could not start sandbox"}, 500)
     if agents is not None and [(v["agent_id"], v["role"]) for v in sb["tokens"].values()] != agents: write_tokens(sb, agents)
-    sb.update(expires=time.time() + TTL, ip=ip, label=label, manage=secrets.token_urlsafe(24), created=time.time(), joined={}); SBX[sb["id"]] = sb
+    now = time.time(); life = min(lifetime or TTL, MAX_AGE)
+    sb.update(ip=ip, label=label, manage=secrets.token_urlsafe(24), created=now, joined={}, hard=now + MAX_AGE, until=now + life, active=now); sb["expires"] = deadline(sb); SBX[sb["id"]] = sb
     track(REG.put(record(sb))); kick(); return sb, None
 
 def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
@@ -199,7 +227,7 @@ def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url
 def describe(sb, base):
     url = f"{base}/s/{sb['id']}"
     return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
-            "web_view": f"{url}/?token={sb['viewer']}", "max_agents": MAX_AGENTS, "manage_token": sb["manage"],
+            "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "web_view": f"{url}/?token={sb['viewer']}", "max_agents": MAX_AGENTS, "manage_token": sb["manage"],
             "agents": [{"agent_id": v["agent_id"], "role": v["role"], "token": t, "join": join_line(url, v["agent_id"], v["role"], t)} for t, v in sb["tokens"].items()]}
 
 async def body_json(request: Request):
@@ -220,7 +248,9 @@ async def new(request: Request):
     if e: return JSONResponse({"error": e}, 400)
     label, e = clean_label(body.get("label"))
     if e: return JSONResponse({"error": e}, 400)
-    sb, err = await create(ip_of(request), agents if "agents" in body else None, label)
+    life, e = parse_lifetime(body)
+    if e: return JSONResponse({"error": e}, 400)
+    sb, err = await create(ip_of(request), agents if "agents" in body else None, label, life)
     if err: return err
     return JSONResponse(describe(sb, public_base(request)), 201)
 
@@ -233,7 +263,7 @@ def managed(request: Request):
     now = time.time(); h = sb["hits"]
     while h and now - h[0] > 60: h.popleft()
     if len(h) >= RPM: return None, JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
-    h.append(now); return sb, None
+    h.append(now); touch(sb); return sb, None
 
 async def describe_live(sb, base):
     """describe() plus whether each agent has joined, from the hub's own presence data."""
@@ -249,6 +279,18 @@ async def manage_delete(request: Request):
     sb, err = managed(request)
     if err: return err
     await observe_joins(sb); destroy(sb["id"], "deleted", "deleted by its owner"); kick(); return JSONResponse({"deleted": sb["id"]})
+
+async def manage_extend(request: Request):
+    sb, err = managed(request)
+    if err: return err
+    body, err = await body_json(request)
+    if err: return err
+    body = body if isinstance(body, dict) else {}; m = body.get("minutes", 30)
+    if isinstance(m, bool) or not isinstance(m, (int, float)) or m < 1: return JSONResponse({"error": "minutes must be a number of at least 1"}, 400)
+    now = time.time(); new_until = min(sb["hard"], max(sb["until"], now) + m * 60)
+    if new_until <= sb["until"]: return JSONResponse({"error": f"already at the maximum: this sandbox ends by {when(sb['hard'])} at the latest"}, 400)
+    sb["until"] = new_until; sb["expires"] = deadline(sb); track(REG.update(sb["id"], expires_at=int(sb["expires"])))
+    return JSONResponse(await describe_live(sb, public_base(request)))
 
 async def manage_add_agent(request: Request):
     sb, err = managed(request)
@@ -268,7 +310,7 @@ def when(ts): return time.strftime("%H:%M UTC", time.gmtime(ts)) if ts else "an 
 def ended_view(rec, base):
     st, reason = rec.get("state", "unknown"), rec.get("reason", "")
     if st == "active": st, reason = "lost", "the server restarted"                     # still 'active' in the record but not running here: it died with an earlier run
-    msg = {"expired": f"This sandbox expired at {when(rec.get('expires_at'))}. Sandboxes last {TTL // 60} minutes.",
+    msg = {"expired": f"This sandbox expired at {when(rec.get('expires_at'))} ({reason}).",
            "deleted": f"This sandbox was deleted at {when(rec.get('ended_at'))} ({reason}).",
            "evicted": f"This sandbox was removed at {when(rec.get('ended_at'))}: {reason}."}.get(st, f"This sandbox was lost: {reason}.")
     j = rec.get("joined") or {}
@@ -279,7 +321,7 @@ def ended_view(rec, base):
 async def gone_response(request: Request, sid: str):
     """404 for a sandbox that is not running here, saying why when the registry knows."""
     base = public_base(request); live = SBX.get(sid)
-    rec = record(live, "expired", f"its {TTL // 60}-minute lifetime ran out", live["expires"]) if live else await reg_get(sid)     # expired a moment ago, not swept yet
+    rec = record(live, *end_reason(live), live["expires"]) if live else await reg_get(sid)     # expired a moment ago, not swept yet
     if rec: return JSONResponse(ended_view(rec, base), 404)
     note = "" if REG.kind != "memory" else " This server keeps no record across restarts, so an old link usually means it restarted (free instances sleep after 15 idle minutes and are replaced on every deploy)."
     m = f"This server has no record of a sandbox with that id.{note} Create a new one at {base}"
@@ -293,7 +335,7 @@ async def status(request: Request):
     h.append(now); sid = request.path_params["sid"]; sb = SBX.get(sid)
     if sb and sb["expires"] >= now:
         seen = await observe_joins(sb)
-        return JSONResponse({"id": sid, "state": "active", "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "expires_in_seconds": int(sb["expires"] - now),
+        return JSONResponse({"id": sid, "state": "active", "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "max_expires_at": int(sb["hard"]), "expires_in_seconds": int(sb["expires"] - now),
                              "agents": [{"agent_id": v["agent_id"], "role": v["role"], "joined": v["agent_id"] in sb["joined"], "joined_at": sb["joined"].get(v["agent_id"]), "last_seen_ago": seen.get(v["agent_id"])} for v in sb["tokens"].values()],
                              "registry": REG.kind})
     return await gone_response(request, sid)
@@ -305,7 +347,7 @@ async def proxy(request: Request):
     now = time.time(); h = sb["hits"]
     while h and now - h[0] > 60: h.popleft()
     if len(h) >= RPM: return JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
-    h.append(now)
+    h.append(now); touch(sb)
     if int(request.headers.get("content-length") or 0) > MAX_BODY: return JSONResponse({"error": "request too large"}, 413)
     body = b""
     async for chunk in request.stream():
@@ -320,7 +362,7 @@ PAGE = (HERE / "web" / "sandbox.html").read_text()   # landing page; the __X__ p
 for _ext, _t in ((".woff2", "font/woff2"), (".js", "text/javascript"), (".jpg", "image/jpeg")): mimetypes.add_type(_t, _ext)   # slim container images ship no MIME table
 ASSETS = {p.name: p for p in (HERE / "web" / "assets").glob("*") if p.is_file()}   # fonts + preview images; a fixed whitelist, so no path traversal
 async def home(request):
-    html = PAGE.replace("__MINS__", str(TTL // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}").replace("__MAX_ACTIVE__", str(MAX_ACTIVE_PER_IP)).replace("__MAX_AGENTS__", str(MAX_AGENTS)).replace("__INSTALL__", json.dumps(INSTALL_CMD)).replace("__NOTICE__", json.dumps(NOTICE))
+    html = PAGE.replace("__MINS__", str(min(TTL, MAX_AGE) // 60)).replace("__MAXH__", f"{MAX_AGE / 3600:g}").replace("__IDLE__", str(IDLE // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}").replace("__MAX_ACTIVE__", str(MAX_ACTIVE_PER_IP)).replace("__MAX_AGENTS__", str(MAX_AGENTS)).replace("__INSTALL__", json.dumps(INSTALL_CMD)).replace("__NOTICE__", json.dumps(NOTICE))
     return HTMLResponse(html)
 async def asset(request):
     p = ASSETS.get(request.path_params["name"])
@@ -335,7 +377,7 @@ async def reaper():
     while True:
         await asyncio.sleep(float(E("SANDBOX_REAP_SECS", 5))); now = time.time()
         for sid, sb in list(SBX.items()):
-            why = ("expired", f"its {TTL // 60}-minute lifetime ran out") if sb["expires"] < now else ("lost", "its process stopped unexpectedly") if sb["proc"].poll() is not None else \
+            why = end_reason(sb) if sb["expires"] < now else ("lost", "its process stopped unexpectedly") if sb["proc"].poll() is not None else \
                   ("evicted", f"it grew past the {MAX_DB / 1e6:g} MB data limit") if db_bytes(sb) > MAX_DB else None
             if why: await observe_joins(sb); destroy(sid, *why)
         global SPARE
@@ -368,7 +410,7 @@ async def lifespan(app):
     await client.aclose()
 
 app = Starlette(routes=[Route("/", home), Route("/healthz", healthz), *([Route("/_ip", debug_ip)] if DEBUG_IP else []), Route("/assets/{name}", asset), Route("/new", new, methods=["POST"]),
-                        Route("/status/{sid}", status, methods=["GET"]), Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]),
+                        Route("/status/{sid}", status, methods=["GET"]), Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]), Route("/manage/{sid}/extend", manage_extend, methods=["POST"]),
                         Route("/s/{sid}/{rest:path}", proxy, methods=["GET", "POST", "DELETE", "OPTIONS"]), Route("/s/{sid}", proxy, methods=["GET"], name="bare")], lifespan=lifespan)
 
 if __name__ == "__main__":

@@ -117,7 +117,7 @@ def test_forwarded_header_honoured_when_trusted(mgr):
 def test_landing_page_is_served_with_live_limits(mgr):
     m = mgr(SANDBOX_TTL=5400, SANDBOX_NEW_PER_IP_HOUR=7, SANDBOX_MAX_DB_MB=2, SANDBOX_MAX_ACTIVE_PER_IP=4, SANDBOX_MAX_AGENTS=6, SANDBOX_INSTALL_CMD="curl -fsSL https://example.test/i.sh | sh"); st, html = req(m.url + "/")
     assert st == 200 and b"TeamBus sandbox" in html and b'id="b"' in html
-    assert b"90 minutes" in html and b"7 new sandboxes per hour, 4 at once" in html and b"Up to 6 agents each" in html and b"2 MB" in html and b"https://example.test/i.sh" in html and b",MAXA=6;" in html and b"__" not in html.replace(b"__proto__", b"")   # every placeholder filled from the real config
+    assert b"90 minutes" in html and b"7 new sandboxes per hour, 4 at once" in html and b"Up to 6 agents each" in html and b"2 MB" in html and b"https://example.test/i.sh" in html and b",MAXA=6,IDLE_M=120,MAXMIN=24*60;" in html and b"__" not in html.replace(b"__proto__", b"")   # every placeholder filled from the real config
 
 def test_assets_served_from_a_fixed_whitelist(mgr):
     m = mgr()
@@ -362,7 +362,7 @@ def test_status_explains_deleted_expired_and_unknown(mgr):
     st, s = call("GET", m.url + "/status/" + a["id"]); assert st == 404 and s["state"] == "deleted" and "deleted" in s["message"] and "Create a new one at" in s["message"]
     st, p = call("GET", a["hub_url"] + "/healthz"); assert st == 404 and p["state"] == "deleted" and p["error"] == p["message"]            # the hub URL itself explains, which is what teambus-join prints
     wait_for(lambda: call("GET", m.url + "/status/" + b["id"])[1].get("state") == "expired", 15)
-    s = call("GET", m.url + "/status/" + b["id"])[1]; assert s["state"] == "expired" and "lifetime" in s["reason"] and "Sandboxes last" in s["message"]
+    s = call("GET", m.url + "/status/" + b["id"])[1]; assert s["state"] == "expired" and "lifetime" in s["reason"] and "expired at" in s["message"]
     st, u = call("GET", m.url + "/status/0123456789ab"); assert st == 404 and u["state"] == "unknown" and "restarted" in u["message"]       # in-memory registry: an unknown id usually means a restart
     assert json.loads(req(m.url + "/healthz")[1])["registry"] == "memory"
 
@@ -496,3 +496,36 @@ def test_start_sh_on_render_defaults_to_the_sandbox_with_a_free_hosting_notice(t
         finally: p.terminate(); p.wait(10)
     st, html = run({}); assert st == 200 and "Free hosting: the server sleeps after about 15 idle minutes" in html           # the sandbox started, warning included
     st, html = run({"SANDBOX_NOTICE": ""}); assert st == 200 and "Free hosting" not in html and 'NOTICE=""' in html          # an empty value hides it
+
+
+# ---- owner-chosen lifetime, extend, idle timeout, hard ceiling ----
+def test_owner_chooses_the_lifetime_and_it_is_capped(mgr):
+    m = mgr(SANDBOX_TTL=1800, SANDBOX_MAX_AGE=7200, SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9)
+    d = call("POST", m.url + "/new")[1]; assert 1700 < d["expires_in_seconds"] <= 1800                                    # default
+    d = call("POST", m.url + "/new", {"lifetime_minutes": 90})[1]; assert 5300 < d["expires_in_seconds"] <= 5400
+    d = call("POST", m.url + "/new", {"until_deleted": True})[1]; assert 7100 < d["expires_in_seconds"] <= 7200 and d["max_expires_at"] == d["expires_at"]   # "until I delete" still has the ceiling
+    st, e = call("POST", m.url + "/new", {"lifetime_minutes": 121}); assert st == 400 and "longest" in e["error"]
+    for bad in (0, -5, "10", True): assert call("POST", m.url + "/new", {"lifetime_minutes": bad})[0] == 400
+
+def test_extend_adds_time_up_to_the_ceiling(mgr):
+    m = mgr(SANDBOX_TTL=600, SANDBOX_MAX_AGE=1800, SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9)
+    d = call("POST", m.url + "/new")[1]; url = m.url + "/manage/" + d["id"] + "/extend"
+    assert call("POST", url, {"minutes": 10})[0] == 401                                                                   # needs the manage token
+    st, x = call("POST", url, {"minutes": 10}, d["manage_token"]); assert st == 200 and x["expires_at"] - d["expires_at"] in (599, 600, 601)
+    st, x = call("POST", url, {"minutes": 600}, d["manage_token"]); assert st == 200 and x["expires_at"] == x["max_expires_at"]   # clamped to the ceiling, not rejected
+    st, e = call("POST", url, {"minutes": 5}, d["manage_token"]); assert st == 400 and "maximum" in e["error"]             # nothing left to add
+    assert call("POST", url, {"minutes": 0}, d["manage_token"])[0] == 400
+
+def test_an_unused_sandbox_expires_early_but_use_keeps_it_alive(mgr):
+    m = mgr(SANDBOX_TTL=3600, SANDBOX_IDLE=3, SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9)
+    idle = call("POST", m.url + "/new")[1]; busy = call("POST", m.url + "/new")[1]
+    for _ in range(8): call("POST", busy["hub_url"] + "/api/whoami", {}, tok(busy, "alice-frontend")); time.sleep(0.6)      # ~5s of use, longer than the 3s idle limit
+    assert call("GET", m.url + "/status/" + busy["id"])[1]["state"] == "active"
+    s = wait_for(lambda: call("GET", m.url + "/status/" + idle["id"])[1].get("state") == "expired", 15) and call("GET", m.url + "/status/" + idle["id"])[1]
+    assert s["state"] == "expired" and "nothing used it" in s["reason"]
+
+def test_ceiling_beats_activity(mgr):
+    m = mgr(SANDBOX_TTL=3600, SANDBOX_MAX_AGE=3, SANDBOX_IDLE=3600)
+    d = call("POST", m.url + "/new")[1]
+    wait_for(lambda: call("GET", m.url + "/status/" + d["id"])[1].get("state") == "expired", 15)
+    assert "maximum age" in call("GET", m.url + "/status/" + d["id"])[1]["reason"]

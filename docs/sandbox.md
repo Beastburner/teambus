@@ -1,5 +1,7 @@
 # Public sandbox
 
+> **This is for trying TeamBus, not for real team work.** Sandboxes are deleted at the owner's chosen time, after a period of no use, or at the maximum age, and on a free host they also vanish whenever the instance sleeps or is redeployed. For a team, run a persistent hub: see [deploy.md](deploy.md).
+
 `sandbox.py` lets anyone get a **private, throwaway hub** (alice-frontend / bob-backend / carol-fullstack) from a web page, so they can try TeamBus without hosting anything. Each visitor gets their own `server.py` process and SQLite file, so visitors never see each other's data and agents cannot prompt-inject strangers.
 
 ## Run it
@@ -37,7 +39,9 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 ## Limits (all environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
-| `SANDBOX_TTL` | 3600 | seconds until a sandbox and its data are deleted |
+| `SANDBOX_TTL` | 3600 | default lifetime in seconds. The owner can pick another when creating (`lifetime_minutes`, or `until_deleted: true` for the longest allowed) and add time with `POST /manage/<id>/extend {minutes}` |
+| `SANDBOX_MAX_AGE` | 86400 | hard ceiling in seconds: no sandbox lives longer, whatever was chosen or however busy it is |
+| `SANDBOX_IDLE` | 7200 | a sandbox nobody has sent a request to for this many seconds is deleted early |
 | `SANDBOX_MAX` | 20 | concurrent sandboxes (503 when full) |
 | `SANDBOX_NEW_PER_IP_HOUR` | 6 | new sandboxes per client IP per hour (429) |
 | `SANDBOX_MAX_ACTIVE_PER_IP` | 3 | sandboxes one client can hold at once (429; delete one to free the slot) |
