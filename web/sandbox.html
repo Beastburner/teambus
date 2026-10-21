@@ -314,13 +314,21 @@ async function verify(){   /* drop sandboxes the server no longer has (expired, 
  for(const b of gone)await ended(b);
  save();refreshMine()}
 /* ---- account (Google sign-in): find, wake and re-key your sandboxes from any browser. Off unless the server has a client id. ---- */
-let ME={enabled:false,signed:false,email:"",client:""},slotPending=null,gsiLoaded=false;
+let ME={enabled:false,signed:false,email:"",client:"",mode:"",fb:null},slotPending=null,gsiLoaded=false;
 function renderAcct(){const a=$("acct");a.replaceChildren();a.hidden=!ME.enabled;slotPending=null;if(!ME.enabled)return;
  if(ME.signed){const w=mk("span","who","Signed in as "+ME.email),out=mk("button","linkbtn","Sign out");out.type="button";
   out.onclick=async()=>{try{await fetch("auth/logout",{method:"POST",headers:H1})}catch(e){}ME.signed=false;ME.email="";boxes=boxes.filter((b)=>!b.account);save();refreshMine();renderAcct();if(boxes.length)renderList();else{resetBuilder();showView("new")}};
   a.append(w,out,mk("p","hint2","Your sandboxes in this account show up on any device you sign in on."));return}
  const slot=mk("div");a.append(mk("p","","Sign in to find your sandboxes from any device, even after you clear this browser."),slot);slotPending=slot}
-function loadGsi(){if(!slotPending||!ME.client)return;const slot=slotPending;const go=()=>{try{google.accounts.id.initialize({client_id:ME.client,callback:onCredential,ux_mode:"popup"});google.accounts.id.renderButton(slot,{theme:"outline",size:"medium",text:"signin_with"})}catch(e){slot.textContent="Google sign-in could not load."}};
+const FBV="10.12.2";   /* Firebase's browser SDK, from Google's CDN, only when someone opens the dialog and presses the button */
+function fbButton(slot){const btn=mk("button","btn sm","Sign in with Google");btn.type="button";const er=mk("p","err");er.setAttribute("role","alert");
+ btn.onclick=async()=>{er.textContent="";btn.disabled=true;btn.textContent="Opening Google...";
+  try{const B="https://www.gstatic.com/firebasejs/"+FBV+"/",{initializeApp}=await import(B+"firebase-app.js"),{getAuth,GoogleAuthProvider,signInWithPopup}=await import(B+"firebase-auth.js");
+   const res=await signInWithPopup(getAuth(initializeApp(ME.fb)),new GoogleAuthProvider());await onCredential({credential:await res.user.getIdToken()})}
+  catch(e){er.textContent=e&&e.code==="auth/popup-closed-by-user"?"Sign-in was closed before it finished.":"Google sign-in did not complete"+(e&&e.code?" ("+e.code+")":"")+"."}
+  finally{btn.disabled=false;btn.textContent="Sign in with Google"}};slot.append(btn,er)}
+function loadGsi(){if(slotPending&&ME.mode==="firebase"&&ME.fb){if(!slotPending.firstChild)fbButton(slotPending);return}
+ if(!slotPending||!ME.client)return;const slot=slotPending;const go=()=>{try{google.accounts.id.initialize({client_id:ME.client,callback:onCredential,ux_mode:"popup"});google.accounts.id.renderButton(slot,{theme:"outline",size:"medium",text:"signin_with"})}catch(e){slot.textContent="Google sign-in could not load."}};
  if(window.google&&google.accounts){go();return}if(gsiLoaded)return;gsiLoaded=true;const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.async=true;s.onload=go;s.onerror=()=>{slot.textContent="Google sign-in could not load."};document.head.append(s)}   /* loaded only when the panel opens, never on page load */
 async function onCredential(resp){try{const r=await fetch("auth/google",{method:"POST",headers:{...H1,"Content-Type":"application/json"},body:JSON.stringify({credential:resp.credential})});const d=await r.json();
  if(!r.ok){$("acct").append(mk("p","err",d.error||"Sign-in failed."));return}ME.signed=true;ME.email=d.email;renderAcct();await syncAccount();if(boxes.length){renderList();showView("list")}}catch(e){$("acct").append(mk("p","err","Could not reach the sandbox service."))}}
@@ -329,7 +337,7 @@ async function syncAccount(){try{const r=await fetch("me/sandboxes");if(!r.ok)re
  save();refreshMine()}catch(e){}}
 async function openFromAccount(b){try{const r=await fetch("me/sandboxes/"+b.id);const d=await r.json();if(!r.ok){boxes=boxes.filter((x)=>x.id!==b.id);save();notes.push({label:b.label||"Sandbox",message:d.error||"It is no longer in your account."});renderEnded();refreshMine();sel=null;renderList();return}
  b.web_view=d.web_view;b.hub_url=d.hub_url;b.expires_at=d.expires_at;b.agents=mergeAgents(b.agents,d.agents);save();renderList()}catch(e){$("o").replaceChildren(mk("p","err","Could not reach the sandbox service."))}}
-async function loadAccount(){try{const c=await(await fetch("auth/config")).json();ME={enabled:!!c.enabled,signed:!!c.signed_in,email:c.email||"",client:c.client_id||""}}catch(e){}renderAcct();if(ME.signed){await syncAccount();refreshMine()}}
+async function loadAccount(){try{const c=await(await fetch("auth/config")).json();ME={enabled:!!c.enabled,signed:!!c.signed_in,email:c.email||"",client:c.client_id||"",mode:c.mode||"",fb:c.firebase||null}}catch(e){}renderAcct();if(ME.signed){await syncAccount();refreshMine()}}
 loadAccount();
 async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden){if(boxes.length)renderList();else{resetBuilder();showView("new")}}}
 runs.forEach((b)=>b.onclick=()=>{resetBuilder();openPanel("new")});

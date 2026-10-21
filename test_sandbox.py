@@ -730,3 +730,36 @@ def test_every_local_module_the_service_imports_is_copied_into_both_images():
         copied = " ".join(l for l in (HERE / df).read_text().splitlines() if l.startswith("COPY"))
         missing = [m for m in sorted(local) if f"{m}.py" not in copied and not (df == "Dockerfile.sandbox" and m == "server" and False)]
         assert not missing, f"{df} does not COPY {missing}"
+
+
+# ---- accounts through Firebase Authentication (the project's own authorised domains) ----
+def fb_token(g, project="demo-proj", sub="uid-1", email="fran@example.test", provider="google.com", **over):
+    c = {"iss": f"https://securetoken.google.com/{project}", "aud": project, "sub": sub, "email": email, "email_verified": True, "firebase": {"sign_in_provider": provider}, "iat": int(time.time()), "exp": int(time.time()) + 3600, **over}
+    return pyjwt_mod.encode({k: v for k, v in c.items() if v is not None}, g.key, algorithm="RS256", headers={"kid": "k1"})
+
+def fb_env(g): return {"FIREBASE_PROJECT_ID": "demo-proj", "FIREBASE_WEB_API_KEY": "AIzaFakeWebKey", "GOOGLE_JWKS_URL": f"http://127.0.0.1:{g.port}/jwks"}
+
+def test_firebase_mode_publishes_only_public_config_and_accepts_only_google_provider_tokens_for_this_project(mgr, google):
+    m = mgr(**fb_env(google)); cfg = call("GET", m.url + "/auth/config")[1]
+    assert cfg["enabled"] and cfg["mode"] == "firebase" and cfg["firebase"] == {"apiKey": "AIzaFakeWebKey", "authDomain": "demo-proj.firebaseapp.com", "projectId": "demo-proj"} and cfg["client_id"] == ""
+    assert call("GET", m.url + "/healthz")[1]["sign_in_mode"] == "firebase"
+    bad = {"another project": fb_token(google, project="other-proj"), "wrong issuer": fb_token(google, iss="https://securetoken.google.com/other-proj"), "anonymous": fb_token(google, provider="anonymous", email=None, email_verified=False),
+           "password sign-in": fb_token(google, provider="password"), "unverified email": fb_token(google, email_verified=False), "expired": fb_token(google, exp=int(time.time()) - 600),
+           "a Google OAuth token": google.token(aud="demo-proj")}                    # issuer accounts.google.com is not this project's securetoken issuer
+    for name, tk in bad.items(): assert acall("POST", m.url + "/auth/google", {"credential": tk})[0] == 401, name
+    st, d, sc = acall("POST", m.url + "/auth/google", {"credential": fb_token(google)}); assert st == 200 and d["email"] == "fran@example.test" and "HttpOnly" in sc
+
+def test_a_firebase_account_owns_and_recovers_sandboxes_like_a_google_one(mgr, google):
+    m = mgr(**fb_env(google), SANDBOX_NEW_PER_IP_HOUR=20, SANDBOX_MAX_ACTIVE_PER_IP=9)
+    ck = acall("POST", m.url + "/auth/google", {"credential": fb_token(google)})[2].split(";")[0]
+    sb = acall("POST", m.url + "/new", {"label": "fb-owned"}, cookie=ck)[1]; assert sb["owned"] is True
+    ck2 = acall("POST", m.url + "/auth/google", {"credential": fb_token(google)})[2].split(";")[0]                    # a new browser, same account
+    assert [x["label"] for x in acall("GET", m.url + "/me/sandboxes", cookie=ck2)[1]["sandboxes"]] == ["fb-owned"]
+    ck3 = acall("POST", m.url + "/auth/google", {"credential": fb_token(google, sub="uid-2", email="eve@example.test")})[2].split(";")[0]
+    assert acall("GET", m.url + "/me/sandboxes", cookie=ck3)[1]["sandboxes"] == [] and acall("DELETE", f"{m.url}/manage/{sb['id']}", cookie=ck3)[0] == 401
+
+def test_firebase_mode_takes_the_project_from_the_stored_service_account(mgr, fake, google):
+    m = mgr(**fake.env(), FIREBASE_WEB_API_KEY="AIzaFakeWebKey", GOOGLE_JWKS_URL=f"http://127.0.0.1:{google.port}/jwks"); cfg = call("GET", m.url + "/auth/config")[1]      # the fake service account says project "proj"
+    assert cfg["mode"] == "firebase" and cfg["firebase"]["projectId"] == "proj" and cfg["firebase"]["authDomain"] == "proj.firebaseapp.com"
+    assert acall("POST", m.url + "/auth/google", {"credential": fb_token(google, project="proj")})[0] == 200
+    assert acall("POST", m.url + "/auth/google", {"credential": fb_token(google, project="demo-proj")})[0] == 401

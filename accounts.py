@@ -13,19 +13,33 @@ ISSUERS = {"https://accounts.google.com", "accounts.google.com"}
 def owner_id(sub): return hashlib.sha256(("tb-owner:" + sub).encode()).hexdigest()[:32]
 
 
+GOOGLE_JWKS = "https://www.googleapis.com/oauth2/v3/certs"
+FIREBASE_JWKS = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+
+
 class Verifier:
-    def __init__(self, client_id, jwks_url):
-        self.client_id, self.jwks_url, self._client = client_id, jwks_url, None
+    """Two ways to prove who someone is, both ending in the same signed session:
+      mode "google"    a Google ID token for your OAuth client id (GOOGLE_CLIENT_ID)
+      mode "firebase"  a Firebase Authentication ID token for your Firebase project, signed in with the Google provider (uses the project's own authorised domains)"""
+    def __init__(self, client_id="", jwks_url="", project=""):
+        self.mode = "firebase" if project else "google" if client_id else ""
+        self.audience = project or client_id
+        self.issuers = {f"https://securetoken.google.com/{project}"} if project else ISSUERS
+        self.jwks_url = jwks_url or (FIREBASE_JWKS if project else GOOGLE_JWKS); self._client = None
+
+    @property
+    def enabled(self): return bool(self.mode)
 
     def verify(self, token):
-        """The token's claims if it is a valid, unexpired Google ID token for this app with a verified email; else None. Blocking: run it in a thread."""
-        if not self.client_id or not isinstance(token, str) or token.count(".") != 2 or len(token) > 4096: return None
+        """The token's claims if it is a valid, unexpired ID token for this app with a verified email; else None. Blocking: run it in a thread."""
+        if not self.enabled or not isinstance(token, str) or token.count(".") != 2 or len(token) > 4096: return None
         try:
             self._client = self._client or jwt.PyJWKClient(self.jwks_url, cache_keys=True, lifespan=3600, timeout=6)
             key = self._client.get_signing_key_from_jwt(token).key
-            c = jwt.decode(token, key, algorithms=["RS256"], audience=self.client_id, leeway=60, options={"require": ["exp", "iat", "sub", "aud", "iss"]})
+            c = jwt.decode(token, key, algorithms=["RS256"], audience=self.audience, leeway=60, options={"require": ["exp", "iat", "sub", "aud", "iss"]})
         except Exception: return None
-        if c.get("iss") not in ISSUERS or not c.get("email_verified") or not c.get("sub"): return None
+        if c.get("iss") not in self.issuers or not c.get("email_verified") or not c.get("sub"): return None
+        if self.mode == "firebase" and (c.get("firebase") or {}).get("sign_in_provider") != "google.com": return None     # no anonymous, phone or password sign-ins
         return c
 
 

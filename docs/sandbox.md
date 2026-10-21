@@ -40,6 +40,7 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 | Variable | Default | Meaning |
 |---|---|---|
 | `SANDBOX_TTL` | 3600 | default lifetime in seconds. The owner can pick another when creating (`lifetime_minutes`, or `until_deleted: true` for the longest allowed) and add time with `POST /manage/<id>/extend {minutes}` |
+| `FIREBASE_WEB_API_KEY` | empty | the Firebase web app's apiKey: turns on sign-in through Firebase Authentication, using your project's authorised domains ([accounts.md](accounts.md)); the project comes from the service account, or `FIREBASE_PROJECT_ID` |
 | `GOOGLE_CLIENT_ID` | empty | your Google OAuth client id; turns on "Sign in with Google" ([accounts.md](accounts.md)) |
 | `SANDBOX_SESSION_SECRET` | derived from the service-account key, else random per run | signs the login cookie; set it if you use accounts without Firestore and want logins to survive a restart |
 | `SANDBOX_RESUME` | 1 | wake sandboxes after the service restarts or sleeps (only takes effect with a Firestore registry); `0` turns it off |

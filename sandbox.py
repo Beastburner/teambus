@@ -26,8 +26,9 @@ PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
 AGENTS = [("alice-frontend", "frontend"), ("bob-backend", "backend"), ("carol-fullstack", "fullstack")]
 MAX_AGE, IDLE = int(E("SANDBOX_MAX_AGE", 86400)), int(E("SANDBOX_IDLE", 7200))   # hard ceiling on any sandbox's life; and how long without any request before it is dropped
 RESUME, SNAP_SECS, SNAP_MAX = E("SANDBOX_RESUME", "1") != "0", max(5, int(E("SANDBOX_SNAPSHOT_SECS", 60))), 900_000   # snapshot size limit: one Firestore document is 1 MiB
-GOOGLE_ID, JWKS_URL = E("GOOGLE_CLIENT_ID"), E("GOOGLE_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs")   # sign-in is off unless an OAuth client id is configured
-VERIFIER, SESSIONS = accounts.Verifier(GOOGLE_ID, JWKS_URL), None
+GOOGLE_ID, JWKS_URL = E("GOOGLE_CLIENT_ID"), E("GOOGLE_JWKS_URL")   # sign-in is off unless an OAuth client id (GOOGLE_CLIENT_ID) or a Firebase web key (FIREBASE_WEB_API_KEY, project from the service account) is configured
+FB_KEY, FB_PROJECT, FB_DOMAIN = E("FIREBASE_WEB_API_KEY"), E("FIREBASE_PROJECT_ID"), E("FIREBASE_AUTH_DOMAIN")
+VERIFIER, SESSIONS = accounts.Verifier(GOOGLE_ID, JWKS_URL), None       # replaced at startup when Firebase sign-in is configured
 MAX_AGENTS, MAX_ACTIVE_PER_IP = max(2, int(E("SANDBOX_MAX_AGENTS", 5))), max(1, int(E("SANDBOX_MAX_ACTIVE_PER_IP", 3)))
 ID_RE, ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
 
@@ -360,17 +361,18 @@ def signed_in(request: Request, write=False):
     return SESSIONS.read(request.cookies.get("tb_session", ""))
 
 def need_account(request: Request, write=False):
-    if not GOOGLE_ID: return None, JSONResponse({"error": "sign-in is not configured on this server"}, 404)
+    if not VERIFIER.enabled: return None, JSONResponse({"error": "sign-in is not configured on this server"}, 404)
     if write and request.headers.get("x-teambus") != "1": return None, JSONResponse({"error": "send the X-TeamBus: 1 header with this request"}, 400)
     who = signed_in(request, write)
     return (who, None) if who else (None, JSONResponse({"error": "not signed in"}, 401))
 
 async def auth_config(request: Request):
     who = signed_in(request)
-    return JSONResponse({"enabled": bool(GOOGLE_ID), "client_id": GOOGLE_ID, "signed_in": bool(who), "email": who["email"] if who else ""})
+    fb = {"apiKey": FB_KEY, "authDomain": FB_DOMAIN or f"{VERIFIER.audience}.firebaseapp.com", "projectId": VERIFIER.audience} if VERIFIER.mode == "firebase" else None     # all public values: they identify the project to the browser SDK
+    return JSONResponse({"enabled": VERIFIER.enabled, "mode": VERIFIER.mode, "client_id": GOOGLE_ID if VERIFIER.mode == "google" else "", "firebase": fb, "signed_in": bool(who), "email": who["email"] if who else ""})
 
 async def auth_google(request: Request):
-    if not GOOGLE_ID: return JSONResponse({"error": "sign-in is not configured on this server"}, 404)
+    if not VERIFIER.enabled: return JSONResponse({"error": "sign-in is not configured on this server"}, 404)
     if request.headers.get("x-teambus") != "1": return JSONResponse({"error": "send the X-TeamBus: 1 header with this request"}, 400)
     body, err = await body_json(request)
     if err: return err
@@ -555,7 +557,7 @@ async def asset(request):
     p = ASSETS.get(request.path_params["name"])
     if not p: return JSONResponse({"error": "not found"}, 404)
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})
-async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "resume": can_resume(), "sign_in": bool(GOOGLE_ID), "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
+async def healthz(request): return JSONResponse({"ok": True, "sandboxes": len(SBX), "spare": SPARE is not None, "registry": REG.kind, "resume": can_resume(), "sign_in": VERIFIER.enabled, "sign_in_mode": VERIFIER.mode, "registry_errors": REG_ERRORS, **({"registry_last_error": REG_ERROR} if REG_ERROR else {})})
 async def debug_ip(request):   # enabled only with SANDBOX_DEBUG_IP=1: shows what the proxy sends, to pick SANDBOX_CLIENT_IP_HEADER / SANDBOX_TRUST_PROXY_HOPS
     h = request.headers
     return JSONResponse({"derived_ip": ip_of(request), "peer": request.client.host if request.client else None, "x-forwarded-for": h.get("x-forwarded-for"), "cf-connecting-ip": h.get("cf-connecting-ip"), "true-client-ip": h.get("true-client-ip"), "x-forwarded-proto": h.get("x-forwarded-proto"), "public_base": public_base(request)})
@@ -583,7 +585,9 @@ async def lifespan(app):
         try: await REG.check()                                      # surfaces "API disabled / no database / missing role" in /healthz right away, with Google's wording
         except Exception as e: REG_ERRORS += 1; REG_ERROR = f"{type(e).__name__}: {e}"[:300]    # a failed probe must not skip the cleanup below
         await REG.mark_lost(BOOT_ID, time.time(), can_resume())                   # sandboxes of earlier runs that were still 'active' died with them
-    global SESSIONS
+    global SESSIONS, VERIFIER
+    project = FB_PROJECT or getattr(REG, "sa", {}).get("project_id", "")
+    if FB_KEY and project: VERIFIER = accounts.Verifier(project=project, jwks_url=JWKS_URL)      # Firebase sign-in wins when both are configured
     SESSIONS = accounts.Sessions(accounts.session_key(E("SANDBOX_SESSION_SECRET"), getattr(REG, "sa", {}).get("private_key", "")))
     track(startup_registry())
     task, snap_task = asyncio.create_task(reaper()), asyncio.create_task(snapshotter()); kick()

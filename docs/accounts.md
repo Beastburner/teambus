@@ -8,12 +8,22 @@ Without an account, the only key to a sandbox is what the creating browser store
 - **Extend, add an agent and delete** work without the manage token.
 - **Add to my account** claims an anonymous sandbox you still hold the manage token for.
 
-Anonymous use keeps working exactly as before; sign-in is optional and only appears when the server has a client id.
+Anonymous use keeps working exactly as before; sign-in is optional and only appears when the server has a Firebase web key or a Google client id.
 
 ## What is stored
 Only a one-way owner id (a SHA-256 of your Google account id). Your Google id and email are **not** stored on the server or in Firestore; the email lives only in the signed login cookie in your own browser. Sandboxes record their owner id, so listing "mine" is a lookup by that id.
 
-## Set up (you do this in your own Google account; about 10 minutes)
+## Set up, option A (recommended if you already use Firebase): Firebase Authentication
+Uses the Firebase project you already have and its **Authorised domains** list (Firebase console > Authentication > Settings), so there is no separate OAuth client to create.
+1. Firebase console > **Authentication > Sign-in method**: enable **Google**.
+2. **Authentication > Settings > Authorised domains**: make sure your sandbox's domain is listed (for example `teambus.onrender.com`).
+3. **Project settings > General > Your apps**: add a **Web app** if there is none, and copy its **apiKey** (it is public: it only names the project to the browser).
+4. In the service's environment set `FIREBASE_WEB_API_KEY` to that key. The project id comes from the service-account file you already added; set `FIREBASE_PROJECT_ID` only if you do not use one. `FIREBASE_AUTH_DOMAIN` defaults to `<project>.firebaseapp.com`.
+5. Redeploy. `GET /healthz` shows `"sign_in": true, "sign_in_mode": "firebase"`.
+
+The server accepts only Firebase ID tokens for **your project** (audience and issuer checked against its project id) signed in with the **Google provider** and a verified email: anonymous, phone and password sign-ins are refused. The Firebase browser SDK is loaded from Google's CDN only when someone opens the dialog and presses the button.
+
+## Set up, option B: your own Google OAuth client (about 10 minutes)
 1. In the Google Cloud console, in the project you already use for Firebase: **APIs & Services > OAuth consent screen**: choose *External*, give the app a name and your email. While it is in *Testing* only the test users you add can sign in; publish it for anyone.
 2. **APIs & Services > Credentials > Create credentials > OAuth client ID > Web application.** Under *Authorized JavaScript origins* add your sandbox's origin, for example `https://teambus.onrender.com` (and `http://localhost:8780` to try it locally). No redirect URI is needed.
 3. Copy the **Client ID** (ends in `.apps.googleusercontent.com`). It is not a secret and there is no client secret to configure: the server only checks Google's signature on ID tokens.
