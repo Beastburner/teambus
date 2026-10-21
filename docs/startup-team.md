@@ -25,7 +25,7 @@ Naming convention: `<person>-<role>`. The person is the owner, so `teambus statu
 - **Conflicts:** an agent about to edit a file another agent is editing is stopped and told who to ask. This works across people and machines, because it goes through the hub.
 - **Asking:** `ask_teammate_agent(to_agent="ravi-backend", question=…)` for one agent, `"@ravi"` for all of ravi's agents, `"@qa"` for every QA agent. A group message is delivered as one message per agent, so read receipts and replies stay per agent. A group may have at most 12 agents.
 - **Contracts:** before changing an API, schema or shared interface, an agent publishes a contract; agents that use it are warned.
-- **Idle sessions don't see mail.** Agents only see messages when their session runs. For a long-running agent, run `teambus listen` (add `--tmux PANE` if the session runs in tmux) or tell the agent to loop on `wait_for_messages`. See "Messages and idle agents" in the README.
+- **Idle sessions don't see mail.** Agents only see messages when their session runs. For a long-running agent, run `teambus worker` (it wakes a headless session when mail arrives, within spend limits) or `teambus listen` for a notification (add `--tmux PANE` if the session runs in tmux). See "Messages and idle agents" and "`teambus worker`" in the README.
 - **Shared repo:** each person works in their own clone, so make sure everyone pulls before starting. (A warning about a teammate's commits you have not pulled yet is not built.)
 
 ## Running it

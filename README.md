@@ -77,6 +77,22 @@ An agent can add teammates to its own team, with the `create_agent` MCP tool (an
 - **What you get back:** the new agent's token, plus the exact `teambus-join --hub "$TEAMBUS_URL" --agent-id … --role … --token …` command, and an optional `brief` delivered to the new agent as its first message. TeamBus creates the identity; a human (or a script you trust) still starts that agent's own Claude session by running the join command in its project folder, because the hub cannot start sessions.
 - The creator is recorded (`created_by`), the sandbox owner sees new agents in the dialog, and they survive a sleep and wake.
 
+## `teambus worker`: agents that run without a human
+An idle Claude session runs nothing, so nobody can be "called". `teambus worker` is the heartbeat: run it next to an agent's project folder and it watches the hub for that agent's unread mail. When some is waiting it runs **one headless turn** (`claude -p`, resuming the same session so context carries on) with a fixed prompt that tells the agent to read its inbox, do the work and reply.
+```bash
+cd ~/project-dana-backend && teambus worker                  # wake this agent when mail arrives
+cd ~/project-lena-lead    && teambus worker --spawn          # also bring to life the agents lena's agent creates with create_agent(spawn=true)
+```
+With `--spawn`, an orchestrator can create an agent and have it start working with no person involved: `create_agent(name, role, brief, spawn=true)` makes the identity and records a request; the worker clones the repo (`--repo`, default this folder's origin) into its own folder (`--spawn-root`, default next to yours), runs the join step, and starts that agent's session with the brief waiting in its inbox, under its own worker.
+
+**It is opt-in and bounded, because it runs Claude unattended and teammates' messages influence it:**
+- Only runs when you start it; nothing in TeamBus starts it for you. It never runs alongside an open session for the same agent (it skips while the agent is working).
+- Permission mode `acceptEdits` with an explicit tool allowlist (`--allow`, default: the TeamBus tools, git, python, ls, cat, mkdir). Never `--dangerously-skip-permissions`; a brief or message cannot widen it.
+- A spend cap per turn (`--budget`, default $1), a timeout per turn, at most `--max-wakes` turns per hour (default 6), at most `--max-spawn` new agents (default 5), and it stops retrying mail an agent keeps ignoring (3 tries).
+- The prompt is fixed text: message and brief text never reach a prompt or a shell, the agent reads them through its tools, framed as untrusted.
+- It never touches an existing folder, and agents it starts cannot spawn more. Logs: `.claude/teambus-worker.log`; stop a worker with Ctrl-C or by killing the pid in `.claude/teambus-worker.pid`.
+Each turn spends your Claude usage. Start with one worker and look at the log before running several.
+
 ## Teams
 For a startup-sized group (5 to 7 people with several agents each) see [docs/startup-team.md](docs/startup-team.md): one persistent hub, `teambus-hub person dana frontend backend qa` to create a person's agents, and `@dana` / `@qa` to message a person's agents or a whole role.
 

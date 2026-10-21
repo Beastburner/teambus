@@ -20,6 +20,7 @@ SCHEMA = {
     "contracts": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, name TEXT, spec TEXT, files TEXT, source_files TEXT DEFAULT '[]', status TEXT DEFAULT 'open', done_files TEXT DEFAULT '[]', resolved_ts REAL",
     "messages": "id INTEGER PRIMARY KEY, ts REAL, from_agent TEXT, to_agent TEXT, body TEXT, reply_to INTEGER, read INTEGER DEFAULT 0, answered INTEGER DEFAULT 0, read_ts REAL",
     "builds": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, ok INTEGER, log_tail TEXT, cmd TEXT DEFAULT '', fixed_by INTEGER, fixed_ts REAL",
+    "spawns": "id INTEGER PRIMARY KEY, ts REAL, requested_by TEXT, agent_id TEXT, role TEXT, brief TEXT, status TEXT DEFAULT 'pending', note TEXT DEFAULT ''",
     "agents": "agent_id TEXT PRIMARY KEY, role TEXT, last_seen REAL, last_mcp REAL, last_hook REAL, last_event TEXT, last_event_ts REAL"}
 
 # Anything that looks like a credential is removed before it is stored or shown to other agents: build commands and logs, edit summaries and messages all travel to every
@@ -254,9 +255,9 @@ def _write_tokens(d):
     with open(tmp, "w") as f: json.dump(d, f, indent=1)
     os.chmod(tmp, 0o600); os.replace(tmp, TOKENS); os.utime(TOKENS, (max(time.time(), prev + 1),) * 2)       # a guaranteed new mtime, so the running hub reloads at once
 
-def create_agent(name: str, role: str, brief: str = "", ctx: Context | None = None):
+def create_agent(name: str, role: str, brief: str = "", spawn: bool = False, ctx: Context | None = None):
     """Create a new agent on this team and get its token (only agents the hub owner allowed may; in a sandbox that is the `orchestrator` role).
-    `name` is lowercase letters, digits and dashes (2 to 31 characters); `role` is letters, digits, dashes, underscores. `brief` is delivered to the new agent as its first message, from you.
+    `name` is lowercase letters, digits and dashes (2 to 31 characters); `role` is letters, digits, dashes, underscores. `brief` is delivered to the new agent as its first message, from you. With `spawn=true` you also ask your own TeamBus worker (`teambus worker`, running on your machine, if your user started one) to set up a folder and START that agent's Claude session; without a worker the request stays pending.
     Returns the new agent's token and the exact `teambus-join` command to run, in the project folder where that new agent's Claude session will work. Give the token only to that session; never
     post it in a message. Limits: you can create a few agents, not unlimited ones, and agents you create cannot create more."""
     w = who_of(ctx); a = w.get("agent_id") or ""
@@ -273,9 +274,29 @@ def create_agent(name: str, role: str, brief: str = "", ctx: Context | None = No
         tok = secrets.token_urlsafe(24); d[tok] = {"agent_id": name, "role": role, "created_by": a, **({"owner": w["owner"]} if w.get("owner") else {})}; _write_tokens(d)
     text, _ = scrub(brief)
     if text.strip(): run("INSERT INTO messages(ts,from_agent,to_agent,body,reply_to) VALUES(?,?,?,?,NULL)", time.time(), a, name, text[:4000])
-    return {"agent_id": name, "role": role, "token": tok, "created_by": a,
+    out_spawn = {}
+    if spawn: out_spawn = {"spawn_id": run("INSERT INTO spawns(ts,requested_by,agent_id,role,brief) VALUES(?,?,?,?,?)", time.time(), a, name, role, text[:4000]),
+                           "spawn": "requested: a `teambus worker` running for you will start this agent's session. If none is running, the request stays pending until your user starts one."}
+    return {"agent_id": name, "role": role, "token": tok, "created_by": a, **out_spawn,
             "join": f'teambus-join --hub "$TEAMBUS_URL" --agent-id {name} --role {role} --token {tok}',
             "next": "Run `join` in the project folder where the new agent's Claude session will work (it sets up that folder), then start `claude` there. The brief, if you gave one, is in its inbox."}
+
+def list_spawns(status: str = "pending", ctx: Context | None = None):
+    """Spawn requests YOU made (what your `teambus worker` acts on), with the new agent's token so the worker can join it. Only the requester ever sees them."""
+    a = who_of(ctx).get("agent_id") or ""
+    if not a: return {"spawns": []}
+    toks = {v.get("agent_id"): (t, v) for t, v in _tokens_raw().items() if v.get("created_by") == a}
+    out = []
+    for r in rows("SELECT * FROM spawns WHERE requested_by=? AND status=? ORDER BY id LIMIT 20", a, status):
+        if r["agent_id"] in toks: out.append({**r, "token": toks[r["agent_id"]][0]})              # a removed agent has no token and is skipped
+    return {"spawns": out}
+
+def spawn_update(id: int, status: str, note: str = "", ctx: Context | None = None):
+    """Report progress on one of your spawn requests: claimed, running, done or failed."""
+    a = who_of(ctx).get("agent_id") or ""
+    if status not in ("claimed", "running", "done", "failed"): return {"error": "status must be claimed, running, done or failed"}
+    if not rows("SELECT id FROM spawns WHERE id=? AND requested_by=?", id, a): return {"error": f"no spawn request #{id} of yours"}
+    run("UPDATE spawns SET status=?, note=? WHERE id=?", status, scrub(note)[0][:300], id); return {"id": id, "status": status}
 
 def remove_agent(name: str, ctx: Context | None = None):
     """Remove an agent that YOU created (its token stops working at once). You cannot remove agents you did not create."""
@@ -372,7 +393,7 @@ for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_fe
 
 # ---- REST mirror so hooks/CLI (plain scripts) call the same functions, plus the web view ----
 API = dict(whoami=whoami, post_intent=post_intent, resolve=resolve_intent, resolve_contract=resolve_contract, asked=asked, feed=team_feed, ask=ask_teammate_agent, inbox=check_inbox, outbox=outbox, thread=thread,
-           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent)
+           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update)
 
 def _route(name):
     async def h(request):

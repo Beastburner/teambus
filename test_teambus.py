@@ -661,3 +661,90 @@ def test_create_agent_is_an_mcp_tool(hub):
                 await s.initialize(); names = {t.name for t in (await s.list_tools()).tools}
                 res = await s.call_tool("create_agent", {"name": "mcp-made", "role": "scout"}); return names, json.loads(res.content[0].text)
     _clear_lenas(hub); names, out = asyncio.run(go()); assert {"create_agent", "remove_agent"} <= names and out.get("agent_id") == "mcp-made"
+
+
+# ---- teambus worker: keeps an agent alive without a human (the claude command is a stub here) ----
+def _wk_stub(tmp, read=True):
+    log = tmp / "claude.log"; stub = tmp / "claude"
+    stub.write_text(f'''#!{sys.executable}
+import json, os, subprocess, sys
+open({str(log)!r}, "a").write(json.dumps({{"cwd": os.getcwd(), "argv": sys.argv[1:], "env_has_hub": any(k.startswith("TEAMBUS_") or k.startswith("AGENT_") for k in os.environ)}}) + "\\n")
+if {read!r}: subprocess.run([sys.executable, {CLI!r}, "inbox", "--dir", "."], capture_output=True)
+print(json.dumps({{"session_id": "x", "result": "handled it", "is_error": False}}))
+'''); stub.chmod(0o755); return stub, log
+
+def _wk_calls(log): return [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
+
+def _wk_project(tmp, name, token, agent, role):
+    p = tmp / name; p.mkdir(); home = tmp / "home"; home.mkdir(exist_ok=True)
+    subprocess.run([sys.executable, CLI, "init", "--hub", URL, "--agent-id", agent, "--role", role, "--token", token, "--dir", str(p)], env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, check=True); return p
+
+def _wk_run(proj, claude, *extra, secs=30, env=None):
+    e = {**{k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))}, **(env or {})}
+    try: r = subprocess.run([sys.executable, CLI, "worker", "--dir", str(proj), "--interval", "0.5", "--claude", str(claude), *extra], env=e, capture_output=True, text=True, timeout=secs); return r.stdout
+    except subprocess.TimeoutExpired as x: return (x.stdout.decode() if isinstance(x.stdout, bytes) else (x.stdout or ""))
+
+def test_worker_wakes_an_idle_agent_with_a_fixed_safe_prompt_and_resumes_its_session(hub, tmp_path):
+    stub, log = _wk_stub(tmp_path); proj = _wk_project(tmp_path, "frank", "tf", "frank", "docs")
+    api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="SECRET-BODY please update the docs")       # idle, mail waiting
+    out = _wk_run(proj, stub, "--once"); calls = _wk_calls(log); assert len(calls) == 1 and "turn finished" in out, out
+    argv = calls[0]["argv"]; prompt = argv[argv.index("-p") + 1]
+    assert prompt.startswith("TeamBus: you have unread messages") and "SECRET-BODY" not in " ".join(argv) + out           # message text never reaches the prompt
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits" and "--dangerously-skip-permissions" not in argv and "--allowedTools" in argv and argv[argv.index("--max-budget-usd") + 1] == "1.0"
+    assert "mcp__teambus" in argv and "Bash(rm:*)" not in argv and "--session-id" in argv and calls[0]["cwd"] == str(proj) and calls[0]["env_has_hub"] is False       # the project's settings, not ours, give the session its identity
+    assert api("tf", "inbox", peek=True) == []                                                                                 # the stub read it, like an agent would
+    sid = argv[argv.index("--session-id") + 1]; assert json.load(open(proj / ".claude" / "teambus-worker.json"))["session"] == sid
+    hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="one more thing"); _wk_run(proj, stub, "--once")
+    argv2 = _wk_calls(log)[1]["argv"]; assert argv2[argv2.index("--resume") + 1] == sid and "--session-id" not in argv2         # the same conversation continues
+
+def test_worker_leaves_a_working_session_alone_and_gives_up_on_ignored_mail(hub, tmp_path):
+    stub, log = _wk_stub(tmp_path, read=False); proj = _wk_project(tmp_path, "frank2", "tf", "frank", "docs")
+    api("tf", "inbox"); hook("prompt", "tf", {"prompt": "go", "cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="while you work")   # a session is mid-turn
+    _wk_run(proj, stub, secs=4); assert _wk_calls(log) == []                                                                      # no second session for the same identity
+    api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="ignored by the stub")
+    _wk_run(proj, stub, "--retry", "0.5", "--max-wakes", "50", secs=14); assert len(_wk_calls(log)) == 3                           # an agent that never reads is tried 3 times, not forever
+
+def test_worker_respects_the_hourly_turn_limit(hub, tmp_path):
+    stub, log = _wk_stub(tmp_path, read=False); proj = _wk_project(tmp_path, "frank3", "tf", "frank", "docs")
+    api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="limit check")
+    out = _wk_run(proj, stub, "--retry", "0.5", "--max-wakes", "1", secs=8); assert len(_wk_calls(log)) == 1 and "hourly limit of 1 wakes reached" in out
+
+def test_worker_starts_agents_its_orchestrator_created_and_only_those(hub, tmp_path):
+    import shutil as sh
+    seed = tmp_path / "seed"; seed.mkdir(); subprocess.run("git init -q -b main . && echo hi > README.md && git add . && git -c user.name=t -c user.email=t@t commit -qm seed && git clone -q --bare . ../origin.git", shell=True, cwd=seed, check=True)
+    stub, log = _wk_stub(tmp_path); lead = _wk_project(tmp_path, "lead", "tl", "lena-lead", "lead"); home = tmp_path / "home"
+    for v in list(json.load(open(hub / "tokens.json")).values()):
+        if v.get("created_by") == "lena-lead": api("tl", "remove_agent", name=v["agent_id"])
+    r = api("tl", "create_agent", name="scout-new", role="researcher", brief="BRIEF-TEXT find the docs", spawn=True); assert r["spawn_id"] and "requested" in r["spawn"]
+    assert api("tb", "spawns")["spawns"] == [] and api("tl", "spawns")["spawns"][0]["token"] == r["token"]                         # only the requester sees it, with the token
+    assert api("tb", "spawn_update", id=r["spawn_id"], status="running")["error"].startswith("no spawn request") and api("tl", "spawn_update", id=r["spawn_id"], status="bogus")["error"].startswith("status must be")
+    roots = tmp_path / "agents"; roots.mkdir()
+    out = _wk_run(lead, stub, "--spawn", "--once", "--repo", str(tmp_path / "origin.git"), "--spawn-root", str(roots), env={"HOME": str(home)}); dest = roots / "scout-new"
+    try:
+        assert "spawn scout-new: started" in out, out
+        assert (dest / ".git").exists() and (dest / "README.md").exists() and json.load(open(dest / ".claude" / "settings.local.json"))["env"]["AGENT_ID"] == "scout-new"        # cloned and joined as the new agent
+        assert wait_for_wk_calls(log, 1), out
+        c = _wk_calls(log)[0]; argv = c["argv"]; assert c["cwd"] == str(dest) and "you were just created as scout-new (researcher)" in argv[argv.index("-p") + 1] and "BRIEF-TEXT" not in " ".join(argv)    # the brief stays in the inbox, not the prompt
+        assert api("tl", "spawns", status="running")["spawns"][0]["agent_id"] == "scout-new" and api("tl", "spawns")["spawns"] == []
+        assert api(r["token"], "inbox", peek=True) == []                                                                       # the stub read the brief
+    finally:
+        pid = dest / ".claude" / "teambus-worker.pid"
+        if pid.exists():
+            try: os.kill(int(pid.read_text()), 15)
+            except OSError: pass
+    r2 = api("tl", "create_agent", name="scout-two", role="researcher", spawn=True); (roots / "scout-two").mkdir()
+    try:
+        out = _wk_run(lead, stub, "--spawn", "--once", "--repo", str(tmp_path / "origin.git"), "--spawn-root", str(roots), env={"HOME": str(home)}); assert "FAILED" in out and "already exists" in out    # never touches an existing folder
+        assert api("tl", "spawns", status="failed")["spawns"][0]["agent_id"] == "scout-two" and not (roots / "scout-two" / ".git").exists()
+    finally:
+        for pid in roots.glob("*/.claude/teambus-worker.pid"):                                                                # never leave a worker running after the test
+            try: os.kill(int(pid.read_text()), 15)
+            except (OSError, ValueError): pass
+        api("tl", "remove_agent", name="scout-new"); api("tl", "remove_agent", name="scout-two")
+
+def wait_for_wk_calls(log, n, timeout=20):
+    end = time.time() + timeout
+    while time.time() < end:
+        if len(_wk_calls(log)) >= n: return True
+        time.sleep(0.3)
+    return False
