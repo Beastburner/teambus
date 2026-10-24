@@ -124,6 +124,13 @@ def status(a):
     except Exception as e: sys.exit(f"cannot use hub {c['url']}: {why(e, 'could not reach the hub')}")
     print(f"you: {me['agent_id']}  hub: {c['url']}\n\nTEAM")
     for p in f["agents"]: print(f"  {'●' if p['active'] else '○'} {p['agent_id']:<22} {p['role']:<10} {p.get('owner', ''):<8} {p.get('state', ''):<15} seen {ago(p['last_seen_ago'])}{'' if p.get('hook_ago') is not None else '  (hooks never reported)'}{'' if p.get('mcp_ago') is not None else '  (tools never connected)'}")
+    ws = jload(Path(a.dir).resolve() / ".claude" / "teambus-worker.json")
+    if ws:
+        now = time.time(); spent = sum(x[1] for x in ws.get("spend", []) if now - x[0] < 86400); last = max(ws.get("wakes") or [0])
+        pid = (Path(a.dir).resolve() / ".claude" / "teambus-worker.pid")
+        try: os.kill(int(pid.read_text()), 0); up = "running"
+        except (OSError, ValueError): up = "not running"
+        print(f"\nWORKER ({up}): " + (f"last woke {ago(now - last)}, " if last else "never woke yet, ") + f"{len([t for t in ws.get('wakes', []) if now - t < 3600])} turn(s) in the last hour, ${spent:.2f} spent in the last 24 h")
     print(f"\nINBOX ({len(inbox)} unread)")
     for m in inbox: print(f"  #{m['id']} from {m['from_agent']}" + (f" (reply to #{m['reply_to']})" if m["reply_to"] else "") + f": {m['body']}")
     print("\nRECENT ACTIVITY")
@@ -257,8 +264,9 @@ def worker(a):
         line = time.strftime("%H:%M:%S ") + msg; print(line, flush=True)
         with open(logp, "a") as f: f.write(line + "\n")
     def wake(prompt):
-        now = time.time(); recent = [t for t in st["wakes"] if now - t < 3600]
+        now = time.time(); recent = [t for t in st["wakes"] if now - t < 3600]; st["spend"] = [x for x in st.get("spend", []) if now - x[0] < 86400]; spent = sum(x[1] for x in st["spend"])
         if len(recent) >= a.max_wakes: say(f"hourly limit of {a.max_wakes} wakes reached; waiting"); return False
+        if spent >= a.daily_budget: say(f"daily budget reached (${spent:.2f} of ${a.daily_budget:.2f} in the last 24 h); not waking until it drops below"); return False
         first = not st.get("session"); sid = st.get("session") or str(uuid.uuid4())
         cmd = [claude, "-p", prompt, "--permission-mode", "acceptEdits", "--output-format", "json", "--max-budget-usd", str(a.budget), "--allowedTools", *(a.allow or DEFAULT_ALLOW),
                *(["--session-id", sid] if first else ["--resume", sid])]
@@ -270,8 +278,10 @@ def worker(a):
         if r.returncode == 0 or not first: st["session"] = sid
         stp.write_text(json.dumps(st))
         try: out = json.loads(r.stdout or "{}"); res = str(out.get("result", ""))[:160].replace("\n", " ")
-        except ValueError: res = (r.stdout or r.stderr)[:160].replace("\n", " ")
-        say(f"turn finished (exit {r.returncode}): {res}"); return True
+        except ValueError: out, res = {}, (r.stdout or r.stderr)[:160].replace("\n", " ")
+        cost = out.get("total_cost_usd") if isinstance(out.get("total_cost_usd"), (int, float)) else a.budget      # cost unknown: assume the whole per-turn cap, so the daily limit can only err on the safe side
+        st["spend"] = st.get("spend", []) + [[time.time(), float(cost)]]; stp.write_text(json.dumps(st))
+        say(f"turn finished (exit {r.returncode}, ${cost:.2f}; ${spent + cost:.2f} of ${a.daily_budget:.2f} daily): {res}"); return True
     def spawn_one(sp):
         root_dir = Path(a.spawn_root).resolve() if a.spawn_root else root.parent; dest = (root_dir / sp["agent_id"]).resolve()
         if dest.parent != root_dir or not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", sp["agent_id"]): return False, "unsafe agent name"
@@ -283,11 +293,11 @@ def worker(a):
         else: dest.mkdir(parents=True)
         r = subprocess.run([sys.executable, str(Path(__file__).resolve()), "init", "--hub", c["url"], "--agent-id", sp["agent_id"], "--role", sp["role"], "--token", sp["token"], "--dir", str(dest)], capture_output=True, text=True)
         if r.returncode: return False, "join step failed: " + (r.stderr or r.stdout).strip()[-150:]
-        child = [sys.executable, str(Path(__file__).resolve()), "worker", "--dir", str(dest), "--wake-now", "--interval", str(a.interval), "--max-wakes", str(a.max_wakes), "--budget", str(a.budget), "--timeout", str(a.timeout), "--claude", claude]
+        child = [sys.executable, str(Path(__file__).resolve()), "worker", "--dir", str(dest), "--wake-now", "--interval", str(a.interval), "--max-wakes", str(a.max_wakes), "--budget", str(a.budget), "--daily-budget", str(a.daily_budget), "--timeout", str(a.timeout), "--claude", claude]
         for t in (a.allow or DEFAULT_ALLOW): child += ["--allow", t]
         with open(dest / ".claude" / "teambus-worker.log", "a") as lf: p = subprocess.Popen(child, cwd=dest, start_new_session=True, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
         return True, f"{dest} (worker pid {p.pid})"
-    say(f"worker for {c['agent'] or 'this agent'} on {c['url']}: wakes its Claude session when mail arrives" + ("; will start agents its orchestrator creates" if a.spawn else "") + f". Limits: {a.max_wakes} turns/hour, ${a.budget} per turn.")
+    say(f"worker for {c['agent'] or 'this agent'} on {c['url']}: wakes its Claude session when mail arrives" + ("; will start agents its orchestrator creates" if a.spawn else "") + f". Limits: {a.max_wakes} turns/hour, ${a.budget} per turn, ${a.daily_budget} per day.")
     did = False
     if a.wake_now: did = wake(FIRST_WAKE.format(agent=c["agent"], role=c["role"] or "agent") + WAKE_PROMPT)
     down = 0
@@ -337,11 +347,11 @@ def keepalive(a):
     if not (c["url"] and c["token"]): sys.exit("no hub configured here: run teambus-join first")
     claude = a.claude or shutil.which("claude")
     if not claude: sys.exit("the `claude` command was not found; pass --claude PATH")
-    me = str(Path(__file__).resolve()); cmd = [sys.executable, me, "worker", "--dir", str(root), "--claude", claude, "--max-wakes", str(a.max_wakes), "--budget", str(a.budget), "--timeout", str(a.timeout)]
+    me = str(Path(__file__).resolve()); cmd = [sys.executable, me, "worker", "--dir", str(root), "--claude", claude, "--max-wakes", str(a.max_wakes), "--budget", str(a.budget), "--daily-budget", str(a.daily_budget), "--timeout", str(a.timeout)]
     for t in (a.allow or DEFAULT_ALLOW): cmd += ["--allow", t]
     if a.spawn: cmd.append("--spawn")
     print(f"Keep-alive for {c['agent'] or 'this agent'} in {root}:\n  wakes its Claude session (headless, resuming the same conversation) when teammates' mail is waiting\n"
-          f"  limits: at most {a.max_wakes} turns/hour, ${a.budget} per turn, {a.timeout}s per turn; tools: {', '.join(a.allow or DEFAULT_ALLOW)}; never --dangerously-skip-permissions"
+          f"  limits: at most {a.max_wakes} turns/hour, ${a.budget} per turn, ${a.daily_budget} per day, {a.timeout}s per turn; tools: {', '.join(a.allow or DEFAULT_ALLOW)}; never --dangerously-skip-permissions"
           + ("\n  also starts agents your orchestrator creates (up to 5)" if a.spawn else "") + f"\n  stop any time: teambus keepalive stop   (log: {root / '.claude/teambus-worker.log'})")
     path = os.environ.get("PATH", "/usr/bin:/bin")
     if sys.platform == "darwin":
@@ -378,11 +388,12 @@ def main():
         if n == "inbox": p.add_argument("--peek", action="store_true")
         if n == "outbox": p.add_argument("--limit", type=int, default=15)
         if n == "keepalive":
-            p.add_argument("action", nargs="?", choices=["install", "stop", "status"], default="status"); p.add_argument("--max-wakes", type=int, default=6); p.add_argument("--budget", type=float, default=1.0); p.add_argument("--timeout", type=int, default=900)
+            p.add_argument("action", nargs="?", choices=["install", "stop", "status"], default="status"); p.add_argument("--max-wakes", type=int, default=6); p.add_argument("--budget", type=float, default=1.0); p.add_argument("--daily-budget", type=float, default=5.0); p.add_argument("--timeout", type=int, default=900)
             p.add_argument("--allow", action="append", metavar="TOOL"); p.add_argument("--claude"); p.add_argument("--spawn", action="store_true")
         if n == "worker":
             p.add_argument("--interval", type=float, default=5); p.add_argument("--retry", type=float, default=300, help="seconds before waking again for mail the agent left unread (default 300)")
             p.add_argument("--max-wakes", type=int, default=6, help="turns per hour (default 6)"); p.add_argument("--budget", type=float, default=1.0, help="most dollars one turn may spend (default 1.0)")
+            p.add_argument("--daily-budget", type=float, default=5.0, help="most dollars this worker may spend in 24 hours; it stops waking the agent when reached (default 5.0)")
             p.add_argument("--timeout", type=int, default=900, help="seconds before a turn is stopped (default 900)"); p.add_argument("--allow", action="append", metavar="TOOL", help="allowed tool, repeatable (default: teambus tools, git, python, ls, cat, mkdir)")
             p.add_argument("--claude", help="path to the claude command"); p.add_argument("--once", action="store_true", help="exit after the first wake or spawn"); p.add_argument("--wake-now", action="store_true", help="run a first turn at once (used for a freshly created agent)")
             p.add_argument("--spawn", action="store_true", help="also start agents this agent's orchestrator creates with create_agent(spawn=true)"); p.add_argument("--max-spawn", type=int, default=5)

@@ -670,7 +670,8 @@ def _wk_stub(tmp, read=True):
 import json, os, subprocess, sys
 open({str(log)!r}, "a").write(json.dumps({{"cwd": os.getcwd(), "argv": sys.argv[1:], "env_has_hub": any(k.startswith("TEAMBUS_") or k.startswith("AGENT_") for k in os.environ)}}) + "\\n")
 if {read!r}: subprocess.run([sys.executable, {CLI!r}, "inbox", "--dir", "."], capture_output=True)
-print(json.dumps({{"session_id": "x", "result": "handled it", "is_error": False}}))
+_c = os.environ.get("STUB_COST", "0.01")
+print(json.dumps({{"session_id": "x", "result": "handled it", "is_error": False, **({{}} if _c == "none" else {{"total_cost_usd": float(_c)}})}}))
 '''); stub.chmod(0o755); return stub, log
 
 def _wk_calls(log): return [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
@@ -768,10 +769,10 @@ def test_keepalive_installs_a_systemd_user_unit_with_limits_and_no_token_and_sto
     if sys.platform == "darwin": pytest.skip("systemd path")
     proj = _wk_project(tmp_path, "ka1", "tf", "frank", "docs"); stub, _ = _wk_stub(tmp_path); b, log = _fake_bin(tmp_path); home = tmp_path / "home"; path = f"{b}:{os.environ['PATH']}"
     assert "off" in _ka(proj, home, "status", path=path).stdout
-    r = _ka(proj, home, "install", "--claude", str(stub), "--max-wakes", "3", "--budget", "0.5", path=path); assert r.returncode == 0, r.stderr
-    assert "at most 3 turns/hour, $0.5 per turn" in r.stdout and "never --dangerously-skip-permissions" in r.stdout and "teambus keepalive stop" in r.stdout          # limits shown before anything runs
+    r = _ka(proj, home, "install", "--claude", str(stub), "--max-wakes", "3", "--budget", "0.5", "--daily-budget", "2", path=path); assert r.returncode == 0, r.stderr
+    assert "at most 3 turns/hour, $0.5 per turn, $2.0 per day" in r.stdout and "never --dangerously-skip-permissions" in r.stdout and "teambus keepalive stop" in r.stdout          # limits shown before anything runs
     unit = next((home / ".config/systemd/user").glob("teambus-worker-*.service")); body = unit.read_text()
-    assert f"WorkingDirectory={proj}" in body and " worker " in body and "--max-wakes 3" in body and "--budget 0.5" in body and "Restart=on-failure" in body and "WantedBy=default.target" in body
+    assert f"WorkingDirectory={proj}" in body and " worker " in body and "--max-wakes 3" in body and "--budget 0.5" in body and "--daily-budget 2.0" in body and "Restart=on-failure" in body and "WantedBy=default.target" in body
     assert "--token" not in body and "dangerously" not in body and "tf" not in body.split("ExecStart=")[1].split()                                                         # no token in the unit
     calls = log.read_text(); assert "systemctl --user daemon-reload" in calls and f"systemctl --user enable --now {unit.name}" in calls
     assert "systemd user service" in _ka(proj, home, "status", path=path).stdout
@@ -810,3 +811,20 @@ def test_a_token_that_starts_with_a_dash_still_joins(hub, tmp_path):
     (tmp_path / "claude").write_text("#!/bin/sh\nexit 0\n"); (tmp_path / "claude").chmod(0o755)                          # teambus-join insists on a claude command
     r = subprocess.run(["bash", f"{HERE}/teambus-join", "--hub", URL, "--agent-id", "dash-two", "--role", "r", "--token", "-another-dash", "--no-keep-alive"], cwd=tmp_path, env={**env, "PATH": f"{tmp_path}:{os.environ['PATH']}"}, capture_output=True, text=True)
     assert "expected one argument" not in r.stdout + r.stderr and "teambus init:" in r.stdout and json.load(open(tmp_path / ".claude" / "settings.local.json"))["env"]["TEAMBUS_TOKEN"] == "-another-dash"
+
+
+def test_worker_stops_waking_when_the_daily_spend_limit_is_reached_and_status_shows_the_spend(hub, tmp_path):
+    stub, log = _wk_stub(tmp_path, read=False); proj = _wk_project(tmp_path, "frank4", "tf", "frank", "docs")
+    api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="budget check")
+    out = _wk_run(proj, stub, "--retry", "0.5", "--max-wakes", "50", "--daily-budget", "1.0", secs=12, env={"STUB_COST": "0.6"})
+    assert len(_wk_calls(log)) == 2 and "daily budget reached ($1.20 of $1.00" in out and "$0.60" in out, out                      # 0.6 then 1.2: a third turn is refused
+    spend = json.load(open(proj / ".claude" / "teambus-worker.json"))["spend"]; assert len(spend) == 2 and abs(sum(x[1] for x in spend) - 1.2) < 1e-9
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))}}
+    st = subprocess.run([sys.executable, CLI, "status", "--dir", str(proj)], env=env, capture_output=True, text=True).stdout
+    assert "WORKER (not running)" in st and "2 turn(s) in the last hour" in st and "$1.20 spent in the last 24 h" in st, st
+
+def test_an_unknown_turn_cost_counts_as_the_whole_per_turn_cap(hub, tmp_path):
+    stub, log = _wk_stub(tmp_path, read=False); proj = _wk_project(tmp_path, "frank5", "tf", "frank", "docs")
+    api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="unknown cost")
+    out = _wk_run(proj, stub, "--retry", "0.5", "--max-wakes", "50", "--budget", "0.5", "--daily-budget", "0.9", secs=12, env={"STUB_COST": "none"})
+    assert len(_wk_calls(log)) == 2 and "daily budget reached" in out                                                          # no cost reported: assume the cap, so the limit errs on the safe side
