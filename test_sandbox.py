@@ -316,7 +316,8 @@ class FakeFirestore:
                 if u.path.startswith(pre + "/sandboxes_snapshots/"):
                     sid = u.path.rsplit("/", 1)[1]
                     if method == "GET": return self.reply(200, {"name": u.path, "fields": fs.snaps[sid]}) if sid in fs.snaps else self.reply(404, {"error": {"code": 404, "status": "NOT_FOUND", "message": f'Document "projects/proj/databases/(default)/documents/sandboxes_snapshots/{sid}" not found.'}})
-                    if method == "PATCH": fs.snaps[sid] = json.loads(self.body())["fields"]; return self.reply(200, {"name": u.path, "fields": fs.snaps[sid]})
+                    if method == "PATCH":
+                        body = json.loads(self.body())["fields"]; time.sleep(getattr(fs, "snap_delay", 0)); fs.snaps[sid] = body; return self.reply(200, {"name": u.path, "fields": fs.snaps[sid]})      # snap_delay: a slow write
                     if method == "DELETE": fs.snaps.pop(sid, None); return self.reply(200, {})
                 if u.path.startswith(pre + "/sandboxes/"):
                     sid = u.path.rsplit("/", 1)[1]
@@ -796,3 +797,14 @@ def test_created_agents_survive_sleep_with_their_creator_and_flags(mgr, fake):
     st, who = call("POST", hub + "/api/whoami", {}, out["token"])[:2]; assert st == 200 and who["agent_id"] == "scout-one"                       # the created agent's token still works after the wake
     assert call("POST", hub + "/api/create_agent", {"name": "grandchild", "role": "x"}, out["token"])[1]["error"].startswith("you may not create")
     again = call("POST", hub + "/api/create_agent", {"name": "scout-two", "role": "researcher"}, tok(sb, "lead-ann"))[1]; assert again.get("agent_id") == "scout-two", again       # the orchestrator flag survived too
+
+
+def test_a_snapshot_still_being_written_cannot_bring_a_deleted_sandbox_back(mgr, fake, google):
+    """A snapshot is written in the background. If the owner deletes the sandbox while one is in flight, it must not recreate the saved data (CI caught this as a flaky failure)."""
+    fake.snap_delay = 1.5; m = mgr(**fake.env(), **google.env()); ck = sign_in(m, google); sb = acall("POST", m.url + "/new", None, cookie=ck)[1]; sid = sb["id"]
+    assert acall("POST", f"{m.url}/me/sandboxes/{sid}/reissue", {}, cookie=ck)[0] == 200                                     # starts a background snapshot (slow: 1.5 s)
+    time.sleep(0.6)                                                                                                            # the write has started (it takes 1.5 s) but not finished
+    assert acall("DELETE", f"{m.url}/manage/{sid}", cookie=ck)[0] == 200                                                      # deleted while that write is still in flight
+    time.sleep(4); assert sid not in fake.snaps, "a deleted sandbox's data came back"
+    assert fake.doc(sid)["state"] == "deleted" and fake.doc(sid)["resumable"] is False
+    assert call("POST", f"{m.url}/s/{sid}/api/whoami", {}, tok(sb, "alice-frontend"))[0] == 404

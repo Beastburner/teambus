@@ -147,7 +147,7 @@ def destroy_sb(sb):
 
 def destroy(sid, state="deleted", reason="deleted by its owner"):
     sb = SBX.pop(sid, None)
-    if sb: end(sb, state, reason); destroy_sb(sb)
+    if sb: sb["gone"] = True; end(sb, state, reason); destroy_sb(sb)     # "gone" tells a snapshot that is still being written not to bring it back
 
 SPARE = None                    # a pre-started sandbox waiting for the next visitor (SANDBOX_WARM=1): on a slow, CPU-starved host a hub takes ~15 s to import
 REFILLING = False
@@ -238,15 +238,19 @@ def fingerprint(sb):
 
 async def snapshot(sb):
     """Store everything needed to bring this sandbox back: its data, its tokens as hashes only (never the tokens themselves), and how much lifetime it has left. True if stored."""
-    if not can_resume() or "manage_hash" not in sb: return False
+    if not can_resume() or "manage_hash" not in sb or sb.get("gone"): return False
     sync_tokens(sb)
     fp = fingerprint(sb); data = await asyncio.to_thread(dump_db, sb["dir"] / "hub.db")
-    if data is None or len(data) > SNAP_MAX: return False
+    if data is None or len(data) > SNAP_MAX or sb.get("gone"): return False
     now = time.time()
     await REG.put_snapshot(sb["id"], {"id": sb["id"], "taken_at": int(now), "db": data, "remaining": max(0, int(sb["until"] - now)), "hard": int(sb["hard"]), "created": int(sb.get("created", now)),
         "label": sb.get("label", ""), "joined": dict(sb.get("joined", {})), "manage_hash": sb["manage_hash"], "viewer_hash": sb["viewer_hash"], "owner": sb.get("owner", ""),
         "agents": [{"key": k if k.startswith("sha256:") else "sha256:" + sha(k), "agent_id": v["agent_id"], "role": v["role"], **{x: v[x] for x in ("can_create", "created_by", "owner") if x in v}} for k, v in sb["tokens"].items()]})
-    await REG.update(sb["id"], resumable=True, snapshot_at=int(now)); sb["snap_fp"] = fp; return True
+    if sb.get("gone"):                                              # deleted or expired while we were writing: take the snapshot back rather than leave a way to resurrect it
+        await REG.delete_snapshot(sb["id"]); await REG.update(sb["id"], resumable=False); return False
+    await REG.update(sb["id"], resumable=True, snapshot_at=int(now))
+    if sb.get("gone"): await REG.delete_snapshot(sb["id"]); await REG.update(sb["id"], resumable=False); return False
+    sb["snap_fp"] = fp; return True
 
 async def snapshotter():
     while True:
