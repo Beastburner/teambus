@@ -911,3 +911,30 @@ def test_an_agent_is_warned_before_editing_a_file_a_teammate_committed_that_its_
     (bob / "app.py").write_text("v4 from bob\n"); _g(bob, "add", "app.py"); subprocess.run(["git", "commit", "-qm", "bob: third change"], cwd=bob, env={**env, "GIT_AUTHOR_NAME": "bob", "GIT_AUTHOR_EMAIL": "b@x", "GIT_COMMITTER_NAME": "bob", "GIT_COMMITTER_EMAIL": "b@x"}, check=True)
     _g(bob, "push", "-q", "origin", "HEAD:main"); _g(alice, "pull", "-q", "origin", "main")
     assert edit() == {}                                                                                                                                       # pulled before ever being warned about this commit: silence comes from the clone having it, not from the once-only memory
+
+
+# ---- the visual dashboard, rendered in a real browser (skipped where Chromium is not installed) ----
+def test_visual_dashboard_renders_the_map_board_timeline_and_flags_a_shared_file(hub):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    api("ta", "post_intent", files=["vis/shared.py"], summary="alice on the shared file"); api("tb", "post_intent", files=["vis/shared.py", "vis/other.py"], summary="bob on it too")
+    api("ta", "ask", to_agent="bob", question="visual check"); api("tb", "ask", to_agent="alice", question="visual reply")
+    t = api("ta", "add_task", title="Visual: blocked card", assign_to="bob"); api("tb", "update_task", id=t["id"], status="blocked", blocked_on="waiting on alice")
+    api("tb", "build", ok=False, cmd="pytest vis", log_tail="FAILED vis"); api("ta", "resolve", files=["vis/x.py"], committed=True, commit={"sha": "feedface1234567", "branch": "main", "subject": "visual commit"})
+    n_agents = len(api("viewer", "status", method="GET")["agents"])
+    try:
+        with sync_api.sync_playwright() as p:
+            b = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH") or None, args=["--no-sandbox"])
+            pg = b.new_page(viewport={"width": 1200, "height": 900}); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
+            pg.goto(f"{URL}/?token=viewer"); pg.wait_for_selector("#map svg .node", timeout=15000)
+            assert pg.locator("#map svg .node").count() == n_agents                                                                # one node per agent
+            assert pg.locator("#map path.edge.same").count() >= 1 and pg.locator("#map path.edge.block").count() >= 1 and pg.locator("#map path.edge:not(.same):not(.block)").count() >= 2     # clash, blocked-task and message links
+            assert pg.locator(".fchip.clash").count() >= 2 and "shared.py" in pg.inner_text("#files")
+            cols = {c.split("\n")[0] for c in pg.locator(".col").all_inner_texts()}; assert cols == {"Open", "In progress", "Blocked", "Done (24 h)"}
+            assert "Visual: blocked card" in pg.locator(".col", has_text="Blocked").inner_text() and "waiting on alice" in pg.inner_text("#board")
+            assert pg.locator("#timeline svg g.agent").count() == n_agents and pg.locator("#timeline svg path, #timeline svg rect").count() >= 3
+            assert "files two agents are editing" in pg.inner_text("#stats") and "alice sent" in pg.inner_text("#mapsr")
+            pg.set_viewport_size({"width": 390, "height": 800}); assert not pg.evaluate("document.documentElement.scrollWidth > innerWidth + 1")      # no sideways scrolling on a phone
+            assert errs == [], errs; b.close()
+    except sync_api.Error as e:
+        pytest.skip(f"no usable Chromium here: {str(e)[:80]}")
+    for tok in ("ta", "tb"): api(tok, "inbox")

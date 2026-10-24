@@ -27,12 +27,30 @@ pre{margin:6px 0 0;padding:9px 11px;white-space:pre-wrap;color:var(--mut);font:1
 a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:520px){header>.m{display:none}main{padding-inline:12px}}
 li.done{opacity:.55;text-decoration:line-through}
+/* visual views: every agent gets a stable hue from its owner (or its own name), used for nodes, cards, chips and timeline marks */
+.agent{--c:hsl(var(--h) 55% 42%);--cs:hsl(var(--h) 55% 42% / .14)}
+@media (prefers-color-scheme:dark){.agent{--c:hsl(var(--h) 65% 64%);--cs:hsl(var(--h) 65% 64% / .16)}}
+.stats{display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 10px}.stat{padding:7px 11px;border-radius:10px;background:var(--chip);font-size:13px}.stat b{font-variant-numeric:tabular-nums;margin-right:4px}.stat.hot{color:var(--accent);background:transparent;border:1px solid var(--accent)}
+svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--fg);font:11px ui-sans-serif,system-ui,sans-serif}svg.viz .mut{fill:var(--mut)}
+.node circle.core{fill:var(--cs);stroke:var(--c);stroke-width:2}.node.working circle.ring{fill:none;stroke:var(--ok);stroke-width:3}.node.offline circle.core{stroke-dasharray:3 3;opacity:.6}.node text.ini{fill:var(--c);font-weight:700;font-size:13px;text-anchor:middle}
+.edge{fill:none;stroke:var(--mut);opacity:.55}.edge.block{stroke:var(--accent);stroke-dasharray:5 4;opacity:.95}.edge.same{stroke:var(--accent);stroke-width:2.5;opacity:.95}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mut);font-size:12px;padding:6px 0 10px}.legend i{display:inline-block;width:18px;border-top:2px solid var(--mut);vertical-align:middle;margin-right:6px}.legend i.b{border-top:2px dashed var(--accent)}.legend i.s{border-top:3px solid var(--accent)}
+.board{display:grid;gap:10px;grid-template-columns:repeat(4,minmax(0,1fr));padding-bottom:12px}@media (max-width:900px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:520px){.board{grid-template-columns:1fr}}
+.col{background:var(--chip);border-radius:10px;padding:8px;min-width:0}.col h3{margin:2px 4px 8px;font-size:12px;font-weight:600;color:var(--mut);display:flex;justify-content:space-between}
+.card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:8px 10px;margin-bottom:8px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--accent);margin-top:4px}
+.files{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}.dir{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut)}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.fchip{font:12px ui-monospace,Menlo,Consolas,monospace;padding:4px 8px;border-radius:6px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--accent);color:var(--accent);font-weight:700}
+.sr{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
 </style></head><body>
 <header><h1>TeamBus</h1><span class="m">read-only team view</span><span id="upd"></span></header>
 <div id="err"></div>
 <main>
+ <section class="wide"><h2>At a glance</h2><div class="stats" id="stats"></div></section>
+ <section class="wide"><h2>Team map: who is talking to whom, who is blocked, who is on the same file</h2><div id="map"></div><div class="legend"><span><i></i>messages (last hour; thicker = more)</span><span><i class="b"></i>blocked task: owner to the agent who asked for it</span><span><i class="s"></i>editing the same file</span><span>green ring = working now, dashed = offline</span></div><p class="sr" id="mapsr"></p></section>
+ <section class="wide"><h2>Board</h2><div class="board" id="board"></div></section>
+ <section class="wide"><h2>Timeline: the last two hours, one lane per agent</h2><div id="timeline"></div><div class="legend"><span>● editing</span><span>◆ commit</span><span>■ build (red = failed)</span><span>▶ message sent</span><span>⚑ task update</span><span>◈ decision or contract</span></div></section>
+ <section class="wide"><h2>Files in play</h2><div class="files" id="files"></div></section>
  <section><h2>Team</h2><ul id="agents"></ul></section>
- <section><h2>Team board</h2><ul id="tasks"></ul></section>
  <section><h2>Decisions in force</h2><ul id="decisions"></ul></section>
  <section><h2>Open questions</h2><ul id="questions"></ul></section>
  <section><h2>Working on now</h2><ul id="intents"></ul></section>
@@ -50,18 +68,108 @@ function fill(id, rows, render) {  // textContent only: nothing from the hub is 
   for (const r of rows) { const li = document.createElement("li"); render(li, r); ul.append(li); }
 }
 const span = (cls, text) => { const s = document.createElement("span"); if (cls) s.className = cls; s.textContent = text; return s; };
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs, ...kids) => { const e = document.createElementNS(NS, tag); for (const k in attrs || {}) e.setAttribute(k, attrs[k]); for (const c of kids) e.append(c); return e; };
+const hue = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
+const group = (a) => a.owner || a.agent_id;                        // agents of one person share a colour
+const H = (d, id) => { const a = (d.agents || []).find((x) => x.agent_id === id); return hue(a ? group(a) : id); };
+const dom = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const pre = (text) => { const p = document.createElement("pre"); p.textContent = text; return p; };
+function visuals(d) {
+  const n = d.now, agents = (d.agents || []).slice().sort((a, b) => group(a).localeCompare(group(b)) || a.agent_id.localeCompare(b.agent_id)), ev = d.events || [], tasks = d.tasks || [];
+  const names = new Set(agents.map((a) => a.agent_id)); for (const e of ev) { if (e.agent && !names.has(e.agent)) { names.add(e.agent); agents.push({ agent_id: e.agent, owner: "", state: "offline" }); } }
+  // who edits which file now (open intents), and which files two agents both claim
+  const byFile = {}; for (const i of d.intents || []) for (const f of JSON.parse(i.files || "[]")) (byFile[f] = byFile[f] || new Set()).add(i.agent_id);
+  const clashes = Object.keys(byFile).filter((f) => byFile[f].size > 1), clashPairs = new Set();
+  for (const f of clashes) { const l = [...byFile[f]].sort(); for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) clashPairs.add(l[i] + "|" + l[j]); }
+  // at a glance
+  const cnt = (s) => tasks.filter((t) => t.status === s).length, working = agents.filter((a) => a.state === "working").length, unread = (d.questions || []).filter((q) => !q.read).length;
+  const st = $("stats"); st.replaceChildren();
+  const chip = (b, t, hot) => { const s = dom("span", "stat" + (hot ? " hot" : "")); s.append(dom("b", "", b), t); st.append(s); };
+  chip(agents.length, "agents (" + working + " working)"); chip(cnt("open") + cnt("claimed"), "tasks in progress or open"); chip(cnt("blocked"), "blocked", cnt("blocked") > 0); chip(cnt("done"), "done today");
+  chip(clashes.length, "files two agents are editing", clashes.length > 0); chip(unread, "unread messages", unread > 2); const lastC = ev.filter((e) => e.kind === "commit").pop(); chip(lastC ? ago(lastC.ts, n) : "none", "last commit");
+  // team map
+  const map = $("map"); map.replaceChildren();
+  if (!agents.length) map.append(dom("p", "empty", "No agents have joined yet."));
+  else {
+    const W = 760, Ht = 380, cx = W / 2, cy = Ht / 2 - 6, rx = Math.min(300, 60 + agents.length * 34), ry = 135, pos = {};
+    agents.forEach((a, i) => { const t = agents.length === 1 ? 0 : (2 * Math.PI * i) / agents.length - Math.PI / 2; pos[a.agent_id] = [cx + rx * Math.cos(t), cy + ry * Math.sin(t)]; });
+    const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Team map" });
+    svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", fill: "currentColor", class: "mut" }))));
+    const edges = [], sr = [], msgs = {};
+    for (const e of ev) if (e.kind === "message" && n - e.ts < 3600 && pos[e.agent] && pos[e.to]) { const k = e.agent + ">" + e.to; msgs[k] = (msgs[k] || 0) + 1; }
+    for (const k in msgs) { const [a, b] = k.split(">"); edges.push({ a, b, cls: "edge", w: 1 + Math.min(msgs[k], 6) * 0.9, arrow: true, curve: 26 }); sr.push(`${a} sent ${msgs[k]} message(s) to ${b}`); }
+    for (const t of tasks) if (t.status === "blocked" && t.owner && t.created_by && t.owner !== t.created_by && pos[t.owner] && pos[t.created_by]) { edges.push({ a: t.owner, b: t.created_by, cls: "edge block", w: 2, arrow: true, curve: -26 }); sr.push(`${t.owner} is blocked on "${t.title}" for ${t.created_by}`); }
+    for (const p of clashPairs) { const [a, b] = p.split("|"); if (pos[a] && pos[b]) { edges.push({ a, b, cls: "edge same", w: 2.5, curve: 0 }); sr.push(`${a} and ${b} are editing the same file`); } }
+    for (const e of edges) {
+      const [x1, y1] = pos[e.a], [x2, y2] = pos[e.b], mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, q = [mx - (dy / L) * e.curve, my + (dx / L) * e.curve];
+      const sh = (x, y, tx, ty) => { const l = Math.hypot(tx - x, ty - y) || 1; return [x + ((tx - x) / l) * 30, y + ((ty - y) / l) * 30]; };      // stop at the node's edge
+      const [sx, sy] = sh(x1, y1, q[0], q[1]), [ex, ey] = sh(x2, y2, q[0], q[1]);
+      const p = el("path", { class: e.cls, d: `M${sx} ${sy} Q${q[0]} ${q[1]} ${ex} ${ey}`, "stroke-width": e.w }); if (e.arrow) p.setAttribute("marker-end", "url(#arr)"); svg.append(p);
+    }
+    for (const a of agents) {
+      const [x, y] = pos[a.agent_id], g = el("g", { class: "node agent " + (a.state === "working" ? "working" : (a.state === "offline" || a.state === "never connected") ? "offline" : ""), transform: `translate(${x} ${y})` });
+      g.style.setProperty("--h", hue(group(a))); const ini = a.agent_id.split("-").map((s) => s[0] || "").join("").slice(0, 2).toUpperCase();
+      g.append(el("title", {}, document.createTextNode(`${a.agent_id}${a.role ? " (" + a.role + ")" : ""}: ${a.state || "unknown"}`)), el("circle", { class: "ring", r: 31 }), el("circle", { class: "core", r: 26 }), el("text", { class: "ini", y: 5 }, document.createTextNode(ini)),
+        el("text", { y: 46, "text-anchor": "middle" }, document.createTextNode(a.agent_id.length > 18 ? a.agent_id.slice(0, 17) + "…" : a.agent_id)), el("text", { y: 59, "text-anchor": "middle", class: "mut" }, document.createTextNode((a.role || "") + (a.state ? " · " + a.state : ""))));
+      svg.append(g);
+    }
+    map.append(svg); $("mapsr").textContent = sr.join(". ") || "No messages, blocks or shared files right now.";
+  }
+  // board
+  const board = $("board"); board.replaceChildren();
+  for (const [key, title] of [["open", "Open"], ["claimed", "In progress"], ["blocked", "Blocked"], ["done", "Done (24 h)"]]) {
+    const col = dom("div", "col"), list = tasks.filter((t) => t.status === key), h3 = dom("h3", "", title); h3.append(dom("span", "", list.length)); col.append(h3);
+    for (const t of list) {
+      const c = dom("div", "card agent" + (t.status === "done" ? " done" : "")); if (t.owner) c.style.setProperty("--h", H(d, t.owner));
+      c.append(dom("div", "", "#" + t.id + " " + t.title)); if (t.owner) c.append(dom("div", "who", t.owner)); if (t.status === "blocked" && t.blocked_on) c.append(dom("div", "why", "blocked on: " + t.blocked_on)); if (t.note && t.status === "done") c.append(dom("div", "m", t.note));
+      col.append(c);
+    }
+    if (!list.length) col.append(dom("div", "m", "—")); board.append(col);
+  }
+  // timeline
+  const tl = $("timeline"); tl.replaceChildren(); const span2 = 7200, lanes = agents.map((a) => a.agent_id);
+  if (!lanes.length) tl.append(dom("p", "empty", "Nothing yet."));
+  else {
+    const W = 760, left = 150, top = 22, row = 30, Ht = top + row * lanes.length + 10, x = (ts) => left + ((Math.max(ts, n - span2) - (n - span2)) / span2) * (W - left - 14);
+    const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Timeline" });
+    for (const m of [0, 30, 60, 90, 120]) { const xx = x(n - m * 60); svg.append(el("line", { x1: xx, x2: xx, y1: top - 6, y2: Ht - 6, stroke: "currentColor", "stroke-opacity": ".12" }), el("text", { x: xx, y: 12, "text-anchor": "middle", class: "mut" }, document.createTextNode(m === 0 ? "now" : "-" + m + "m"))); }
+    lanes.forEach((id, i) => { const y = top + row * i + row / 2, a = agents[i], g = el("g", { class: "agent" }); g.style.setProperty("--h", hue(group(a)));
+      g.append(el("line", { x1: left - 6, x2: W - 10, y1: y, y2: y, stroke: "var(--c)", "stroke-opacity": ".25" }), el("text", { x: left - 12, y: y + 4, "text-anchor": "end", style: "fill:var(--c);font-weight:600" }, document.createTextNode(id.length > 20 ? id.slice(0, 19) + "…" : id)));
+      for (const e of ev.filter((e) => e.agent === id && n - e.ts <= span2)) {
+        const xx = x(e.ts); let m; const tip = el("title", {}, document.createTextNode(`${e.kind}${e.to ? " to " + e.to : ""}${e.text ? ": " + e.text : ""} · ${ago(e.ts, n)}`));
+        if (e.kind === "commit") m = el("path", { d: `M${xx} ${y - 6} l6 6 l-6 6 l-6 -6 z`, fill: "var(--c)" });
+        else if (e.kind === "build") m = el("rect", { x: xx - 5, y: y - 5, width: 10, height: 10, fill: e.ok ? "var(--ok)" : "var(--accent)" });
+        else if (e.kind === "message") m = el("path", { d: `M${xx - 4} ${y - 6} l10 6 l-10 6 z`, fill: "none", stroke: "var(--c)", "stroke-width": 1.6 });
+        else if (e.kind === "task") m = el("path", { d: `M${xx - 3} ${y + 7} v-14 h9 l-3 4 l3 4 h-9`, fill: e.status === "blocked" ? "var(--accent)" : "var(--c)" });
+        else if (e.kind === "decision" || e.kind === "contract") m = el("path", { d: `M${xx} ${y - 7} l7 7 l-7 7 l-7 -7 z`, fill: "none", stroke: "var(--c)", "stroke-width": 2 });
+        else m = el("circle", { cx: xx, cy: y, r: 4, fill: "var(--c)", "fill-opacity": ".55" });
+        m.append(tip); g.append(m);
+      }
+      svg.append(g); });
+    tl.append(svg);
+  }
+  // files in play, grouped by folder; red = two agents on one file
+  const fb = $("files"); fb.replaceChildren(); const dirs = {};
+  for (const f of Object.keys(byFile).sort()) { const k = f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "."; (dirs[k] = dirs[k] || []).push(f); }
+  if (!Object.keys(dirs).length) fb.append(dom("p", "empty", "No files are being edited right now."));
+  for (const k of Object.keys(dirs).sort()) {
+    const box = dom("div"), chips = dom("div", "chips"); box.append(dom("div", "dir", k + "/"));
+    for (const f of dirs[k]) for (const a of byFile[f]) { const c = dom("span", "fchip agent" + (byFile[f].size > 1 ? " clash" : ""), (byFile[f].size > 1 ? "⚠ " : "") + f.split("/").pop() + " · " + a); c.style.setProperty("--h", H(d, a)); c.title = f; chips.append(c); }
+    box.append(chips); fb.append(box);
+  }
+}
 async function load() {
   try {
     const r = await fetch("api/status", { headers: { Authorization: "Bearer " + token } });
     if (!r.ok) throw new Error(r.status === 401 ? "401: missing or wrong token (open this page as /?token=YOUR_TOKEN)" : "hub returned " + r.status);
     const d = await r.json(); $("err").style.display = "none"; const n = d.now;
+    visuals(d);
     fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); li.append(dot, span("", a.agent_id), span("tag", (a.owner ? a.owner + " · " : "") + (a.role || "-")), span("m", "  " + (a.last_seen_ago == null ? "never seen" : (a.state || "") + " · " + ago(n - a.last_seen_ago, n))), a.last_seen_ago != null && a.hook_ago == null ? span("tag", "no hooks") : "", a.last_seen_ago != null && a.mcp_ago == null ? span("tag", "no tools") : ""); });
     fill("questions", d.questions.filter((q) => !q.answered), (li, q) => { li.append(span("", q.from_agent + " → " + q.to_agent), span("m", "  " + ago(q.ts, n)), pre(q.body)); });
     fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
     fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });
     fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", "  fixed after " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + " min")); if (!b.ok) li.append(pre(b.log_tail || "")); });
-    fill("tasks", d.tasks || [], (li, t) => { li.append(span("tag", t.status), span("", " #" + t.id + " " + t.title), t.owner ? span("m", "  · " + t.owner) : "", t.status === "blocked" && t.blocked_on ? span("m", "  · blocked on: " + t.blocked_on) : "", span("m", "  " + ago(t.updated, n))); if (t.status === "done") li.className = "done"; });
     fill("decisions", d.decisions || [], (li, x) => { li.append(span("tag", x.topic), span("", " " + x.text), span("m", "  · " + x.agent_id + ", " + ago(x.ts, n))); });
     fill("feed", d.feed, (li, f) => { li.append(span("m", f.type + " "), span("", f.agent_id + " "), span("m", f.text), f.status ? span("tag", f.status) : "", span("m", "  " + ago(f.ts, n)), f.note ? span("m", "  · " + f.note) : ""); });
     $("upd").textContent = "updated " + new Date().toLocaleTimeString();

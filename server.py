@@ -454,13 +454,25 @@ def digest(since: float = 0.0, agent_id: str = "", ctx: Context | None = None):
     """What's new for you: unread messages (marked read) and teammates' activity since `since`."""
     f = team_feed(since, agent_id, ctx); return {"me": me(ctx, agent_id), "now": f["now"], "inbox": check_inbox(False, agent_id, ctx), "items": f["items"], "agents": f["agents"]}
 
+def _events(now, span=3 * 3600, cap=200):
+    """One time-ordered stream for the dashboard's timeline: everything the team did in the last `span` seconds, one small record each (no bodies, no secrets)."""
+    since, out = now - span, []
+    for r in rows("SELECT ts, agent_id, summary, files, status FROM intents WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "edit", "agent": r["agent_id"], "text": (r["summary"] or "")[:100], "files": json.loads(r["files"] or "[]")[:6]})
+    for r in rows("SELECT ts, agent_id, sha, branch, subject FROM commits WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "commit", "agent": r["agent_id"], "text": f"{r['sha'][:7]} {r['subject']}"[:100], "branch": r["branch"]})
+    for r in rows("SELECT ts, agent_id, ok, cmd FROM builds WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "build", "agent": r["agent_id"], "ok": bool(r["ok"]), "text": (r["cmd"] or "build")[:80]})
+    for r in rows("SELECT ts, from_agent, to_agent, reply_to FROM messages WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "message", "agent": r["from_agent"], "to": r["to_agent"], "reply": r["reply_to"] is not None, "text": ""})
+    for r in rows("SELECT updated, title, status, owner, created_by FROM tasks WHERE updated>?", since): out.append({"ts": r["updated"], "kind": "task", "agent": r["owner"] or r["created_by"], "status": r["status"], "text": r["title"][:100]})
+    for r in rows("SELECT ts, agent_id, topic FROM decisions WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "decision", "agent": r["agent_id"], "text": r["topic"][:60]})
+    for r in rows("SELECT ts, agent_id, name FROM contracts WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "contract", "agent": r["agent_id"], "text": r["name"][:60]})
+    return sorted(out, key=lambda x: x["ts"])[-cap:]
+
 def status(ctx=None):
     """Everything the web view shows (read-only)."""
     now = time.time(); q = rows("SELECT * FROM messages WHERE reply_to IS NULL ORDER BY id DESC LIMIT 30"); pres = presence(); by = {p["agent_id"]: p for p in pres}
     d = {"now": now, "agents": pres, "intents": rows("SELECT * FROM intents WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", now - INTENT_TTL),
             "contracts": rows("SELECT * FROM contracts WHERE ts>? AND status='open' ORDER BY ts DESC LIMIT 20", now - CONTRACT_TTL), "builds": rows("SELECT * FROM builds ORDER BY ts DESC LIMIT 20"),
             "questions": [{**m, "answered": bool(m["answered"]), **({} if m["read"] else {"waiting": delivery_note(by.get(m["to_agent"], {}))})} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
-    d["tasks"] = list_tasks()["tasks"]; d["decisions"] = list_decisions()["decisions"]
+    d["tasks"] = list_tasks()["tasks"]; d["decisions"] = list_decisions()["decisions"]; d["events"] = _events(now)
     for f in d["feed"]:
         if f["type"] == "message" and f["status"] == "unread": f["note"] = delivery_note(by.get(f["text"][3:f["text"].index(":")], {}))
     return d
