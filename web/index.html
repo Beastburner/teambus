@@ -26,11 +26,14 @@ pre{margin:6px 0 0;padding:9px 11px;white-space:pre-wrap;color:var(--mut);font:1
 #err{display:none;margin:16px auto 0;width:min(1200px,calc(100% - 32px));padding:11px 14px;border-radius:10px;color:var(--accent);font-weight:500;background:var(--panel);border:1px solid var(--accent)}
 a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (max-width:520px){header>.m{display:none}main{padding-inline:12px}}
+li.done{opacity:.55;text-decoration:line-through}
 </style></head><body>
 <header><h1>TeamBus</h1><span class="m">read-only team view</span><span id="upd"></span></header>
 <div id="err"></div>
 <main>
  <section><h2>Team</h2><ul id="agents"></ul></section>
+ <section><h2>Team board</h2><ul id="tasks"></ul></section>
+ <section><h2>Decisions in force</h2><ul id="decisions"></ul></section>
  <section><h2>Open questions</h2><ul id="questions"></ul></section>
  <section><h2>Working on now</h2><ul id="intents"></ul></section>
  <section><h2>Contracts (breaking changes)</h2><ul id="contracts"></ul></section>
@@ -58,6 +61,8 @@ async function load() {
     fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
     fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });
     fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", "  fixed after " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + " min")); if (!b.ok) li.append(pre(b.log_tail || "")); });
+    fill("tasks", d.tasks || [], (li, t) => { li.append(span("tag", t.status), span("", " #" + t.id + " " + t.title), t.owner ? span("m", "  · " + t.owner) : "", t.status === "blocked" && t.blocked_on ? span("m", "  · blocked on: " + t.blocked_on) : "", span("m", "  " + ago(t.updated, n))); if (t.status === "done") li.className = "done"; });
+    fill("decisions", d.decisions || [], (li, x) => { li.append(span("tag", x.topic), span("", " " + x.text), span("m", "  · " + x.agent_id + ", " + ago(x.ts, n))); });
     fill("feed", d.feed, (li, f) => { li.append(span("m", f.type + " "), span("", f.agent_id + " "), span("m", f.text), f.status ? span("tag", f.status) : "", span("m", "  " + ago(f.ts, n)), f.note ? span("m", "  · " + f.note) : ""); });
     $("upd").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }

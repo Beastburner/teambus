@@ -20,6 +20,9 @@ SCHEMA = {
     "contracts": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, name TEXT, spec TEXT, files TEXT, source_files TEXT DEFAULT '[]', status TEXT DEFAULT 'open', done_files TEXT DEFAULT '[]', resolved_ts REAL",
     "messages": "id INTEGER PRIMARY KEY, ts REAL, from_agent TEXT, to_agent TEXT, body TEXT, reply_to INTEGER, read INTEGER DEFAULT 0, answered INTEGER DEFAULT 0, read_ts REAL",
     "builds": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, ok INTEGER, log_tail TEXT, cmd TEXT DEFAULT '', fixed_by INTEGER, fixed_ts REAL",
+    "commits": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, sha TEXT, branch TEXT, subject TEXT, files TEXT DEFAULT '[]'",
+    "tasks": "id INTEGER PRIMARY KEY, ts REAL, updated REAL, title TEXT, detail TEXT DEFAULT '', status TEXT DEFAULT 'open', owner TEXT DEFAULT '', created_by TEXT, blocked_on TEXT DEFAULT '', note TEXT DEFAULT ''",
+    "decisions": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, topic TEXT, text TEXT, status TEXT DEFAULT 'active', supersedes INTEGER",
     "spawns": "id INTEGER PRIMARY KEY, ts REAL, requested_by TEXT, agent_id TEXT, role TEXT, brief TEXT, status TEXT DEFAULT 'pending', note TEXT DEFAULT ''",
     "agents": "agent_id TEXT PRIMARY KEY, role TEXT, last_seen REAL, last_mcp REAL, last_hook REAL, last_event TEXT, last_event_ts REAL"}
 
@@ -156,10 +159,16 @@ def post_intent(files: list[str], summary: str, symbols: list[str] = [], role: s
         run("UPDATE intents SET ts=?, summary=?, symbols=? WHERE id=?", time.time(), summary, json.dumps(sorted(set(json.loads(old[0]["symbols"])) | set(symbols))), old[0]["id"]); return {"id": old[0]["id"]}
     return {"id": run("INSERT INTO intents(ts,agent_id,role,files,summary,symbols) VALUES(?,?,?,?,?,?)", time.time(), a, role, fj, summary, json.dumps(sorted(set(symbols))))}
 
-def resolve_intent(intent_id: int | None = None, files: list[str] = [], committed: bool = False, agent_id: str = "", ctx: Context | None = None):
-    """Mark your open intents done. By id, by files, or all of yours when neither is given. `committed=true` (sent by the git post-commit hook) also counts those files as adapted for any open contract that lists them."""
+SHA_RE, COMMIT_TTL = re.compile(r"[0-9a-f]{7,40}"), 3 * 86400
+
+def resolve_intent(intent_id: int | None = None, files: list[str] = [], committed: bool = False, commit: dict | None = None, agent_id: str = "", ctx: Context | None = None):
+    """Mark your open intents done. By id, by files, or all of yours when neither is given. `committed=true` (sent by the git post-commit hook) also counts those files as adapted for any open contract that lists them;
+    `commit` ({sha, branch, subject}) tells teammates what you committed, so their agents can warn when their clone does not have it yet."""
     a = me(ctx, agent_id); n = 0
     if committed: _ack_contracts(a, files)
+    if committed and isinstance(commit, dict) and SHA_RE.fullmatch(str(commit.get("sha", ""))) and a:
+        run("INSERT INTO commits(ts,agent_id,sha,branch,subject,files) VALUES(?,?,?,?,?,?)", time.time(), a, commit["sha"], re.sub(r"[^\w./-]", "", str(commit.get("branch", "")))[:80],
+            scrub(str(commit.get("subject", "")))[0][:120], json.dumps([str(f)[:200] for f in files][:200]))
     for r in rows("SELECT id, files FROM intents WHERE agent_id=? AND status='open'", a):
         if (intent_id is None and not files) or r["id"] == intent_id or set(files) & set(json.loads(r["files"])):
             run("UPDATE intents SET status='resolved', resolved_ts=? WHERE id=?", time.time(), r["id"]); n += 1
@@ -190,6 +199,9 @@ def team_feed(since: float = 0.0, agent_id: str = "", ctx: Context | None = None
     return {"now": time.time(), "agents": presence(), "items": sorted(
         f("intent", rows("SELECT * FROM intents WHERE ts>? AND agent_id!=? AND (status='open' OR resolved_ts>?)", since, a, since))
         + f("contract", rows("SELECT * FROM contracts WHERE ts>? AND agent_id!=?", since, a))
+        + [{**x, "type": "task", "agent_id": x["owner"] or x["created_by"], "summary": _task_line(x)} for x in rows("SELECT * FROM tasks WHERE updated>? AND COALESCE(NULLIF(owner,''),created_by)!=?", since, a)]
+        + [{**x, "type": "commit", "summary": f"committed {x['sha'][:7]} on {x['branch'] or '?'}: {x['subject']}"} for x in rows("SELECT * FROM commits WHERE ts>? AND agent_id!=?", since, a)]
+        + [{**x, "type": "decision", "summary": f"{x['topic']}: {x['text']}"} for x in rows("SELECT * FROM decisions WHERE ts>? AND agent_id!=? AND status='active'", since, a)]
         + f("build", rows("SELECT builds.*, (SELECT COUNT(*) FROM builds b2 WHERE b2.fixed_by=builds.id) AS fixes FROM builds WHERE ts>? AND agent_id!=?", since, a)), key=lambda x: x["ts"])}
 
 def _suggest(to, k):
@@ -241,6 +253,75 @@ def _ask_group(a, to, question, reply_to, k):
     out = {"id": ids[0], "ids": ids, "to": to, "recipients": {m: delivery_note(pres.get(m, {})) for m in members}}
     if removed: out["warning"] = f"removed {removed} value(s) that looked like credentials from your message; share secrets out of band, never through TeamBus."
     return out
+
+TASK_STATUSES = ("open", "claimed", "blocked", "done"); MAX_OPEN_TASKS = 200
+
+def _task_line(t): return f"#{t['id']} [{t['status']}{' by ' + t['owner'] if t['owner'] else ''}] {t['title']}" + (f" (blocked on: {t['blocked_on']})" if t["status"] == "blocked" and t["blocked_on"] else "")
+
+def _notify(frm, to, text):
+    if to and to != frm: run("INSERT INTO messages(ts,from_agent,to_agent,body,reply_to) VALUES(?,?,?,?,NULL)", time.time(), frm, to, text[:600])
+
+def add_task(title: str, detail: str = "", assign_to: str = "", agent_id: str = "", ctx: Context | None = None):
+    """Put a task on the shared team board (title up to 120 characters). Without `assign_to` it is open for anyone to claim_task; with an agent_id it is assigned and that agent is told."""
+    a = me(ctx, agent_id); title, detail = scrub((title or "").strip())[0], scrub((detail or "").strip())[0]
+    if not a: return {"error": "no identity"}
+    if not title or len(title) > 120: return {"error": "title must be 1 to 120 characters"}
+    if len(detail) > 2000: return {"error": "detail is at most 2000 characters"}
+    if rows("SELECT COUNT(*) AS n FROM tasks WHERE status!='done'")[0]["n"] >= MAX_OPEN_TASKS: return {"error": f"the board is full ({MAX_OPEN_TASKS} unfinished tasks); finish or remove some"}
+    owner, status = "", "open"
+    if assign_to:
+        k = known()
+        if assign_to not in k:
+            sug = _suggest(assign_to, k); return {"error": f"unknown agent {assign_to!r}." + (f" Did you mean {' or '.join(sug)}?" if sug else "") + " Teammates: " + ", ".join(sorted(k))}
+        owner, status = assign_to, "claimed"
+    now = time.time(); tid = run("INSERT INTO tasks(ts,updated,title,detail,status,owner,created_by) VALUES(?,?,?,?,?,?,?)", now, now, title, detail, status, owner, a)
+    _notify(a, owner, f"Task #{tid} was assigned to you by {a}: {title}")
+    return {"id": tid, "status": status, "owner": owner}
+
+def claim_task(id: int, agent_id: str = "", ctx: Context | None = None):
+    """Take an open task on the board: you own it and teammates see that. Fails if someone else has it."""
+    a = me(ctx, agent_id); t = (rows("SELECT * FROM tasks WHERE id=?", id) or [None])[0]
+    if not a: return {"error": "no identity"}
+    if not t: return {"error": f"no task #{id}"}
+    if t["status"] == "done": return {"error": f"task #{id} is already done"}
+    if t["owner"] and t["owner"] != a: return {"error": f"task #{id} is already {t['status']} by {t['owner']}; ask them (ask_teammate_agent) if it should move to you"}
+    run("UPDATE tasks SET owner=?, status='claimed', updated=? WHERE id=?", a, time.time(), id); return {"id": id, "status": "claimed", "owner": a}
+
+def update_task(id: int, status: str = "", note: str = "", blocked_on: str = "", agent_id: str = "", ctx: Context | None = None):
+    """Change a task you own or created: status open (releases it), claimed, blocked (say what it is blocked on) or done; `note` is a short update. The creator is told when it is done or blocked."""
+    a = me(ctx, agent_id); t = (rows("SELECT * FROM tasks WHERE id=?", id) or [None])[0]
+    if not t: return {"error": f"no task #{id}"}
+    if a not in (t["owner"], t["created_by"]): return {"error": f"only {t['owner'] or t['created_by']} (owner) or {t['created_by']} (creator) may change task #{id}"}
+    status = (status or "").strip()
+    if status and status not in TASK_STATUSES: return {"error": "status must be open, claimed, blocked or done"}
+    note, blocked_on = scrub((note or "").strip())[0][:300], scrub((blocked_on or "").strip())[0][:200]
+    if status == "blocked" and not (blocked_on or note): return {"error": "say what it is blocked on (blocked_on)"}
+    new = status or t["status"]; owner = "" if new == "open" else (t["owner"] or a)
+    run("UPDATE tasks SET status=?, owner=?, note=?, blocked_on=?, updated=? WHERE id=?", new, owner, note or t["note"], (blocked_on or note) if new == "blocked" else "", time.time(), id)
+    if new in ("done", "blocked") and new != t["status"]: _notify(a, t["created_by"], f"Task #{id} is {new}" + (f" ({blocked_on or note})" if (blocked_on or note) else "") + f": {t['title']}")
+    return {"id": id, "status": new, "owner": owner}
+
+def list_tasks(status: str = "", mine: bool = False, agent_id: str = "", ctx: Context | None = None):
+    """The shared team board: unfinished tasks (and what finished in the last day), newest update first. Filter by status, or mine=true for your own."""
+    a = me(ctx, agent_id); now = time.time(); q, args = "SELECT * FROM tasks WHERE (status!='done' OR updated>?)", [now - 86400]
+    if status in TASK_STATUSES: q += " AND status=?"; args.append(status)
+    if mine: q += " AND owner=?"; args.append(a)
+    return {"tasks": rows(q + " ORDER BY (status='done'), updated DESC LIMIT 60", *args)}
+
+def record_decision(topic: str, text: str, supersedes: int | None = None, agent_id: str = "", ctx: Context | None = None):
+    """Write down a team decision others must follow (a convention, a choice of library, a rule), so it survives between sessions and new agents get it on joining. `supersedes` replaces an earlier decision's id."""
+    a = me(ctx, agent_id); topic, text = scrub((topic or "").strip())[0], scrub((text or "").strip())[0]
+    if not a: return {"error": "no identity"}
+    if not topic or len(topic) > 60: return {"error": "topic must be 1 to 60 characters"}
+    if not text or len(text) > 1000: return {"error": "text must be 1 to 1000 characters"}
+    if supersedes is not None and not rows("SELECT id FROM decisions WHERE id=? AND status='active'", supersedes): return {"error": f"no active decision #{supersedes} to replace"}
+    did = run("INSERT INTO decisions(ts,agent_id,topic,text,supersedes) VALUES(?,?,?,?,?)", time.time(), a, topic, text, supersedes)
+    if supersedes is not None: run("UPDATE decisions SET status='superseded' WHERE id=?", supersedes)
+    return {"id": did, "replaced": supersedes}
+
+def list_decisions(limit: int = 20, topic: str = "", agent_id: str = "", ctx: Context | None = None):
+    """The team's current decisions (not the replaced ones), newest first."""
+    return {"decisions": rows("SELECT * FROM decisions WHERE status='active'" + (" AND topic=?" if topic else "") + " ORDER BY id DESC LIMIT ?", *(([topic] if topic else []) + [max(1, min(int(limit), 50))]))}
 
 def who_of(ctx):
     """The authenticated identity record of the caller (agent_id, role, and flags such as can_create)."""
@@ -364,7 +445,10 @@ def check_conflicts(files: list[str], symbols: list[str] = [], imports: list[str
     for r in rows("SELECT * FROM contracts WHERE ts>? AND agent_id!=? AND status='open'", time.time() - CONTRACT_TTL, a):
         if ov := mine & (set(json.loads(r["files"])) - set(json.loads(r["done_files"]))): out.append({"kind": "contract_changed", "with": r["agent_id"], "contract": r["name"], "files": sorted(ov), "spec": r["spec"]})
         if ov := set(imports) & set(json.loads(r["source_files"])): out.append({"kind": "imports_changed", "with": r["agent_id"], "files": sorted(ov), "summary": f"contract '{r['name']}': {r['spec']}"})
-    return {"conflicts": out}
+    since = time.time() - COMMIT_TTL; unpulled = []
+    for r in rows("SELECT * FROM commits WHERE ts>? AND agent_id!=? ORDER BY ts DESC LIMIT 200", since, a):
+        if ov := mine & set(json.loads(r["files"])): unpulled.append({"agent_id": r["agent_id"], "sha": r["sha"], "branch": r["branch"], "subject": r["subject"], "ts": r["ts"], "files": sorted(ov)})
+    return {"conflicts": out, "recent_commits": unpulled[:10]}
 
 def digest(since: float = 0.0, agent_id: str = "", ctx: Context | None = None):
     """What's new for you: unread messages (marked read) and teammates' activity since `since`."""
@@ -376,6 +460,7 @@ def status(ctx=None):
     d = {"now": now, "agents": pres, "intents": rows("SELECT * FROM intents WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", now - INTENT_TTL),
             "contracts": rows("SELECT * FROM contracts WHERE ts>? AND status='open' ORDER BY ts DESC LIMIT 20", now - CONTRACT_TTL), "builds": rows("SELECT * FROM builds ORDER BY ts DESC LIMIT 20"),
             "questions": [{**m, "answered": bool(m["answered"]), **({} if m["read"] else {"waiting": delivery_note(by.get(m["to_agent"], {}))})} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
+    d["tasks"] = list_tasks()["tasks"]; d["decisions"] = list_decisions()["decisions"]
     for f in d["feed"]:
         if f["type"] == "message" and f["status"] == "unread": f["note"] = delivery_note(by.get(f["text"][3:f["text"].index(":")], {}))
     return d
@@ -396,11 +481,11 @@ async def wait_for_messages(timeout_seconds: int = 30, agent_id: str = "", ctx: 
         await asyncio.sleep(1.5)
 mcp.tool(name="wait_for_messages")(wait_for_messages)
 
-for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent): mcp.tool()(fn)
+for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions): mcp.tool()(fn)
 
 # ---- REST mirror so hooks/CLI (plain scripts) call the same functions, plus the web view ----
 API = dict(whoami=whoami, post_intent=post_intent, resolve=resolve_intent, resolve_contract=resolve_contract, asked=asked, feed=team_feed, ask=ask_teammate_agent, inbox=check_inbox, outbox=outbox, thread=thread,
-           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update)
+           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions)
 
 def _route(name):
     async def h(request):

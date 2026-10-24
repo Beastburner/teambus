@@ -112,8 +112,12 @@ def git_hook(root):
 
 def resolve(a):
     root = Path(a.dir).resolve(); c = cfg(root); files = []
-    if a.committed: files = subprocess.run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "--relative", "HEAD"], cwd=root, capture_output=True, text=True).stdout.split()
-    try: print(call(c, "api/resolve", {"files": files, "committed": a.committed}))
+    commit = None
+    if a.committed:
+        files = subprocess.run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "--relative", "HEAD"], cwd=root, capture_output=True, text=True).stdout.split()
+        g = lambda *x: subprocess.run(["git", *x], cwd=root, capture_output=True, text=True).stdout.strip()
+        commit = {"sha": g("rev-parse", "HEAD"), "branch": g("rev-parse", "--abbrev-ref", "HEAD"), "subject": g("log", "-1", "--format=%s")}     # what teammates' agents compare their own clone against
+    try: print(call(c, "api/resolve", {"files": files, "committed": a.committed, **({"commit": commit} if commit else {})}))
     except Exception as e: print(f"hub unreachable: {e}", file=sys.stderr); sys.exit(0 if a.committed else 1)
 
 def ago(s): return "never" if s is None else f"{int(s)}s ago" if s < 120 else f"{int(s / 60)}m ago" if s < 7200 else f"{int(s / 3600)}h ago"

@@ -828,3 +828,86 @@ def test_an_unknown_turn_cost_counts_as_the_whole_per_turn_cap(hub, tmp_path):
     api("tf", "inbox"); hook("stop", "tf", {"cwd": str(hub)}, hub); api("ta", "ask", to_agent="frank", question="unknown cost")
     out = _wk_run(proj, stub, "--retry", "0.5", "--max-wakes", "50", "--budget", "0.5", "--daily-budget", "0.9", secs=12, env={"STUB_COST": "none"})
     assert len(_wk_calls(log)) == 2 and "daily budget reached" in out                                                          # no cost reported: assume the cap, so the limit errs on the safe side
+
+
+# ---- shared board and decisions ----
+def test_the_task_board_assign_claim_update_and_who_may_do_what(hub):
+    a = api("ta", "add_task", title="Build the checkout API", detail="POST /orders, JSON in and out"); assert a["status"] == "open" and a["owner"] == "" and a["id"]
+    for bad in ({"title": ""}, {"title": "x" * 121}, {"title": "ok", "detail": "d" * 2001}): assert "error" in api("ta", "add_task", **bad), bad
+    assert "unknown agent" in api("ta", "add_task", title="x", assign_to="nobody")["error"] and "Did you mean 'bob'" in api("ta", "add_task", title="x", assign_to="bobb")["error"]
+    b = api("ta", "add_task", title="Write the migration", assign_to="bob"); assert b["status"] == "claimed" and b["owner"] == "bob"
+    assert [m["body"] for m in api("tb", "inbox") if "Task #" in m["body"]] == [f"Task #{b['id']} was assigned to you by alice: Write the migration"]               # the assignee is told
+    assert api("tb", "claim_task", id=a["id"]) == {"id": a["id"], "status": "claimed", "owner": "bob"}                                                                    # open task: first to claim gets it
+    assert "already claimed by bob" in api("ta", "claim_task", id=a["id"])["error"] and "no task #99999" in api("ta", "claim_task", id=99999)["error"]
+    assert "only bob" in api("td", "update_task", id=a["id"], status="done")["error"]                                                                                      # a stranger cannot change it
+    assert "blocked on" in api("tb", "update_task", id=a["id"], status="blocked")["error"] and "status must be" in api("tb", "update_task", id=a["id"], status="bogus")["error"]
+    assert api("tb", "update_task", id=a["id"], status="blocked", blocked_on="needs the orders schema from carol")["status"] == "blocked"
+    assert any("Task #%d is blocked (needs the orders schema" % a["id"] in m["body"] for m in api("ta", "inbox"))                                                          # the creator is told
+    tasks = {x["id"]: x for x in api("td", "tasks")["tasks"]}; assert tasks[a["id"]]["blocked_on"].startswith("needs the orders") and tasks[a["id"]]["owner"] == "bob"
+    assert api("tb", "update_task", id=a["id"], status="open")["owner"] == "" and api("ta", "claim_task", id=a["id"])["owner"] == "alice"                                     # release, then someone else takes it
+    assert api("ta", "update_task", id=a["id"], status="done", note="shipped")["status"] == "done"
+    assert [x["id"] for x in api("tb", "tasks", mine=True)["tasks"]] == [b["id"]] and all(x["status"] == "done" for x in api("tb", "tasks", status="done")["tasks"])
+    assert [x["id"] for x in api("tb", "tasks")["tasks"]][-1] == a["id"]                                                                                                   # unfinished first, done last
+    for tok in ("ta", "tb", "td"): api(tok, "inbox")
+
+def test_decisions_are_recorded_superseded_scrubbed_and_shown_to_teammates(hub):
+    d1 = api("ta", "record_decision", topic="database", text="Use Postgres 16; no ORM magic. API_KEY=sk_live_abcdef123456"); assert d1["id"] and d1["replaced"] is None
+    for bad in ({"topic": "", "text": "x"}, {"topic": "t" * 61, "text": "x"}, {"topic": "t", "text": ""}, {"topic": "t", "text": "x" * 1001}): assert "error" in api("ta", "record_decision", **bad), bad
+    assert "no active decision #99999" in api("ta", "record_decision", topic="t", text="x", supersedes=99999)["error"]
+    cur = api("tb", "decisions")["decisions"]; assert [x["topic"] for x in cur][:1] == ["database"] and "sk_live_abcdef123456" not in cur[0]["text"] and "Postgres 16" in cur[0]["text"]
+    d2 = api("tb", "record_decision", topic="database", text="Use SQLite for the prototype", supersedes=d1["id"]); assert d2["replaced"] == d1["id"]
+    ids = [x["id"] for x in api("td", "decisions")["decisions"]]; assert d2["id"] in ids and d1["id"] not in ids                                                         # the replaced one is gone from the live list
+    assert api("td", "decisions", topic="database")["decisions"][0]["id"] == d2["id"]
+    feed = api("td", "digest", since=0)["items"]; assert any(i["type"] == "decision" and "SQLite" in i["summary"] for i in feed) and not any(i["type"] == "decision" and i["agent_id"] == "dave" for i in feed)
+
+def test_session_start_shows_the_board_and_decisions_and_the_dashboard_lists_them(hub):
+    t = api("tb", "add_task", title="Polish the login page", assign_to="erin"); api("ta", "record_decision", topic="style", text="No inline styles, ever")
+    out = hook("start", "td", {"cwd": str(hub)}, hub); txt = out["additionalContext"]
+    assert "Team board" in txt and f"#{t['id']} [claimed by erin] Polish the login page" in txt and "Team decisions in force" in txt and "style: No inline styles, ever" in txt
+    assert "list_tasks" in txt and "claim_task" in txt                                                                                                                     # the protocol tells agents how to use it
+    s = api("viewer", "status", method="GET"); assert any(x["title"] == "Polish the login page" for x in s["tasks"]) and any(x["topic"] == "style" for x in s["decisions"])
+    api("te", "inbox")
+
+def test_board_and_decisions_are_mcp_tools(hub):
+    async def go():
+        async with streamablehttp_client(f"{URL}/mcp", headers={"Authorization": "Bearer ta"}) as (r, w, _):
+            async with ClientSession(r, w) as s:
+                await s.initialize(); names = {x.name for x in (await s.list_tools()).tools}
+                res = await s.call_tool("add_task", {"title": "via MCP"}); return names, json.loads(res.content[0].text)
+    names, out = asyncio.run(go()); assert {"add_task", "claim_task", "update_task", "list_tasks", "record_decision", "list_decisions"} <= names and out["status"] == "open"
+
+
+# ---- stale-clone warning: teammates' commits your clone does not have yet ----
+def _g(cwd, *a): return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+def test_hub_records_commits_and_reports_teammates_recent_commits_to_the_files_you_edit(hub):
+    sha = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    api("tb", "resolve", files=["lib/pay.py", "lib/other.py"], committed=True, commit={"sha": sha, "branch": "feat/pay", "subject": "add pay SECRET_TOKEN=abcdef123456789 flow"})
+    api("tb", "resolve", files=["lib/zzz.py"], committed=True, commit={"sha": "not-a-sha!", "branch": "x", "subject": "ignored"})                    # a bad sha is not stored
+    api("tb", "resolve", files=["lib/zzz.py"], committed=False, commit={"sha": sha, "branch": "x", "subject": "ignored"})                                  # only real commits count
+    r = api("ta", "conflicts", files=["lib/pay.py"]); rc = r["recent_commits"]
+    assert [(c["agent_id"], c["sha"], c["branch"], c["files"]) for c in rc] == [("bob", sha, "feat/pay", ["lib/pay.py"])] and "abcdef123456789" not in rc[0]["subject"]
+    assert api("tb", "conflicts", files=["lib/pay.py"])["recent_commits"] == []                                                                          # your own commits are not news to you
+    assert api("ta", "conflicts", files=["lib/zzz.py"])["recent_commits"] == [] and api("ta", "conflicts", files=["lib/untouched.py"])["recent_commits"] == []
+    assert any(i["type"] == "commit" and sha[:7] in i["summary"] and "feat/pay" in i["summary"] for i in api("ta", "digest", since=0)["items"])         # and the feed mentions it
+
+def test_an_agent_is_warned_before_editing_a_file_a_teammate_committed_that_its_clone_lacks(hub, tmp_path):
+    origin, home = tmp_path / "origin.git", tmp_path / "home"; home.mkdir(); seed = tmp_path / "seed"; seed.mkdir()
+    subprocess.run("git init -q -b main . && echo v1 > app.py && git add . && git -c user.name=t -c user.email=t@t commit -qm seed", shell=True, cwd=seed, check=True)
+    _g(tmp_path, "clone", "-q", "--bare", str(seed), str(origin)); env = {**os.environ, "HOME": str(home)}
+    def clone(name, tok, agent):
+        p = tmp_path / name; _g(tmp_path, "clone", "-q", str(origin), str(p)); _g(p, "config", "user.name", agent); _g(p, "config", "user.email", agent + "@x.test")
+        subprocess.run([sys.executable, CLI, "init", "--hub", URL, "--agent-id", agent, "--role", "r", "--token", tok, "--dir", str(p)], env=env, capture_output=True, text=True, check=True); return p
+    alice, bob = clone("alice", "ta", "alice"), clone("bob", "tb", "bob")
+    edit = lambda: hook("pre", "ta", {"tool_name": "Edit", "tool_input": {"file_path": str(alice / "app.py"), "old_string": "v1", "new_string": "mine"}, "cwd": str(alice)}, alice)
+    assert edit() == {}                                                                                                                                       # nothing committed by anyone yet: no warning
+    (bob / "app.py").write_text("v2 from bob\n"); _g(bob, "add", "app.py"); subprocess.run(["git", "commit", "-qm", "bob: login route"], cwd=bob, env={**env, "GIT_AUTHOR_NAME": "bob", "GIT_AUTHOR_EMAIL": "b@x", "GIT_COMMITTER_NAME": "bob", "GIT_COMMITTER_EMAIL": "b@x"}, check=True)
+    _g(bob, "push", "-q", "origin", "HEAD:main"); sha = _g(bob, "rev-parse", "HEAD")                                                                         # the post-commit hook told the hub; alice has not fetched
+    out = edit(); ctxt = out.get("additionalContext", ""); assert "permissionDecision" not in out and "may be out of date" in ctxt and f"bob committed {sha[:7]}" in ctxt and "bob: login route" in ctxt and "pull" in ctxt, out
+    assert edit() == {}                                                                                                                                       # said once per commit, not at every edit
+    _g(alice, "pull", "-q", "origin", "main"); assert edit() == {}                                                                                           # after pulling there is nothing to warn about
+    (bob / "app.py").write_text("v3 from bob\n"); _g(bob, "add", "app.py"); subprocess.run(["git", "commit", "-qm", "bob: second change"], cwd=bob, env={**env, "GIT_AUTHOR_NAME": "bob", "GIT_AUTHOR_EMAIL": "b@x", "GIT_COMMITTER_NAME": "bob", "GIT_COMMITTER_EMAIL": "b@x"}, check=True)
+    sha2 = _g(bob, "rev-parse", "HEAD"); out = edit(); assert f"bob committed {sha2[:7]}" in out.get("additionalContext", "") and sha[:7] not in out.get("additionalContext", "")   # a newer commit warns again, about the new one only
+    (bob / "app.py").write_text("v4 from bob\n"); _g(bob, "add", "app.py"); subprocess.run(["git", "commit", "-qm", "bob: third change"], cwd=bob, env={**env, "GIT_AUTHOR_NAME": "bob", "GIT_AUTHOR_EMAIL": "b@x", "GIT_COMMITTER_NAME": "bob", "GIT_COMMITTER_EMAIL": "b@x"}, check=True)
+    _g(bob, "push", "-q", "origin", "HEAD:main"); _g(alice, "pull", "-q", "origin", "main")
+    assert edit() == {}                                                                                                                                       # pulled before ever being warned about this commit: silence comes from the clone having it, not from the once-only memory
