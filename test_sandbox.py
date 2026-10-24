@@ -808,3 +808,15 @@ def test_a_snapshot_still_being_written_cannot_bring_a_deleted_sandbox_back(mgr,
     time.sleep(4); assert sid not in fake.snaps, "a deleted sandbox's data came back"
     assert fake.doc(sid)["state"] == "deleted" and fake.doc(sid)["resumable"] is False
     assert call("POST", f"{m.url}/s/{sid}/api/whoami", {}, tok(sb, "alice-frontend"))[0] == 404
+
+
+def test_images_go_through_the_sandbox_proxy_but_only_the_image_upload_may_be_large(mgr):
+    import base64
+    m = mgr(); sb = call("POST", m.url + "/new")[1]; png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    up = lambda data, who="alice-frontend": call("POST", sb["hub_url"] + "/api/attach", {"name": "s.png", "alt": "through the proxy", "data_b64": base64.b64encode(data).decode()}, tok(sb, who))
+    st, r = up(png + b"\0" * 300_000); assert st == 200 and r["mime"] == "image/png" and r["size"] > 300_000                                   # 300 KB passes the 64 KB general limit
+    assert up(png + b"\0" * 2_000_000)[0] == 413                                                                                      # a body over the upload ceiling is refused by the proxy
+    assert call("POST", sb["hub_url"] + "/api/ask", {"to_agent": "bob-backend", "question": "x" * 70_000}, tok(sb, "alice-frontend"))[0] == 413     # everything else keeps the small limit
+    r = urllib.request.Request(sb["hub_url"] + "/api/attachment/%d" % r["id"], headers={"Authorization": "Bearer " + tok(sb, "bob-backend")})
+    with urllib.request.urlopen(r) as x: assert x.read().startswith(b"\x89PNG") and x.headers["Content-Type"] == "image/png"                     # and it comes back out through the proxy
+    assert call("GET", m.url + "/healthz")[0] == 200

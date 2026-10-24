@@ -17,6 +17,7 @@ E = lambda k, d="": os.environ.get(k, d)
 HERE = Path(__file__).resolve().parent
 DIR = Path(E("SANDBOX_DIR", str(HERE / "sandboxes"))).resolve()
 TTL, MAX, PER_IP, RPM = int(E("SANDBOX_TTL", 3600)), int(E("SANDBOX_MAX", 20)), int(E("SANDBOX_NEW_PER_IP_HOUR", 6)), int(E("SANDBOX_RPM", 600))
+MAX_ATTACH_BODY = int(E("SANDBOX_MAX_ATTACH_BODY", 2_200_000))   # an image up to 1.5 MB, base64 in JSON
 MAX_DB, MAX_BODY, TRUST_PROXY = int(float(E("SANDBOX_MAX_DB_MB", 5)) * 1e6), int(E("SANDBOX_MAX_BODY", 65536)), E("SANDBOX_TRUST_PROXY") == "1"
 START_TIMEOUT, WARM, SPAWN_PAR = float(E("SANDBOX_START_TIMEOUT", 45)), E("SANDBOX_WARM") == "1", max(1, int(E("SANDBOX_SPAWN_CONCURRENCY", 2)))
 NOTICE = E("SANDBOX_NOTICE")   # shown in the dialog, e.g. a warning that the host sleeps and wipes sandboxes
@@ -557,11 +558,12 @@ async def proxy(request: Request):
     while h and now - h[0] > 60: h.popleft()
     if len(h) >= RPM: return JSONResponse({"error": "sandbox rate limit"}, 429, headers={"Retry-After": "10"})
     h.append(now); touch(sb)
-    if int(request.headers.get("content-length") or 0) > MAX_BODY: return JSONResponse({"error": "request too large"}, 413)
+    limit = MAX_ATTACH_BODY if request.method == "POST" and request.path_params.get("rest", "") == "api/attach" else MAX_BODY       # only the image upload may be large
+    if int(request.headers.get("content-length") or 0) > limit: return JSONResponse({"error": "request too large"}, 413)
     body = b""
     async for chunk in request.stream():
         body += chunk
-        if len(body) > MAX_BODY: return JSONResponse({"error": "request too large"}, 413)
+        if len(body) > limit: return JSONResponse({"error": "request too large"}, 413)
     up = client.build_request(request.method, f"http://127.0.0.1:{sb['port']}/{request.path_params.get('rest', '')}", params=request.query_params, content=body,
                               headers={**{k: v for k, v in request.headers.items() if k.lower() not in HOP | {"x-teambus-base"}}, "X-TeamBus-Base": f"{public_base(request)}/s/{sb['id']}"})   # tells the hub its public address (a client cannot set this itself)
     r = await client.send(up, stream=True)

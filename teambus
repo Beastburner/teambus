@@ -9,6 +9,7 @@
   teambus listen [--tmux PANE | --exec CMD]                    watch for unread mail and wake an idle session (see `teambus listen --help`)
   teambus worker [--spawn]                                     keep THIS agent alive without a human: wake its Claude session (headless) when mail arrives; with --spawn also start agents its orchestrator creates
   teambus keepalive [install|stop|status]                      run the worker in the background for this folder and restart it at login (asked once by teambus-join)
+  teambus attach FILE --alt TEXT [--task N]                     share a screenshot/mockup with the team; teambus fetch ID saves one to look at
   teambus git-hook                                             install the post-commit hook only"""
 import argparse, hashlib, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request, uuid
 from pathlib import Path
@@ -326,6 +327,29 @@ def worker(a):
             if down == 1: say(f"hub unreachable ({why(e, 'could not reach the hub')}); retrying")
         time.sleep(min(a.interval * (1 + down), 60))
 
+def attach(a):
+    """Upload an image (PNG, JPEG, GIF or WebP, up to 1.5 MB) for the team, with a description of what it shows (the description is required: text-only readers get it instead of the picture)."""
+    import base64
+    p = Path(a.file).expanduser()
+    if not p.is_file(): sys.exit(f"{p} is not a file")
+    data = p.read_bytes()
+    if len(data) > 1_500_000: sys.exit(f"{p.name} is {len(data) // 1000} KB; the limit is 1500 KB (scale it down or crop it)")
+    r = _project_call(a, "api/attach", {"name": p.name, "alt": a.alt, "data_b64": base64.b64encode(data).decode(), **({"task_id": a.task} if a.task else {})})
+    if "error" in r: sys.exit("not shared: " + r["error"])
+    print(f"shared image #{r['id']} ({r['mime']}, {r['size'] // 1000} KB). Teammates see it with view_attachment({r['id']}) and on the dashboard.")
+
+def fetch(a):
+    """Save a shared image under .claude/teambus-attachments/ and print its path, so you can open it with your Read tool and look at it."""
+    root = Path(a.dir).resolve(); c = cfg(root)
+    if not (c["url"] and c["token"]): sys.exit("no hub configured here: run teambus-join first")
+    req = urllib.request.Request(f"{c['url']}/api/attachment/{int(a.id)}", headers={"Authorization": "Bearer " + c["token"]})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r: data, mime = r.read(), r.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as e: sys.exit(f"no image #{a.id}" if e.code == 404 else f"hub said HTTP {e.code}")
+    ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}.get(mime)
+    if not ext: sys.exit(f"the hub sent {mime or 'something'}, not an image")
+    out = Path(a.out).expanduser() if a.out else root / ".claude" / "teambus-attachments"; out.mkdir(parents=True, exist_ok=True); path = out / f"{int(a.id)}.{ext}"; path.write_bytes(data); print(path)
+
 def keepalive(a):
     """Run `teambus worker` for this folder as a background service that restarts at login, so waking this agent does not depend on anyone remembering to start it.
     Linux: a systemd user unit. macOS: a launchd agent. Anywhere else (or without systemd --user): a detached process that lasts until reboot. Nothing is installed unless you ask for `install`;
@@ -384,13 +408,15 @@ def tmux_wake(pane, line):
 
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("keepalive", keepalive), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
         if n == "resolve": p.add_argument("--committed", action="store_true")
         if n == "send": p.add_argument("to"); p.add_argument("text", nargs="+"); p.add_argument("--reply-to", type=int)
         if n == "inbox": p.add_argument("--peek", action="store_true")
         if n == "outbox": p.add_argument("--limit", type=int, default=15)
+        if n == "attach": p.add_argument("file"); p.add_argument("--alt", required=True, help="what the image shows (1 to 200 characters)"); p.add_argument("--task", type=int, help="attach it to this task on the board")
+        if n == "fetch": p.add_argument("id", type=int); p.add_argument("--out", help="folder to save into (default .claude/teambus-attachments)")
         if n == "keepalive":
             p.add_argument("action", nargs="?", choices=["install", "stop", "status"], default="status"); p.add_argument("--max-wakes", type=int, default=6); p.add_argument("--budget", type=float, default=1.0); p.add_argument("--daily-budget", type=float, default=5.0); p.add_argument("--timeout", type=int, default=900)
             p.add_argument("--allow", action="append", metavar="TOOL"); p.add_argument("--claude"); p.add_argument("--spawn", action="store_true")

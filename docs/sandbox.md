@@ -53,6 +53,7 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 | `SANDBOX_MAX_AGENTS` | 5 | most agents in one sandbox |
 | `SANDBOX_NOTICE` | empty (a free-hosting warning on Render) | a line of text shown in the dialog, for example that the host sleeps and wipes sandboxes; set it to an empty string to hide it |
 | `SANDBOX_INSTALL_CMD` | the install one-liner | what the dialog shows under "First time on this machine?" |
+| `SANDBOX_MAX_ATTACH_BODY` | 2200000 | bytes allowed for the image upload request only (an image up to 1.5 MB as base64); every other request keeps `SANDBOX_MAX_BODY` |
 | `SANDBOX_RPM` | 600 | requests per minute per sandbox (429) |
 | `SANDBOX_MAX_BODY` | 65536 | bytes per request (413) |
 | `SANDBOX_MAX_DB_MB` | 5 | a sandbox whose DB exceeds this is deleted |

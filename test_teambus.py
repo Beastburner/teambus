@@ -920,6 +920,7 @@ def test_visual_dashboard_renders_the_map_board_timeline_and_flags_a_shared_file
     api("ta", "ask", to_agent="bob", question="visual check"); api("tb", "ask", to_agent="alice", question="visual reply")
     t = api("ta", "add_task", title="Visual: blocked card", assign_to="bob"); api("tb", "update_task", id=t["id"], status="blocked", blocked_on="waiting on alice")
     api("tb", "build", ok=False, cmd="pytest vis", log_tail="FAILED vis"); api("ta", "resolve", files=["vis/x.py"], committed=True, commit={"sha": "feedface1234567", "branch": "main", "subject": "visual commit"})
+    api("ta", "attach", name="v.png", alt="visual test shot", data_b64=_b64.b64encode(PNG).decode(), task_id=t["id"])
     n_agents = len(api("viewer", "status", method="GET")["agents"])
     try:
         with sync_api.sync_playwright() as p:
@@ -933,8 +934,76 @@ def test_visual_dashboard_renders_the_map_board_timeline_and_flags_a_shared_file
             assert "Visual: blocked card" in pg.locator(".col", has_text="Blocked").inner_text() and "waiting on alice" in pg.inner_text("#board")
             assert pg.locator("#timeline svg g.agent").count() == n_agents and pg.locator("#timeline svg path, #timeline svg rect").count() >= 3
             assert "files two agents are editing" in pg.inner_text("#stats") and "alice sent" in pg.inner_text("#mapsr")
+            shown = pg.locator("#gallery img"); pg.wait_for_function("document.querySelector('#gallery img') && document.querySelector('#gallery img').src.startsWith('blob:')", timeout=15000)
+            assert shown.count() >= 1 and shown.first.get_attribute("alt") and "blob:" in shown.first.get_attribute("src")                       # shared images appear, fetched with the viewer token, each with its description
+            shown.first.click(); assert pg.locator("#lightbox").is_visible() and pg.locator("#lbcap").inner_text(); pg.keyboard.press("Escape"); assert pg.locator("#lightbox").is_hidden()
+            assert pg.locator(".col .card .thumbs img").count() >= 1                                                                              # a task's images show on its card
             pg.set_viewport_size({"width": 390, "height": 800}); assert not pg.evaluate("document.documentElement.scrollWidth > innerWidth + 1")      # no sideways scrolling on a phone
             assert errs == [], errs; b.close()
     except sync_api.Error as e:
         pytest.skip(f"no usable Chromium here: {str(e)[:80]}")
     for tok in ("ta", "tb"): api(tok, "inbox")
+
+
+# ---- shared images ----
+import base64 as _b64
+PNG = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")           # a real 1x1 PNG
+def _img(tok, data=PNG, **kw): return api(tok, "attach", **{"name": "shot.png", "alt": "the login screen", "data_b64": _b64.b64encode(data).decode(), **kw})
+
+def test_images_are_validated_stored_and_served_safely(hub):
+    ok = _img("ta", task_id=None); assert ok["mime"] == "image/png" and ok["size"] == len(PNG) and ok["id"]
+    for mime, data in (("image/jpeg", b"\xff\xd8\xff\xe0" + b"x" * 20), ("image/gif", b"GIF89a" + b"x" * 20), ("image/webp", b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"x" * 8)): assert _img("tb", data)["mime"] == mime
+    bad = {"svg": b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>', "html named png": b"<html><script>alert(1)</script></html>", "text": b"hello", "empty": b"", "pdf": b"%PDF-1.4 ..."}
+    for name, data in bad.items(): assert "error" in _img("ta", data), name
+    assert "only PNG" in _img("ta", b"<svg onload=alert(1)>")["error"] and "empty" in _img("ta", b"")["error"]
+    assert "limit is 1500 KB" in _img("ta", PNG + b"0" * 1_600_000)["error"] and "not valid base64" in api("ta", "attach", name="x.png", alt="x", data_b64="!!!not base64!!!")["error"]
+    assert "alt is required" in api("ta", "attach", name="x.png", alt="", data_b64=_b64.b64encode(PNG).decode())["error"] and "alt is required" in _img("ta", alt="a" * 201)["error"]
+    assert "no task #99999" in _img("ta", task_id=99999)["error"]
+    s = _img("ta", alt="shows API_KEY=sk_live_abcdef123456 in the corner"); meta = {x["id"]: x for x in api("tb", "attachments")["attachments"]}; assert "sk_live_abcdef123456" not in meta[s["id"]]["alt"]
+    assert "data" not in meta[ok["id"]] and meta[ok["id"]]["agent_id"] == "alice" and meta[ok["id"]]["alt"] == "the login screen"                      # listings carry no pixels
+    import urllib.request as ur
+    def get(tok, i):
+        try:
+            with ur.urlopen(ur.Request(f"{URL}/api/attachment/{i}", headers={"Authorization": "Bearer " + tok} if tok else {})) as r: return r.status, r.read(), {k.lower(): v for k, v in r.headers.items()}
+        except ur.HTTPError as e: return e.code, e.read(), {k.lower(): v for k, v in e.headers.items()}
+    for tok in ("ta", "viewer"):                                                                                                             # an agent or the read-only viewer can fetch it
+        st, body, h = get(tok, ok["id"]); assert st == 200 and body == PNG and h["content-type"] == "image/png" and h["x-content-type-options"] == "nosniff" and "sandbox" in h["content-security-policy"]
+    assert get(None, ok["id"])[0] == 401 and get("ta", 99999)[0] == 404
+    assert api("viewer", "attach", name="x.png", alt="x", data_b64=_b64.b64encode(PNG).decode())["http"] == 403                              # the viewer cannot upload
+
+def test_an_image_on_a_task_tells_its_owner_and_reaches_the_feed(hub):
+    t = api("ta", "add_task", title="Fix the login screen", assign_to="bob"); api("tb", "inbox")
+    a = _img("ta", task_id=t["id"], alt="the broken login screen"); assert [x["id"] for x in api("td", "attachments", task_id=t["id"])["attachments"]] == [a["id"]]
+    assert any(f"alice attached image #{a['id']} to task #{t['id']}" in m["body"] and "broken login screen" in m["body"] for m in api("tb", "inbox"))
+    assert any(i["type"] == "image" and f"#{a['id']}" in i["summary"] and "view_attachment" in i["summary"] for i in api("td", "digest", since=0)["items"])
+    assert not any(i["type"] == "image" and i["agent_id"] == "alice" for i in api("ta", "digest", since=0)["items"])                           # not news to the sender
+    st = api("viewer", "status", method="GET"); assert any(x["id"] == a["id"] for x in st["attachments"]) and any(e["kind"] == "image" for e in st["events"])
+
+def test_a_single_agent_cannot_flood_the_image_store(hub):
+    n = 0
+    for _ in range(25):
+        r = _img("tf", alt="flood")
+        if "error" in r: assert "at most 20 images per hour" in r["error"]; break
+        n += 1
+    assert n <= 20 and "error" in r
+
+def test_images_come_back_to_agents_as_real_images_over_mcp(hub):
+    a = _img("ta", alt="what alice sees")
+    async def go():
+        async with streamablehttp_client(f"{URL}/mcp", headers={"Authorization": "Bearer tb"}) as (r, w, _):
+            async with ClientSession(r, w) as s:
+                await s.initialize(); names = {x.name for x in (await s.list_tools()).tools}
+                res = await s.call_tool("view_attachment", {"id": a["id"]}); lst = await s.call_tool("list_attachments", {"limit": 3}); miss = await s.call_tool("view_attachment", {"id": 99999}); return names, res, json.loads(lst.content[0].text), miss
+    names, res, lst, miss = asyncio.run(go()); assert {"list_attachments", "view_attachment"} <= names and "attach_image" not in names                      # uploading is a CLI job: the pixels never pass through the model
+    kinds = [c.type for c in res.content]; assert kinds[0] == "image" and "text" in kinds and res.content[0].mimeType == "image/png" and _b64.b64decode(res.content[0].data) == PNG
+    assert "what alice sees" in [c.text for c in res.content if c.type == "text"][0] and lst["attachments"][0]["id"] >= a["id"] and "no image #99999" in miss.content[0].text
+
+def test_cli_attach_and_fetch_round_trip(hub, tmp_path):
+    proj = _wk_project(tmp_path, "imgcli", "te", "erin", "qa"); shot = tmp_path / "login.png"; shot.write_bytes(PNG); env = {**{k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))}}
+    run = lambda *a: subprocess.run([sys.executable, CLI, *a, "--dir", str(proj)], env=env, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, CLI, "attach", str(shot), "--alt", "cli upload", "--dir", str(proj)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and "shared image #" in r.stdout, r.stdout + r.stderr
+    iid = int(r.stdout.split("#")[1].split()[0]); out = run("fetch", str(iid)); path = Path(out.stdout.strip()); assert out.returncode == 0 and path.read_bytes() == PNG and path.suffix == ".png" and ".claude/teambus-attachments" in str(path)
+    assert subprocess.run([sys.executable, CLI, "attach", str(shot), "--dir", str(proj)], env=env, capture_output=True, text=True).returncode == 2                   # --alt is required
+    (tmp_path / "x.svg").write_text("<svg onload=alert(1)/>"); bad = subprocess.run([sys.executable, CLI, "attach", str(tmp_path / "x.svg"), "--alt", "svg", "--dir", str(proj)], env=env, capture_output=True, text=True)
+    assert bad.returncode != 0 and "only PNG" in bad.stderr and "no image #99999" in run("fetch", "99999").stderr

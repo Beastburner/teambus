@@ -40,6 +40,9 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--fg);font:11
 .card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:8px 10px;margin-bottom:8px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--accent);margin-top:4px}
 .files{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}.dir{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut)}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .fchip{font:12px ui-monospace,Menlo,Consolas,monospace;padding:4px 8px;border-radius:6px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--accent);color:var(--accent);font-weight:700}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding-bottom:12px}.shot{margin:0;min-width:0}.shot img,.thumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;background:var(--chip);border:1px solid var(--line);cursor:zoom-in}
+.shot figcaption{font-size:12px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}.shot figcaption b{color:var(--c);font-weight:600}.thumbs{display:flex;gap:6px;margin-top:6px}.thumbs .thumb{width:64px;aspect-ratio:1}
+#lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--panel)}#lightbox p{color:#fff;max-width:min(96vw,900px);text-align:center;margin:0}#lightbox button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer}
 .sr{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
 </style></head><body>
 <header><h1>TeamBus</h1><span class="m">read-only team view</span><span id="upd"></span></header>
@@ -48,8 +51,9 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--fg);font:11
  <section class="wide"><h2>At a glance</h2><div class="stats" id="stats"></div></section>
  <section class="wide"><h2>Team map: who is talking to whom, who is blocked, who is on the same file</h2><div id="map"></div><div class="legend"><span><i></i>messages (last hour; thicker = more)</span><span><i class="b"></i>blocked task: owner to the agent who asked for it</span><span><i class="s"></i>editing the same file</span><span>green ring = working now, dashed = offline</span></div><p class="sr" id="mapsr"></p></section>
  <section class="wide"><h2>Board</h2><div class="board" id="board"></div></section>
- <section class="wide"><h2>Timeline: the last two hours, one lane per agent</h2><div id="timeline"></div><div class="legend"><span>● editing</span><span>◆ commit</span><span>■ build (red = failed)</span><span>▶ message sent</span><span>⚑ task update</span><span>◈ decision or contract</span></div></section>
+ <section class="wide"><h2>Timeline: the last two hours, one lane per agent</h2><div id="timeline"></div><div class="legend"><span>● editing</span><span>◆ commit</span><span>■ build (red = failed)</span><span>▶ message sent</span><span>⚑ task update</span><span>◈ decision or contract</span><span>▭ image shared</span></div></section>
  <section class="wide"><h2>Files in play</h2><div class="files" id="files"></div></section>
+ <section class="wide"><h2>Shared images (screenshots, mockups)</h2><div class="gallery" id="gallery"></div></section>
  <section><h2>Team</h2><ul id="agents"></ul></section>
  <section><h2>Decisions in force</h2><ul id="decisions"></ul></section>
  <section><h2>Open questions</h2><ul id="questions"></ul></section>
@@ -58,6 +62,7 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--fg);font:11
  <section><h2>Recent builds</h2><ul id="builds"></ul></section>
  <section class="wide"><h2>Live feed</h2><ul id="feed"></ul></section>
 </main>
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" hidden><img id="lbimg" alt=""><p id="lbcap"></p><button type="button" id="lbclose">Close</button></div>
 <script>
 const token = new URLSearchParams(location.search).get("token") || "";
 const $ = (id) => document.getElementById(id);
@@ -74,6 +79,18 @@ const hue = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + 
 const group = (a) => a.owner || a.agent_id;                        // agents of one person share a colour
 const H = (d, id) => { const a = (d.agents || []).find((x) => x.agent_id === id); return hue(a ? group(a) : id); };
 const dom = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const imgs = new Map();   // image id -> blob URL: fetched once with the viewer token (an <img> tag cannot send it), reused on every refresh
+async function imgUrl(id) {
+  if (!imgs.has(id)) imgs.set(id, fetch("api/attachment/" + id, { headers: { Authorization: "Bearer " + token } }).then((r) => r.ok ? r.blob() : Promise.reject()).then((b) => URL.createObjectURL(b)).catch(() => { imgs.delete(id); return ""; }));
+  return imgs.get(id);
+}
+function openShot(a, d) {
+  $("lbimg").alt = a.alt; $("lbcap").textContent = "#" + a.id + " by " + a.agent_id + (a.task_id ? " (task #" + a.task_id + ")" : "") + ": " + a.alt; $("lightbox").hidden = false; $("lbclose").focus();
+  imgUrl(a.id).then((u) => { if (u) $("lbimg").src = u; });
+}
+const closeShot = () => { $("lightbox").hidden = true; $("lbimg").removeAttribute("src"); };
+$("lbclose").onclick = closeShot; $("lightbox").onclick = (e) => { if (e.target.id === "lightbox") closeShot(); }; addEventListener("keydown", (e) => { if (e.key === "Escape") closeShot(); });
+function thumb(a, d, cls) { const i = dom("img", cls); i.alt = a.alt; i.loading = "lazy"; i.tabIndex = 0; i.title = a.alt; i.onclick = () => openShot(a, d); i.onkeydown = (e) => { if (e.key === "Enter") openShot(a, d); }; imgUrl(a.id).then((u) => { if (u) i.src = u; }); return i; }
 const pre = (text) => { const p = document.createElement("pre"); p.textContent = text; return p; };
 function visuals(d) {
   const n = d.now, agents = (d.agents || []).slice().sort((a, b) => group(a).localeCompare(group(b)) || a.agent_id.localeCompare(b.agent_id)), ev = d.events || [], tasks = d.tasks || [];
@@ -122,11 +139,15 @@ function visuals(d) {
     const col = dom("div", "col"), list = tasks.filter((t) => t.status === key), h3 = dom("h3", "", title); h3.append(dom("span", "", list.length)); col.append(h3);
     for (const t of list) {
       const c = dom("div", "card agent" + (t.status === "done" ? " done" : "")); if (t.owner) c.style.setProperty("--h", H(d, t.owner));
-      c.append(dom("div", "", "#" + t.id + " " + t.title)); if (t.owner) c.append(dom("div", "who", t.owner)); if (t.status === "blocked" && t.blocked_on) c.append(dom("div", "why", "blocked on: " + t.blocked_on)); if (t.note && t.status === "done") c.append(dom("div", "m", t.note));
+      c.append(dom("div", "", "#" + t.id + " " + t.title)); const pics = (d.attachments || []).filter((x) => x.task_id === t.id).slice(0, 3); if (pics.length) { const row = dom("div", "thumbs"); for (const x of pics) row.append(thumb(x, d, "thumb")); c.append(row); } if (t.owner) c.append(dom("div", "who", t.owner)); if (t.status === "blocked" && t.blocked_on) c.append(dom("div", "why", "blocked on: " + t.blocked_on)); if (t.note && t.status === "done") c.append(dom("div", "m", t.note));
       col.append(c);
     }
     if (!list.length) col.append(dom("div", "m", "—")); board.append(col);
   }
+  // shared images
+  const gal = $("gallery"); gal.replaceChildren(); const shots = d.attachments || [];
+  if (!shots.length) gal.append(dom("p", "empty", "No images shared yet. An agent shares one with: teambus attach FILE --alt \"what it shows\""));
+  for (const a of shots) { const f = dom("figure", "shot agent"); f.style.setProperty("--h", H(d, a.agent_id)); const cap = dom("figcaption"); cap.append(dom("b", "", a.agent_id), " · " + ago(a.ts, n) + (a.task_id ? " · task #" + a.task_id : "") + " · ", a.alt); f.append(thumb(a, d, ""), cap); gal.append(f); }
   // timeline
   const tl = $("timeline"); tl.replaceChildren(); const span2 = 7200, lanes = agents.map((a) => a.agent_id);
   if (!lanes.length) tl.append(dom("p", "empty", "Nothing yet."));
@@ -142,6 +163,7 @@ function visuals(d) {
         else if (e.kind === "build") m = el("rect", { x: xx - 5, y: y - 5, width: 10, height: 10, fill: e.ok ? "var(--ok)" : "var(--accent)" });
         else if (e.kind === "message") m = el("path", { d: `M${xx - 4} ${y - 6} l10 6 l-10 6 z`, fill: "none", stroke: "var(--c)", "stroke-width": 1.6 });
         else if (e.kind === "task") m = el("path", { d: `M${xx - 3} ${y + 7} v-14 h9 l-3 4 l3 4 h-9`, fill: e.status === "blocked" ? "var(--accent)" : "var(--c)" });
+        else if (e.kind === "image") m = el("rect", { x: xx - 5, y: y - 4, width: 10, height: 8, rx: 1.5, fill: "none", stroke: "var(--c)", "stroke-width": 2 });
         else if (e.kind === "decision" || e.kind === "contract") m = el("path", { d: `M${xx} ${y - 7} l7 7 l-7 7 l-7 -7 z`, fill: "none", stroke: "var(--c)", "stroke-width": 2 });
         else m = el("circle", { cx: xx, cy: y, r: 4, fill: "var(--c)", "fill-opacity": ".55" });
         m.append(tip); g.append(m);

@@ -1,10 +1,10 @@
 """TeamBus hub: MCP tools + REST mirror (for hooks/CLI) + read-only web view over one SQLite DB.
 Auth: every request needs a bearer token. TEAMBUS_TOKENS (json file) maps token -> agent (identity is derived from it, never from arguments).
 TEAMBUS_TOKEN is a shared read-only token (web view / status). TEAMBUS_NOAUTH=1 disables auth (local dev only)."""
-import asyncio, difflib, hashlib, json, os, re, secrets, sqlite3, sys, threading, time
+import asyncio, base64, difflib, hashlib, json, os, re, secrets, sqlite3, sys, threading, time
 from urllib.parse import parse_qs
 import uvicorn
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import FastMCP, Context, Image
 from starlette.responses import HTMLResponse, JSONResponse
 
 E = os.environ.get
@@ -133,7 +133,7 @@ class Auth:
         auth = dict(scope["headers"]).get(b"authorization", b"").decode()
         who = ident(auth[7:].strip() if auth.lower().startswith("bearer ") else parse_qs(scope["query_string"].decode()).get("token", [""])[0])
         if not who: return await JSONResponse({"error": "unauthorized"}, 401)(scope, receive, send)
-        if who.get("viewer") and not (scope["method"] == "GET" and scope["path"] in ("/", "/api/status")):
+        if who.get("viewer") and not (scope["method"] == "GET" and (scope["path"] in ("/", "/api/status") or re.fullmatch(r"/api/attachment/\d+", scope["path"]))):
             return await JSONResponse({"error": "viewer token is read-only"}, 403)(scope, receive, send)
         scope["teambus"] = who
         if who.get("agent_id"):
@@ -201,6 +201,7 @@ def team_feed(since: float = 0.0, agent_id: str = "", ctx: Context | None = None
         + f("contract", rows("SELECT * FROM contracts WHERE ts>? AND agent_id!=?", since, a))
         + [{**x, "type": "task", "agent_id": x["owner"] or x["created_by"], "summary": _task_line(x)} for x in rows("SELECT * FROM tasks WHERE updated>? AND COALESCE(NULLIF(owner,''),created_by)!=?", since, a)]
         + [{**x, "type": "commit", "summary": f"committed {x['sha'][:7]} on {x['branch'] or '?'}: {x['subject']}"} for x in rows("SELECT * FROM commits WHERE ts>? AND agent_id!=?", since, a)]
+        + [{"type": "image", "ts": x["ts"], "agent_id": x["agent_id"], "summary": f"shared image #{x['id']}: {x['alt']}" + (f" (task #{x['task_id']})" if x["task_id"] else "") + " - view_attachment to look"} for x in list_attachments(limit=20)["attachments"] if x["ts"] > since and x["agent_id"] != a]
         + [{**x, "type": "decision", "summary": f"{x['topic']}: {x['text']}"} for x in rows("SELECT * FROM decisions WHERE ts>? AND agent_id!=? AND status='active'", since, a)]
         + f("build", rows("SELECT builds.*, (SELECT COUNT(*) FROM builds b2 WHERE b2.fixed_by=builds.id) AS fixes FROM builds WHERE ts>? AND agent_id!=?", since, a)), key=lambda x: x["ts"])}
 
@@ -322,6 +323,57 @@ def record_decision(topic: str, text: str, supersedes: int | None = None, agent_
 def list_decisions(limit: int = 20, topic: str = "", agent_id: str = "", ctx: Context | None = None):
     """The team's current decisions (not the replaced ones), newest first."""
     return {"decisions": rows("SELECT * FROM decisions WHERE status='active'" + (" AND topic=?" if topic else "") + " ORDER BY id DESC LIMIT ?", *(([topic] if topic else []) + [max(1, min(int(limit), 50))]))}
+
+# ---- images: screenshots and mockups agents share (kept in their own small database file next to the hub's, so they never bloat the main one) ----
+ATT_DB = DB + ".attach"; MAX_IMAGE, MAX_ATTACH_TOTAL, MAX_ATTACH_HOUR = int(E("TEAMBUS_MAX_IMAGE", 1_500_000)), int(E("TEAMBUS_MAX_ATTACH_TOTAL", 25_000_000)), int(E("TEAMBUS_MAX_ATTACH_HOUR", 20))
+
+def adb():
+    c = sqlite3.connect(ATT_DB, timeout=10); c.row_factory = sqlite3.Row; c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, task_id INTEGER, name TEXT, mime TEXT, alt TEXT, size INTEGER, data BLOB)"); return c
+
+def sniff(b):
+    """The image type by its first bytes, never by name: PNG, JPEG, GIF or WebP. Anything else (SVG and HTML included, both can carry scripts) is refused."""
+    if b[:8] == b"\x89PNG\r\n\x1a\n": return "image/png", "png"
+    if b[:3] == b"\xff\xd8\xff": return "image/jpeg", "jpeg"
+    if b[:6] in (b"GIF87a", b"GIF89a"): return "image/gif", "gif"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP": return "image/webp", "webp"
+    return None, None
+
+def attach_image(name: str, alt: str, data_b64: str, task_id: int | None = None, agent_id: str = "", ctx: Context | None = None):
+    """Share an image (screenshot, mockup, diagram) with the team. Normally you run `teambus attach FILE --alt "what it shows" [--task N]` instead of calling this (the file is read on your machine).
+    PNG, JPEG, GIF or WebP up to 1.5 MB; `alt` says what it shows (required: it is what text-only readers get). Teammates view it with view_attachment."""
+    a = me(ctx, agent_id)
+    if not a: return {"error": "no identity"}
+    alt = scrub((alt or "").strip())[0]
+    if not 1 <= len(alt) <= 200: return {"error": "alt is required: say in 1 to 200 characters what the image shows"}
+    name = re.sub(r"[^\w.-]", "_", (name or "image").strip())[:60] or "image"
+    try: data = base64.b64decode(data_b64 or "", validate=True)
+    except Exception: return {"error": "data_b64 is not valid base64"}
+    if not data: return {"error": "the image is empty"}
+    if len(data) > MAX_IMAGE: return {"error": f"the image is {len(data) // 1000} KB; the limit is {MAX_IMAGE // 1000} KB (scale it down or crop it)"}
+    mime, _ = sniff(data)
+    if not mime: return {"error": "only PNG, JPEG, GIF and WebP images are accepted (checked by content, not by name)"}
+    if task_id is not None and not rows("SELECT id FROM tasks WHERE id=?", task_id): return {"error": f"no task #{task_id}"}
+    with adb() as c:
+        if c.execute("SELECT COUNT(*) FROM attachments WHERE agent_id=? AND ts>?", (a, time.time() - 3600)).fetchone()[0] >= MAX_ATTACH_HOUR: return {"error": f"at most {MAX_ATTACH_HOUR} images per hour per agent"}
+        if (c.execute("SELECT COALESCE(SUM(size),0) FROM attachments").fetchone()[0] + len(data)) > MAX_ATTACH_TOTAL: return {"error": "the team's image storage is full; ask the hub owner to clear old images"}
+        aid = c.execute("INSERT INTO attachments(ts,agent_id,task_id,name,mime,alt,size,data) VALUES(?,?,?,?,?,?,?,?)", (time.time(), a, task_id, name, mime, alt, len(data), data)).lastrowid
+    if task_id is not None:
+        t = rows("SELECT owner, created_by, title FROM tasks WHERE id=?", task_id)[0]; _notify(a, t["owner"] or t["created_by"], f"{a} attached image #{aid} to task #{task_id} ({t['title'][:60]}): {alt[:100]}")
+    return {"id": aid, "mime": mime, "size": len(data)}
+
+def list_attachments(task_id: int | None = None, limit: int = 30, agent_id: str = "", ctx: Context | None = None):
+    """The team's shared images, newest first (no pixels: id, who, task, name, what it shows, size). View one with view_attachment(id)."""
+    with adb() as c:
+        q, args = "SELECT id, ts, agent_id, task_id, name, mime, alt, size FROM attachments", []
+        if task_id is not None: q += " WHERE task_id=?"; args.append(task_id)
+        return {"attachments": [dict(r) for r in c.execute(q + " ORDER BY id DESC LIMIT ?", (*args, max(1, min(int(limit), 100))))]}
+
+def view_attachment(id: int, ctx: Context | None = None):
+    """Look at one shared image: it comes back as an image you can see, with what it shows."""
+    with adb() as c: r = c.execute("SELECT * FROM attachments WHERE id=?", (id,)).fetchone()
+    if not r: return f"no image #{id}"
+    return [Image(data=bytes(r["data"]), format=r["mime"].split("/")[1]), f"Image #{r['id']} by {r['agent_id']}" + (f" on task #{r['task_id']}" if r["task_id"] else "") + f": {r['alt']}"]
 
 def who_of(ctx):
     """The authenticated identity record of the caller (agent_id, role, and flags such as can_create)."""
@@ -464,6 +516,8 @@ def _events(now, span=3 * 3600, cap=200):
     for r in rows("SELECT updated, title, status, owner, created_by FROM tasks WHERE updated>?", since): out.append({"ts": r["updated"], "kind": "task", "agent": r["owner"] or r["created_by"], "status": r["status"], "text": r["title"][:100]})
     for r in rows("SELECT ts, agent_id, topic FROM decisions WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "decision", "agent": r["agent_id"], "text": r["topic"][:60]})
     for r in rows("SELECT ts, agent_id, name FROM contracts WHERE ts>?", since): out.append({"ts": r["ts"], "kind": "contract", "agent": r["agent_id"], "text": r["name"][:60]})
+    with adb() as c:
+        for r in c.execute("SELECT ts, agent_id, alt FROM attachments WHERE ts>?", (since,)): out.append({"ts": r["ts"], "kind": "image", "agent": r["agent_id"], "text": r["alt"][:100]})
     return sorted(out, key=lambda x: x["ts"])[-cap:]
 
 def status(ctx=None):
@@ -472,7 +526,7 @@ def status(ctx=None):
     d = {"now": now, "agents": pres, "intents": rows("SELECT * FROM intents WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", now - INTENT_TTL),
             "contracts": rows("SELECT * FROM contracts WHERE ts>? AND status='open' ORDER BY ts DESC LIMIT 20", now - CONTRACT_TTL), "builds": rows("SELECT * FROM builds ORDER BY ts DESC LIMIT 20"),
             "questions": [{**m, "answered": bool(m["answered"]), **({} if m["read"] else {"waiting": delivery_note(by.get(m["to_agent"], {}))})} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
-    d["tasks"] = list_tasks()["tasks"]; d["decisions"] = list_decisions()["decisions"]; d["events"] = _events(now)
+    d["tasks"] = list_tasks()["tasks"]; d["decisions"] = list_decisions()["decisions"]; d["events"] = _events(now); d["attachments"] = list_attachments(limit=40)["attachments"]
     for f in d["feed"]:
         if f["type"] == "message" and f["status"] == "unread": f["note"] = delivery_note(by.get(f["text"][3:f["text"].index(":")], {}))
     return d
@@ -493,11 +547,11 @@ async def wait_for_messages(timeout_seconds: int = 30, agent_id: str = "", ctx: 
         await asyncio.sleep(1.5)
 mcp.tool(name="wait_for_messages")(wait_for_messages)
 
-for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions): mcp.tool()(fn)
+for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions, list_attachments, view_attachment): mcp.tool()(fn)
 
 # ---- REST mirror so hooks/CLI (plain scripts) call the same functions, plus the web view ----
 API = dict(whoami=whoami, post_intent=post_intent, resolve=resolve_intent, resolve_contract=resolve_contract, asked=asked, feed=team_feed, ask=ask_teammate_agent, inbox=check_inbox, outbox=outbox, thread=thread,
-           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions)
+           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions, attach=attach_image, attachments=list_attachments)
 
 def _route(name):
     async def h(request):
@@ -506,6 +560,16 @@ def _route(name):
     return h
 
 for n in API: mcp.custom_route(f"/api/{n}", methods=["POST"])(_route(n))
+
+@mcp.custom_route("/api/attachment/{att_id}", methods=["GET"])
+async def _attachment(request):
+    """The image bytes, for the dashboard and the CLI. Served as an image only (type chosen by content when stored), never sniffed, never executable."""
+    try:
+        with adb() as c: r = c.execute("SELECT mime, data, name FROM attachments WHERE id=?", (int(request.path_params["att_id"]),)).fetchone()
+    except ValueError: r = None
+    if not r: return JSONResponse({"error": "no such image"}, 404)
+    from starlette.responses import Response
+    return Response(bytes(r["data"]), media_type=r["mime"], headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox", "Cache-Control": "private, max-age=3600", "Content-Disposition": f'inline; filename="{r["name"]}"'})
 
 @mcp.custom_route("/api/status", methods=["GET"])
 async def _status(request): return JSONResponse(status())
