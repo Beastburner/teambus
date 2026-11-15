@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus Agent</title>
+<style>
+@font-face{font-family:"Instrument Serif";src:url("assets/InstrumentSerif-Regular.woff2") format("woff2");font-display:swap}
+@font-face{font-family:"Caveat";src:url("assets/Caveat-SemiBold.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Geist";src:url("assets/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+/* Same language as the sandbox page: a dark stage inside a vivid gradient, one red, chalk text, hand-lettered labels. */
+:root{--stage:#161616;--panel:#1d1d1d;--line:rgba(239,227,211,.12);--chalk:#efe3d3;--mut:#9a9088;--red:#cc3a37;--pink:#ff7a6b;--ok:#8fd3a8;--gold:#e8b44a;
+  --serif:"Instrument Serif","Times New Roman",serif;--hand:"Caveat","Segoe Print",cursive;--sans:"Geist",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%}
+body{background:#b83c4c;color:var(--chalk);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased;padding:14px}
+.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%)}
+.stage{position:relative;z-index:1;background:var(--stage);border-radius:22px;min-height:calc(100vh - 28px);box-shadow:0 40px 90px -30px rgba(40,0,10,.6);display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line)}
+h1{font:400 30px/1 var(--serif);margin:0;letter-spacing:-.01em}h1 i{color:var(--pink)}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;min-width:0}
+.card h2{font:400 12px var(--mono);color:var(--mut);margin:0 0 8px;display:flex;justify-content:space-between;text-transform:uppercase;letter-spacing:.06em}
+.card h2 b{font:600 20px var(--hand);color:var(--pink);text-transform:none;letter-spacing:0}
+.empty{color:var(--mut);font:12px var(--mono)}
+@media (prefers-reduced-motion:reduce){.live{animation:none}}
+
+header h1{font-size:26px}header h1 a{color:inherit;text-decoration:none}header h1 i{font-style:normal}.crumb{color:var(--chalk)}
+header a{color:var(--mut);font:12px var(--mono)}header a:hover{color:var(--pink)}#upd{margin-left:auto;color:var(--mut);font:11px var(--mono)}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.tag{display:inline-block;font:600 11px var(--mono);color:var(--pink);border:1px solid var(--line);border-radius:99px;padding:2px 9px}
+.t{font:10px var(--mono);color:var(--mut);white-space:nowrap}.x{color:var(--mut);display:block;overflow-wrap:anywhere}
+.row{display:grid;grid-template-columns:10px 1fr auto;gap:8px;padding:7px 0;border-top:1px solid var(--line);align-items:start}.row:first-of-type{border:0}.row .dot{margin-top:5px}
+.row b{font-weight:600;overflow-wrap:anywhere}
+.err{display:none;position:fixed;left:24px;bottom:24px;padding:8px 12px;border:1px solid var(--red);color:var(--pink);background:var(--panel);border-radius:10px;max-width:80%;z-index:5}
+pre{margin:6px 0 0;padding:8px;background:#111;border:1px solid var(--line);border-radius:8px;font:10px/1.4 var(--mono);color:#cfc8c0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto}
+a.lnk{color:var(--pink);text-decoration:none}
+@media (max-width:640px){body{padding:8px}.stage{border-radius:16px}header{flex-wrap:wrap;padding:12px 14px}}
+
+.grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:12px;padding:12px;min-height:0;align-items:start}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+#info h1{font-size:40px;margin:0 0 8px;overflow-wrap:anywhere}.meta{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.state{display:inline-flex;align-items:center;gap:6px;font:12px var(--mono)}
+.files{font:11px var(--mono);color:var(--chalk);overflow-wrap:anywhere}
+.board{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media (max-width:420px){.board{grid-template-columns:1fr}}
+.tk{border:1px solid var(--line);border-radius:10px;padding:8px;background:#161616;min-width:0;overflow-wrap:anywhere}.tk small{display:block;font:10px var(--mono);color:var(--mut);margin-top:4px}
+.st{font:600 10px var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--gold)}.st.done{color:var(--ok)}.st.blocked{color:var(--red)}
+.tl{list-style:none;margin:0;padding:0 0 0 6px;border-left:1px solid var(--line)}.tl li{position:relative;padding:0 0 12px 16px}.tl li .dot{position:absolute;left:-10px;top:4px}
+.thread{border-top:1px solid var(--line);padding:8px 0;cursor:pointer}.thread:first-of-type{border:0}.thread:hover{background:rgba(255,255,255,.03)}
+.msg{display:block;padding:3px 0 3px 8px;border-left:2px solid var(--line)}.msg.unread{border-left-color:var(--pink)}.msg .who{font:600 12px var(--mono)}
+.flag{font:10px var(--mono);color:var(--mut);margin-left:6px}.flag.ok{color:var(--ok)}
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}.gal figure{margin:0}.gal img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#111;display:block}.gal figcaption{font:10px var(--mono);color:var(--mut);margin-top:3px;overflow-wrap:anywhere}
+</style></head><body><div class="aura"></div>
+<div class="stage">
+<header><h1><a id="home" href="./">Team<i>Bus</i></a> <span class="crumb">/ <span id="nm">agent</span></span></h1><a id="back" href="./">back</a><a id="brain" href="brain">brain</a><a id="conv" href="conversations">conversations</a><span id="upd"><span class="live"></span>connecting</span></header>
+<div class="grid">
+ <div class="col">
+  <div class="card" id="info"></div>
+  <div class="card" id="work"></div>
+  <div class="card" id="tasks"></div>
+  <div class="card" id="decs"></div>
+ </div>
+ <div class="col">
+  <div class="card" id="tl"></div>
+  <div class="card" id="msgs"></div>
+  <div class="card" id="builds"></div>
+  <div class="card" id="imgs"></div>
+ </div>
+</div></div>
+<div class="err" id="err"></div>
+<script>
+"use strict";
+const Q = new URLSearchParams(location.search), token = Q.get("token") || "", invite = Q.get("invite") || "", $ = (id) => document.getElementById(id);
+const tq = token ? "?token=" + encodeURIComponent(token) : invite ? "?invite=" + encodeURIComponent(invite) : "", AUTH = token ? { Authorization: "Bearer " + token } : {};
+const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const col = (n) => `hsl(${hue(n)} 70% 62%)`;
+const agoS = (s) => s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : s < 172800 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d";
+let NOW = Date.now() / 1000;
+const ago = (ts) => ts ? agoS(Math.max(0, NOW - ts)) + " ago" : "never";
+const dom = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+const dotEl = (color) => { const d = dom("span", "dot"); d.style.background = color; return d; };
+const jl = (v) => { try { return typeof v === "string" ? JSON.parse(v || "[]") : v || []; } catch (e) { return []; } };
+const trunc = (s, n) => { s = String(s || ""); return s.length > n ? s.slice(0, n) + "…" : s; };
+const card = (id, title, badge) => { const c = $(id); c.replaceChildren(); const h = dom("h2", "", title); if (badge != null) h.append(dom("b", "", badge)); c.append(h); return c; };
+const empty = (c, t) => c.append(dom("div", "empty", t));
+const showErr = (m) => { const e = $("err"); e.textContent = m || ""; e.style.display = m ? "block" : "none"; };
+
+const AID = Q.get("id") || "";
+for (const [i, p] of [["home", "./"], ["back", "./"], ["brain", "brain"], ["conv", "conversations"]]) $(i).href = p + tq;
+$("nm").textContent = AID || "agent";
+const SC = { working: "var(--ok)", active: "var(--ok)", idle: "var(--gold)", quiet: "var(--mut)", offline: "var(--red)" };
+const imgs = new Map();
+const blobFor = (id) => { if (!imgs.has(id)) imgs.set(id, fetch("api/attachment/" + id + (invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: AUTH }).then((r) => r.ok ? r.blob() : Promise.reject()).then((b) => URL.createObjectURL(b)).catch(() => { imgs.delete(id); return ""; })); return imgs.get(id); };
+const toConv = (id) => { location.href = "conversations" + (tq ? tq + "&" : "?") + "open=" + id; };
+
+function info(d) {
+  const a = d.agent || {}, c = card("info", "Agent"); c.querySelector("h2").remove();
+  c.append(dom("h1", "", AID)); const m = dom("div", "meta");
+  if (a.role) m.append(dom("span", "tag", a.role));
+  const st = dom("span", "state"); st.append(dotEl(SC[a.state] || "var(--mut)"), a.state || "unknown"); m.append(st);
+  m.append(dom("span", "t", "last seen " + (a.last_seen_ago == null ? "never" : agoS(a.last_seen_ago) + " ago")));
+  if (a.owner) m.append(dom("span", "t", "owner " + a.owner));
+  c.append(m);
+}
+function work(d) {
+  const open = (d.intents || []).filter((i) => i.status === "open"), c = card("work", "Current work", open.length);
+  if (!open.length) return empty(c, "Not editing anything right now.");
+  for (const i of open) { const r = dom("div", "row"), mid = dom("div"); mid.append(dom("b", "", i.summary || "(no summary)"), dom("span", "files", jl(i.files).join(", "))); r.append(dotEl("var(--pink)"), mid, dom("span", "t", ago(i.ts))); c.append(r); }
+}
+function tasks(d) {
+  const T = d.tasks || [], c = card("tasks", "Tasks", T.length); if (!T.length) return empty(c, "No tasks.");
+  const b = dom("div", "board");
+  for (const t of T) { const k = dom("div", "tk"); k.append(dom("span", "st " + t.status, t.status), dom("div", "", "#" + t.id + " " + t.title)); const s = [t.owner === AID ? "owns" : "owner " + (t.owner || "none"), t.created_by === AID ? "created" : "by " + t.created_by].join(" · "); k.append(dom("small", "", s)); if (t.status === "blocked" && t.blocked_on) k.append(dom("small", "", "blocked on " + t.blocked_on)); b.append(k); }
+  c.append(b);
+}
+function decs(d) {
+  const D = d.decisions || [], c = card("decs", "Decisions", D.length); if (!D.length) return empty(c, "No active decisions.");
+  for (const x of D) { const r = dom("div", "row"), mid = dom("div"); mid.append(dom("b", "", x.topic), dom("span", "x", x.text)); r.append(dotEl("#b48ae0"), mid, dom("span", "t", ago(x.ts))); c.append(r); }
+}
+function timeline(d) {
+  const since = NOW - 3 * 3600, ev = [];
+  for (const i of d.intents || []) ev.push({ ts: i.ts, color: "var(--pink)", text: "edit: " + trunc(i.summary, 100) + (jl(i.files).length ? " (" + jl(i.files).slice(0, 3).join(", ") + ")" : "") });
+  for (const x of d.commits || []) ev.push({ ts: x.ts, color: "var(--gold)", text: "commit " + String(x.sha || "").slice(0, 7) + " " + trunc(x.subject, 100) });
+  for (const x of d.builds || []) ev.push({ ts: x.ts, color: x.ok ? "var(--ok)" : "var(--red)", text: (x.ok ? "build passed" : "build failed") + (x.cmd ? ": " + trunc(x.cmd, 80) : "") });
+  for (const x of d.messages_sent || []) ev.push({ ts: x.ts, color: "#b48ae0", text: "sent to " + x.to_agent + ": " + trunc(x.body, 80), mid: x.id });
+  for (const x of d.messages_received || []) ev.push({ ts: x.ts, color: "#7ab8ff", text: "received from " + x.from_agent + ": " + trunc(x.body, 80), mid: x.id });
+  const L = ev.filter((e) => e.ts > since).sort((a, b) => b.ts - a.ts), c = card("tl", "Activity timeline", "last 3 hours");
+  if (!L.length) return empty(c, "No activity in the last 3 hours.");
+  const ul = dom("ul", "tl");
+  for (const e of L) { const li = dom("li"); li.append(dotEl(e.color), dom("div", "t", ago(e.ts)), dom("div", "", e.text)); if (e.mid) { li.style.cursor = "pointer"; li.onclick = () => toConv(e.mid); } ul.append(li); }
+  c.append(ul);
+}
+function messages(d) {
+  const all = new Map(); for (const m of [...(d.messages_sent || []), ...(d.messages_received || [])]) all.set(m.id, m);
+  const th = new Map(); for (const m of all.values()) { const k = m.reply_to || m.id; (th.get(k) || th.set(k, []).get(k)).push(m); }
+  const G = [...th.entries()].map(([k, ms]) => ({ k, ms: ms.sort((a, b) => a.ts - b.ts) })).sort((a, b) => b.ms[b.ms.length - 1].ts - a.ms[a.ms.length - 1].ts);
+  const c = card("msgs", "Messages", G.length + " threads"); if (!G.length) return empty(c, "No messages.");
+  for (const g of G) {
+    const t = dom("div", "thread"); t.tabIndex = 0; t.setAttribute("role", "link"); t.onclick = () => toConv(g.k); t.onkeydown = (e) => e.key === "Enter" && toConv(g.k);
+    for (const m of g.ms) {
+      const x = dom("span", "msg" + (!m.read && m.to_agent === AID ? " unread" : "")), w = dom("span", "who", m.from_agent + " → " + m.to_agent); w.style.color = col(m.from_agent);
+      x.append(w, dom("span", "t", "  " + ago(m.ts)), dom("span", "flag" + (m.answered ? " ok" : ""), (m.read ? "read" : "unread") + (m.answered ? " · answered" : "")), dom("span", "x", trunc(m.body, 200))); t.append(x);
+    }
+    c.append(t);
+  }
+}
+function builds(d) {
+  const B = d.builds || [], c = card("builds", "Builds", B.length ? Math.round(B.filter((b) => b.ok).length / B.length * 100) + "% pass" : "none"); if (!B.length) return empty(c, "No builds reported.");
+  for (const b of B) {
+    const r = dom("div", "row"), mid = dom("div"); mid.append(dom("b", "", (b.ok ? "passed" : "failed") + (b.cmd ? " · " + b.cmd : "")));
+    if (!b.ok && b.log_tail) mid.append(dom("pre", "", String(b.log_tail).slice(-600)));
+    r.append(dotEl(b.ok ? "var(--ok)" : "var(--red)"), mid, dom("span", "t", ago(b.ts))); c.append(r);
+  }
+}
+function images(d) {
+  const A = d.attachments || [], c = card("imgs", "Shared images", A.length); if (!A.length) return empty(c, "No images shared.");
+  const g = dom("div", "gal");
+  for (const a of A) { const f = dom("figure"), im = document.createElement("img"); im.alt = a.alt || a.name || "image"; blobFor(a.id).then((u) => u && (im.src = u)); f.append(im, dom("figcaption", "", trunc(a.alt || a.name, 60))); g.append(f); }
+  c.append(g);
+}
+async function load() {
+  if (!AID) return showErr("Open this page as /agent?id=AGENT_ID&token=YOUR_TOKEN");
+  try {
+    const r = await fetch("api/agent_detail?id=" + encodeURIComponent(AID) + (invite ? "&invite=" + encodeURIComponent(invite) : ""), { headers: AUTH });
+    if (!r.ok) throw new Error(r.status === 401 ? "401: open this page as /agent?id=AGENT_ID&token=YOUR_TOKEN (or &invite=)" : "hub returned " + r.status);
+    const d = await r.json(); if (d.error) throw new Error(d.error);
+    NOW = d.now || Date.now() / 1000; showErr("");
+    info(d); work(d); tasks(d); decs(d); timeline(d); messages(d); builds(d); images(d);
+    $("upd").replaceChildren(dom("span", "live"), "live · " + new Date().toLocaleTimeString());
+  } catch (e) { showErr(String(e.message || e)); }
+}
+load(); setInterval(load, 6000);
+</script></body></html>

@@ -201,6 +201,25 @@ def _project_call(a, name, body):
     try: return call(c, name, body)
     except Exception as e: sys.exit(f"cannot use hub {c['url']}: {why(e, 'could not reach the hub')}")
 
+def invite(a):
+    r = _project_call(a, "api/invite", {"email": a.email})
+    if r.get("error"): sys.exit("failed: " + r["error"])
+    print(f"Invite created for {r['email']}")
+    print(f"Share this link: {r['url']}")
+    print("They can view the team dashboard (read-only). Revoke with: teambus revoke " + a.email)
+
+def revoke_invite_cmd(a):
+    r = _project_call(a, "api/revoke", {"email": a.email})
+    if r.get("error"): sys.exit("failed: " + r["error"])
+    print(f"Invite revoked for {a.email}")
+
+def invites(a):
+    r = _project_call(a, "api/invites", {})
+    if r.get("error"): sys.exit(r["error"])
+    for inv in r.get("invites", []):
+        print(f"  {inv['email']:<30} invited by {inv['created_by']:<15} {time.strftime('%Y-%m-%d', time.localtime(inv['ts']))}")
+    if not r.get("invites"): print("no active invites")
+
 def send(a):
     """Message a teammate's agent without the MCP tools (they may not have loaded): same hub call, from the shell."""
     r = _project_call(a, "api/ask", {"to_agent": a.to, "question": " ".join(a.text), **({"reply_to": a.reply_to} if a.reply_to else {})})
@@ -406,13 +425,56 @@ def tmux_wake(pane, line):
     if r.returncode or not re.search(r"claude|node", cmd): print(f"not typing into tmux pane {pane}: it is running {cmd or 'nothing I can see'!r}, not Claude Code", flush=True); return
     subprocess.run(["tmux", "send-keys", "-t", pane, "-l", line]); subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"])
 
+def mode(a):
+    """teambus on | off | mode [off|passive|full] [--global]: pause TeamBus without uninstalling. off = hooks do nothing (no network, no latency); passive (default) = share and receive, never block; full = conflict blocks + stop-gate."""
+    new = {"on": "passive", "off": "off"}.get(a.cmd) or a.value
+    f = Path.home() / ".teambus" / "mode" if a.glob else Path(a.dir).resolve() / ".claude" / "teambus-mode"
+    if new:
+        f.parent.mkdir(parents=True, exist_ok=True); f.write_text(new + "\n")
+    cur = f.read_text().strip() if f.exists() else "passive (default)"
+    print(f"TeamBus mode ({'global' if a.glob else 'this project'}): {cur}" + ("\nMCP tools stay listed; to hide them too run /mcp and disable teambus." if cur == "off" else ""))
+
+def connect(a):
+    """teambus connect [claude|codex|antigravity|all]: point other agent platforms at the SAME hub this project already joined (run `teambus-join` first; it provides the hub + token).
+    codex -> <project>/.codex/config.toml (+ .codex/hooks.json reusing hook.py); antigravity -> ~/.gemini/antigravity/mcp_config.json (stdio via mcp-remote, which needs npx). Each file is backed up to *.bak first."""
+    root = Path(a.dir).resolve(); c = cfg(root)
+    if not (c["url"] and c["token"]): sys.exit("no hub configured here: run teambus-join first (it writes the hub URL + token into .claude/settings.local.json)")
+    url, tv, done = c["url"] + "/mcp", token_var(c["url"], c["agent"]), []
+    for target in (["codex", "antigravity"] if a.target == "all" else [a.target]):
+        if target == "claude": init(argparse.Namespace(dir=str(root), hub=c["url"], agent_id=c["agent"], role=c["role"], token=c["token"])); continue
+        if target == "codex":
+            f = root / ".codex" / "config.toml"; f.parent.mkdir(exist_ok=True); cur = f.read_text() if f.exists() else ""
+            if f.exists(): shutil.copy(f, str(f) + ".bak")
+            cur = re.sub(r"\n?\[mcp_servers\.teambus\][^\[]*", "", cur).rstrip("\n")       # replace our own table only
+            f.write_text((cur + "\n\n" if cur else "") + f'[mcp_servers.teambus]\nurl = "{url}"\nbearer_token_env_var = "{tv}"\n')
+            hj = root / ".codex" / "hooks.json"; h = jload(hj); hk = h.setdefault("hooks", {})
+            for ev, (matcher, mode) in EVENTS.items():
+                if ev in ("PostToolUseFailure",): continue       # Codex has no such event
+                lst = hk.setdefault(ev, [])
+                if not has_hook(lst): lst.append(({"matcher": matcher} if matcher else {}) | {"hooks": [{"type": "command", "command": hook_cmd(mode)}]})
+            hj.write_text(json.dumps(h, indent=2)); ag = root / "AGENTS.md"
+            if "## TeamBus" not in (ag.read_text() if ag.exists() else ""): ag.open("a").write(("\n" if ag.exists() else "") + SNIPPET.read_text())
+            done.append(f"codex: .codex/config.toml + hooks.json + AGENTS.md. Before starting codex run: export {tv}=<your token> (the token is NOT written to the file); keep .codex/ out of git")
+        if target == "antigravity":
+            f = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
+            if not shutil.which("npx"): done.append("antigravity: skipped, npx not found (needed for the mcp-remote bridge)"); continue
+            f.parent.mkdir(parents=True, exist_ok=True); d = jload(f)
+            if f.exists(): shutil.copy(f, str(f) + ".bak")
+            d.setdefault("mcpServers", {})["teambus"] = {"command": "npx", "args": ["-y", "mcp-remote", url, "--header", "Authorization:${TB_AUTH}"], "env": {"TB_AUTH": "Bearer " + c["token"]}}
+            f.write_text(json.dumps(d, indent=2)); f.chmod(0o600); done.append(f"antigravity: teambus added to {f} (restart Antigravity; token stored in that private file)")
+    print("teambus connect:\n  " + "\n  ".join(done or ["nothing to do"]))
+
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("connect", connect), ("on", mode), ("off", mode), ("mode", mode), ("invite", invite), ("revoke", revoke_invite_cmd), ("invites", invites), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
+        if n in ("on", "off", "mode"): p.add_argument("--global", dest="glob", action="store_true")
+        if n == "mode": p.add_argument("value", nargs="?", choices=["off", "passive", "full"])
+        if n == "connect": p.add_argument("target", nargs="?", choices=["claude", "codex", "antigravity", "all"], default="all")
         if n == "resolve": p.add_argument("--committed", action="store_true")
         if n == "send": p.add_argument("to"); p.add_argument("text", nargs="+"); p.add_argument("--reply-to", type=int)
+        if n in ("invite", "revoke"): p.add_argument("email")
         if n == "inbox": p.add_argument("--peek", action="store_true")
         if n == "outbox": p.add_argument("--limit", type=int, default=15)
         if n == "attach": p.add_argument("file"); p.add_argument("--alt", required=True, help="what the image shows (1 to 200 characters)"); p.add_argument("--task", type=int, help="attach it to this task on the board")

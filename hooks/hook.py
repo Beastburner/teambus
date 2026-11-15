@@ -29,6 +29,14 @@ IMP_JS = re.compile(r"""(?:from\s+|import\s*\(?\s*|require\(\s*)['"](\.{1,2}/[^'
 IMP_PY = re.compile(r"^\s*(?:from\s+(\.*[\w.]*)\s+import\s+([\w, ]+)|import\s+([\w.]+))", re.M)
 EXT = ["", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json", ".py"]
 
+def _mode():
+    """off | passive | full. Precedence: TEAMBUS_MODE env/settings, project .claude/teambus-mode, ~/.teambus/mode. Default passive: nothing the hook does can block or stall the agent."""
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    for src in (E("TEAMBUS_MODE"), *(open(f).read().strip() for f in (os.path.join(root, ".claude", "teambus-mode"), os.path.expanduser("~/.teambus/mode")) if os.path.exists(f))):
+        if src in ("off", "passive", "full"): return src
+    return "passive"
+MODE = _mode()
+
 WHY = ""   # why the last call failed, in words (filled by api())
 
 EVENT = ""   # which hook is running; sent with every call so the hub can tell hook traffic from MCP traffic
@@ -140,6 +148,9 @@ def unread_note(throttle=4.0):
 
 def main(mode):
     global EVENT; EVENT = mode
+    if MODE == "off":    # paused: no network, no output, no latency
+        if mode == "start": ctx("SessionStart", "TeamBus is switched OFF for this session (teambus on to resume). Do not use its tools.")
+        return
     d = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     ti = d.get("tool_input") or {}
     root = os.environ.get("CLAUDE_PROJECT_DIR") or d.get("cwd") or os.getcwd()
@@ -170,7 +181,9 @@ def main(mode):
             who = sorted({c["with"] for c in r["conflicts"]}); lines.append(f"This edit is blocked until you have messaged a teammate. Call ask_teammate_agent(to_agent={who[0]!r}, ...) to confirm how to proceed (use the exact agent_id, not the role), then retry the edit.")
             key = path + "|" + json.dumps(sorted(str((c["with"], c["kind"], c.get("contract") or c.get("summary"))) for c in r["conflicts"]))
             st = state(); den = st.setdefault("denied", {}); rec = den.get(key)
-            if rec is None:  # first time: block so the agent must react
+            if MODE == "passive":   # advice only: the edit goes ahead, nothing is blocked
+                ctx("PreToolUse", "\n".join(lines[:-1]) + "\nHeads-up only (not blocked): consider ask_teammate_agent if this overlaps your task.")
+            elif rec is None:  # first time: block so the agent must react
                 den[key] = {"ts": time.time(), "n": 1}; save(st)
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "\n".join(lines)}}))
             elif rec["n"] < 3 and not any((api("asked", to_agent=w, since=rec["ts"]) or {"asked": True})["asked"] for w in who):  # a retry is allowed only once the agent has actually messaged a teammate (hub unreachable counts as asked; 3 strikes max so a broken MCP can't lock editing)
@@ -179,7 +192,7 @@ def main(mode):
             else: ctx("PreToolUse", "\n".join(lines[:-1]) + "\nYou have contacted a teammate (or the hub is unreachable): proceeding.")
     elif mode == "stop":
         # About to finish. If a teammate wrote while we worked, hand it over once instead of going idle with unread mail (stop_hook_active: we already did, so never loop).
-        if not d.get("stop_hook_active"):
+        if MODE == "full" and not d.get("stop_hook_active"):
             note = unread_note(0)
             if note: print(json.dumps({"decision": "block", "reason": "TeamBus: before you finish, a teammate's agent wrote to you. Read and answer it (or say why not):\n" + note}))
     elif mode == "post":

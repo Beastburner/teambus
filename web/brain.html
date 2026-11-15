@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus Brain</title>
+<style>
+@font-face{font-family:"Instrument Serif";src:url("assets/InstrumentSerif-Regular.woff2") format("woff2");font-display:swap}
+@font-face{font-family:"Caveat";src:url("assets/Caveat-SemiBold.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Geist";src:url("assets/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+/* Same language as the sandbox page: a dark stage inside a vivid gradient, one red, chalk text, hand-lettered labels. */
+:root{--stage:#161616;--panel:#1d1d1d;--line:rgba(239,227,211,.12);--chalk:#efe3d3;--mut:#9a9088;--red:#cc3a37;--pink:#ff7a6b;--ok:#8fd3a8;--gold:#e8b44a;
+  --serif:"Instrument Serif","Times New Roman",serif;--hand:"Caveat","Segoe Print",cursive;--sans:"Geist",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%}
+body{background:#b83c4c;color:var(--chalk);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased;padding:14px}
+.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%)}
+.stage{position:relative;z-index:1;background:var(--stage);border-radius:22px;min-height:calc(100vh - 28px);box-shadow:0 40px 90px -30px rgba(40,0,10,.6);display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line)}
+h1{font:400 30px/1 var(--serif);margin:0;letter-spacing:-.01em}h1 i{color:var(--pink)}
+.tabs{display:flex;gap:6px;margin-left:8px}.tab{font:600 12px var(--mono);color:var(--mut);background:none;border:1px solid var(--line);border-radius:99px;padding:5px 12px;cursor:pointer}.tab[aria-pressed=true]{background:var(--red);border-color:var(--red);color:#fff}
+header a{color:var(--mut);font:12px var(--mono)}#upd{margin-left:auto;color:var(--mut);font:11px var(--mono)}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
+.grid{display:grid;grid-template-columns:260px minmax(0,1fr) 280px;gap:12px;padding:12px;min-height:0}
+@media (max-width:1000px){.grid{grid-template-columns:1fr}#wrap{min-height:60vh}}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;min-width:0}
+.card h2{font:400 12px var(--mono);color:var(--mut);margin:0 0 8px;display:flex;justify-content:space-between;text-transform:uppercase;letter-spacing:.06em}
+.card h2 b{font:600 20px var(--hand);color:var(--pink);text-transform:none;letter-spacing:0}
+.big{font:400 40px/1 var(--serif)}.big small{font:11px var(--mono);color:var(--mut);margin-left:6px}
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px}.kpi span{display:block;color:var(--mut);font:11px var(--mono)}
+.bars{display:flex;align-items:flex-end;gap:3px;height:70px}.bars i{flex:1;background:var(--red);border-radius:2px 2px 0 0;min-height:2px;opacity:.85}.bars i.now{background:var(--pink);opacity:1}
+.dots{display:flex;flex-wrap:wrap;gap:4px}.dots i{width:9px;height:9px;border-radius:2px;background:var(--ok)}.dots i.f{background:var(--red)}
+#wrap{position:relative;min-height:520px;border:1px solid var(--line);border-radius:14px;background:radial-gradient(60% 50% at 50% 38%,rgba(204,58,55,.10),transparent 70%),#111;overflow:hidden}
+svg{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+svg text{fill:var(--chalk);font:10px var(--mono);pointer-events:none}svg text.hand{font:600 17px var(--hand);fill:var(--pink)}
+.edge{fill:none;stroke:rgba(239,227,211,.22);stroke-width:.8}.edge.contain{stroke:rgba(239,227,211,.1)}.edge.edit{stroke:rgba(255,122,107,.38)}.edge.msg{stroke:var(--pink);stroke-width:1.6;opacity:.9}.edge.owns{stroke:rgba(232,180,74,.35)}
+.n{cursor:pointer;outline:none}.n.dim{opacity:.1}.n:focus-visible circle.core{stroke:#fff;stroke-width:2}
+.spark{fill:#fff}
+.hudt{position:absolute;left:14px;top:12px;font:10px/1.5 var(--mono);color:var(--mut);pointer-events:none;white-space:pre}.hudb{position:absolute;right:14px;bottom:10px;font:10px var(--mono);color:var(--mut)}
+#tip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:11px/1.4 var(--mono);max-width:260px;overflow-wrap:anywhere;opacity:0;transition:opacity .12s;z-index:3}#empty{position:absolute;inset:0;display:none;place-items:center;text-align:center;color:var(--mut);font:400 26px/1.2 var(--serif);pointer-events:none}#empty small{display:block;font:11px var(--mono);margin-top:8px}.zoom{position:absolute;right:14px;top:12px;display:flex;gap:6px}.zoom button{font:600 13px var(--mono);width:28px;height:28px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--chalk);cursor:pointer}svg{cursor:grab}
+#ter{position:absolute;inset:0;width:100%;height:100%;display:none;cursor:grab;background:#050505}#wrap.t #ter{display:block}#wrap.t svg,#wrap.t #empty,#wrap.t .hudt,#wrap.t #legend,#wrap.t .zoom{display:none}
+#tx{position:absolute;display:none;inset:0;pointer-events:none;font:9px/1.5 var(--mono);color:#cfc8c0}#wrap.t #tx{display:block}#tx .a{position:absolute;white-space:pre}#tx .r{right:14px;text-align:right}#tx .b{bottom:34px}
+#err{display:none;position:absolute;left:14px;bottom:14px;padding:8px 12px;border:1px solid var(--red);color:var(--pink);background:var(--panel);border-radius:10px;max-width:80%}
+#legend{position:absolute;left:14px;bottom:12px;display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--mut);font:10px var(--mono)}#legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+#detail p{margin:4px 0;color:var(--mut);overflow-wrap:anywhere}#detail h3{margin:0;font:400 22px/1.1 var(--serif);overflow-wrap:anywhere}
+.log{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto}.log li{display:grid;grid-template-columns:8px 1fr auto;gap:8px;padding:7px 0;border-top:1px solid var(--line);align-items:start}.log li:first-child{border:0}
+.log .d{width:8px;height:8px;border-radius:50%;margin-top:5px}.log .t{font:10px var(--mono);color:var(--mut)}.log b{font-weight:600}.log span.x{color:var(--mut);display:block;overflow-wrap:anywhere}
+.empty{color:var(--mut);font:12px var(--mono)}
+@media (prefers-reduced-motion:reduce){.live{animation:none}}
+</style></head><body><div class="aura"></div>
+<div class="stage">
+<header><h1>Team<i>Bus</i> brain</h1>
+ <div class="tabs" role="group" aria-label="View"><button class="tab" id="vb" aria-pressed="true">brain</button><button class="tab" id="vt" aria-pressed="false">terrain</button></div>
+ <div class="tabs" role="group" aria-label="Layers"><button class="tab" id="tf" aria-pressed="true">files</button><button class="tab" id="tw" aria-pressed="true">tasks &amp; decisions</button></div>
+ <a id="back" href="./">team view</a><span id="upd"><span class="live"></span>connecting</span></header>
+<div class="grid">
+ <div class="col">
+  <div class="card"><h2>Pulse <b>last 2 hours</b></h2><div class="bars" id="bars" aria-label="Activity per 10 minutes"></div></div>
+  <div class="card"><h2>Metrics</h2><div class="kpis"><div class="kpi"><div class="big" id="kA">0</div><span>agents active</span></div><div class="kpi"><div class="big" id="kE">0</div><span>actions</span></div><div class="kpi"><div class="big" id="kM">0</div><span>messages</span></div><div class="kpi"><div class="big" id="kF">0</div><span>files touched</span></div></div></div>
+  <div class="card"><h2>Builds <b id="bp"></b></h2><div class="dots" id="dots"></div></div>
+ </div>
+ <div id="wrap"><svg id="g" role="img" aria-label="Graph of agents, files, tasks and decisions"><defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs></svg>
+  <div id="tip"></div><div id="empty">The brain is quiet<small>agents appear here once they join and start working</small></div><div class="zoom"><button id="zi" aria-label="Zoom in">+</button><button id="zo" aria-label="Zoom out">−</button><button id="zr" aria-label="Reset view">⟲</button></div><canvas id="ter" aria-label="Terrain: edits per file over time"></canvas><div id="tx"><div class="a" style="left:14px;top:12px" id="tl"></div><div class="a r" style="top:12px" id="tr"></div><div class="a b" style="left:14px" id="tbl"></div><div class="a r b" id="tbr"></div></div><div class="hudt" id="hudt"></div><div class="hudb" id="hudb"></div><div id="legend"></div><div id="err"></div></div>
+ <div class="col">
+  <div class="card" id="detail"><h2>Selected <b>click a node</b></h2><p class="empty">Agents, files, tasks and decisions as one connected map. Orange lines are messages between agents.</p></div>
+  <div class="card"><h2>Team log <b>live</b></h2><ul class="log" id="log"></ul></div>
+ </div>
+</div></div>
+<script>
+"use strict";
+const Q = new URLSearchParams(location.search), token = Q.get("token") || "", invite = Q.get("invite") || "", authKey = token || invite, demo = Q.has("demo");
+document.getElementById("back").href = "./" + (token ? "?token=" + encodeURIComponent(token) : invite ? "?invite=" + encodeURIComponent(invite) : "");
+const svg = document.getElementById("g"), NS = "http://www.w3.org/2000/svg", $ = (id) => document.getElementById(id), RM = matchMedia("(prefers-reduced-motion:reduce)").matches;
+const hue = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const KC = { agent: (n) => `hsl(${hue(n.id)} 70% 62%)`, file: () => "#a39a90", dir: () => "#6c645e", task: () => "#e8b44a", decision: () => "#b48ae0", contract: () => "#ff7a6b" };
+let view = { k: 1, x: 0, y: 0 }, SC = 1, vp = null, nodes = new Map(), edges = [], W = 800, H = 600, sel = null, last = null, layers = { f: true, w: true };
+const el = (t, a, p) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); p && p.appendChild(e); return e; };
+const txt = (t, a, p) => { const e = el("text", a, p); e.textContent = t; return e; };
+
+function build(d) {   // status() -> graph. Only what agents reported; nothing is read from anyone's machine.
+  const N = new Map(), E = [], add = (id, kind, label, extra) => { if (!N.has(id)) N.set(id, { id, kind, label, x: W / 2 + (Math.random() - .5) * 300, y: H / 2 + (Math.random() - .5) * 300, vx: 0, vy: 0, deg: 0, ...extra }); return N.get(id); };
+  const seen = new Set(), link = (a, b, type) => { const k = a + "|" + b + "|" + type; if (N.has(a) && N.has(b) && a !== b && !seen.has(k)) { seen.add(k); E.push({ a, b, type }); N.get(a).deg++; N.get(b).deg++; } };
+  const lastBy = {}; for (const e of d.events || []) lastBy[e.agent] = e;
+  for (const a of d.agents || []) { const e = lastBy[a.agent_id]; add("a:" + a.agent_id, "agent", a.agent_id, { role: a.role, detail: e ? `${e.kind}${e.text ? ": " + e.text : ""} · ${ago(d.now - e.ts)} ago` : "no activity yet", now: e && d.now - e.ts < 900 ? e.kind + (e.text ? " " + e.text : "") : "" }); }
+  const fileOf = (agent, f, text) => {
+    if (!layers.f || !N.has("a:" + agent)) return; const parts = f.split("/"); let parent = null;
+    for (let i = 0; i < parts.length - 1; i++) { const id = "d:" + parts.slice(0, i + 1).join("/"); add(id, "dir", parts[i] + "/", {}); if (parent) link(parent, id, "contain"); parent = id; }
+    const fid = "f:" + f; add(fid, "file", parts[parts.length - 1], { path: f, detail: text }); if (parent) link(parent, fid, "contain"); link("a:" + agent, fid, "edit");
+  };
+  const msgs = new Map();
+  for (const e of d.events || []) {
+    if (e.kind === "edit") for (const f of e.files || []) fileOf(e.agent, f, e.text);
+    if (e.kind === "message" && e.to) { const k = e.agent + ">" + e.to; msgs.set(k, (msgs.get(k) || 0) + 1); }
+  }
+  for (const k of msgs.keys()) { const [a, b] = k.split(">"); link("a:" + a, "a:" + b, "msg"); }
+  for (const i of d.intents || []) for (const f of (typeof i.files === "string" ? JSON.parse(i.files || "[]") : i.files || [])) fileOf(i.agent_id, f, i.summary);
+  if (layers.w) {
+    for (const t of d.tasks || []) { add("t:" + t.id, "task", t.title, { detail: `#${t.id} [${t.status}] ${t.note || ""}` }); if (t.owner) link("a:" + t.owner, "t:" + t.id, "owns"); }
+    for (const x of d.decisions || []) { add("x:" + x.id, "decision", x.topic, { detail: x.text }); link("a:" + x.agent_id, "x:" + x.id, "owns"); }
+    for (const c of d.contracts || []) { add("c:" + c.id, "contract", c.name, { detail: c.spec }); link("a:" + c.agent_id, "c:" + c.id, "owns"); for (const f of typeof c.files === "string" ? JSON.parse(c.files || "[]") : c.files || []) if (N.has("f:" + f)) link("c:" + c.id, "f:" + f, "edit"); }
+  }
+  for (const [k, n] of N) { const o = nodes.get(k); if (o) { n.x = o.x; n.y = o.y; n.vx = o.vx; n.vy = o.vy; } }   // positions survive refreshes
+  nodes = N; edges = E; const fresh = new Set((d.events || []).filter((e) => d.now - e.ts < 90).map((e) => "a:" + e.agent)); nodes.forEach((n) => (n.pulse = fresh.has(n.id)));
+}
+
+function step() {   // repulsion + springs + centring
+  const L = [...nodes.values()];
+  for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) { const a = L[i], b = L[j]; let dx = a.x - b.x, dy = a.y - b.y; const d2 = dx * dx + dy * dy + .01; if (d2 > 360000 * SC * SC) continue; const d = Math.sqrt(d2), f = 5000 * SC * SC / d2; dx = dx / d * f; dy = dy / d * f; a.vx += dx; a.vy += dy; b.vx -= dx; b.vy -= dy; }
+  for (const e of edges) { const a = nodes.get(e.a), b = nodes.get(e.b), len = (e.type === "contain" ? 46 : e.type === "msg" ? 230 : 105) * SC; const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, f = (d - len) * .02; a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f; }
+  for (const n of L) { n.vx += (W / 2 - n.x) * .0016; n.vy += (H / 2 - n.y) * .0016; if (!n.fixed) { n.x += n.vx *= .82; n.y += n.vy *= .82; } }
+}
+const rad = (n) => n.kind === "agent" ? 13 : n.kind === "dir" ? 4 : n.kind === "file" ? 3 + Math.min(n.deg, 3) : 6;
+const curve = (a, b, i) => { const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y, k = .14 * (i % 2 ? 1 : -1); return `M${a.x},${a.y} Q${mx - dy * k},${my + dx * k} ${b.x},${b.y}`; };   // gently bowed, like dendrites
+
+let gE, gN, gS;
+function draw() {
+  [...svg.children].forEach((c) => c.tagName !== "defs" && c.remove()); vp = el("g", { id: "vp" }, svg); applyView(); gE = el("g", {}, vp); gS = el("g", {}, vp); gN = el("g", { filter: "url(#glow)" }, vp);
+  edges.forEach((e, i) => { e.i = i; e.el = el("path", { class: "edge " + e.type }, gE); if (e.type === "msg" && !RM) { e.sp = el("circle", { class: "spark", r: 2.5 }, gS); e.off = Math.random(); } });
+  for (const n of nodes.values()) {
+    const g = el("g", { class: "n", tabindex: 0, role: "button", "aria-label": n.kind + " " + (n.path || n.label) }, gN); n.el = g;
+    if (n.pulse) el("circle", { r: rad(n) + 8, fill: "none", stroke: "#8fd3a8", "stroke-width": 1.5, opacity: .7 }, g);
+    el("circle", { class: "core", r: rad(n), fill: KC[n.kind](n) }, g);
+    if (n.kind === "agent") { txt(n.label, { class: "hand", y: rad(n) + 17, "text-anchor": "middle" }, g); if (n.now) txt(n.now.slice(0, 30), { y: rad(n) + 29, "text-anchor": "middle", opacity: .6 }, g); }
+    else if (n.kind !== "file") txt(n.label.slice(0, 26), { y: rad(n) + 12, "text-anchor": "middle" }, g);
+    g.addEventListener("pointerenter", () => { const t = $("tip"); t.textContent = (n.path || n.label) + (n.detail ? "\n" + n.detail : ""); t.style.whiteSpace = "pre-line"; t.style.opacity = 1; });
+    g.addEventListener("pointermove", (ev) => { const b = $("wrap").getBoundingClientRect(), t = $("tip"); t.style.left = Math.min(ev.clientX - b.left + 14, b.width - 270) + "px"; t.style.top = ev.clientY - b.top + 14 + "px"; });
+    g.addEventListener("pointerleave", () => ($("tip").style.opacity = 0));
+    g.addEventListener("click", () => select(n)); g.addEventListener("keydown", (ev) => ev.key === "Enter" && select(n));
+    g.addEventListener("pointerdown", (ev) => { n.fixed = true; g.setPointerCapture(ev.pointerId); const mv = (m) => { const p = pt(m); n.x = p.x; n.y = p.y; }, up = () => { n.fixed = false; g.removeEventListener("pointermove", mv); g.removeEventListener("pointerup", up); }; g.addEventListener("pointermove", mv); g.addEventListener("pointerup", up); });
+  }
+  const used = [...new Set([...nodes.values()].map((n) => n.kind))]; $("legend").replaceChildren(...used.map((k) => { const s = document.createElement("span"), i = document.createElement("i"); i.style.background = KC[k]({ id: k }); s.append(i, k); return s; }));
+}
+const applyView = () => vp && vp.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+const pt = (ev) => { const b = svg.getBoundingClientRect(); return { x: ((ev.clientX - b.left) / b.width * W - view.x) / view.k, y: ((ev.clientY - b.top) / b.height * H - view.y) / view.k }; };
+const zoomAt = (f, cx = W / 2, cy = H / 2) => { const k = Math.min(4, Math.max(.35, view.k * f)), r = k / view.k; view.x = cx - (cx - view.x) * r; view.y = cy - (cy - view.y) * r; view.k = k; applyView(); };
+svg.addEventListener("wheel", (ev) => { ev.preventDefault(); const b = svg.getBoundingClientRect(); zoomAt(ev.deltaY < 0 ? 1.12 : 1 / 1.12, (ev.clientX - b.left) / b.width * W, (ev.clientY - b.top) / b.height * H); }, { passive: false });
+svg.addEventListener("pointerdown", (ev) => { if (ev.target !== svg) return; let lx = ev.clientX, ly = ev.clientY; const b = svg.getBoundingClientRect(), mv = (m) => { view.x += (m.clientX - lx) / b.width * W; view.y += (m.clientY - ly) / b.height * H; lx = m.clientX; ly = m.clientY; applyView(); }, up = () => { svg.removeEventListener("pointermove", mv); svg.removeEventListener("pointerup", up); }; svg.setPointerCapture(ev.pointerId); svg.addEventListener("pointermove", mv); svg.addEventListener("pointerup", up); });
+$("zi").onclick = () => zoomAt(1.25); $("zo").onclick = () => zoomAt(1 / 1.25); $("zr").onclick = () => { view = { k: 1, x: 0, y: 0 }; applyView(); };
+function paint(t) {
+  for (const e of edges) { const a = nodes.get(e.a), b = nodes.get(e.b); e.el.setAttribute("d", curve(a, b, e.i)); if (e.sp) { const u = ((t / 2600) + e.off) % 1, m = e.el.getPointAtLength ? e.el.getPointAtLength(u * e.el.getTotalLength()) : a; e.sp.setAttribute("cx", m.x); e.sp.setAttribute("cy", m.y); } }
+  for (const n of nodes.values()) n.el.setAttribute("transform", `translate(${n.x},${n.y})`);
+}
+function select(n) {
+  sel = sel === n.id ? null : n.id; const near = new Set([n.id]); if (sel) edges.forEach((e) => { if (e.a === n.id) near.add(e.b); if (e.b === n.id) near.add(e.a); });
+  nodes.forEach((m) => m.el.classList.toggle("dim", !!sel && !near.has(m.id)));
+  const c = $("detail"); c.replaceChildren(); const h2 = document.createElement("h2"); h2.append("Selected "); const hb = document.createElement("b"); hb.textContent = sel ? n.kind : "click a node"; h2.append(hb); c.append(h2);
+  if (!sel) return; const h = document.createElement("h3"); h.textContent = n.path || n.label; c.append(h);
+  for (const t of [n.role && "role: " + n.role, n.detail, "connected to " + (near.size - 1) + " things"]) if (t) { const p = document.createElement("p"); p.textContent = t; c.append(p); }
+}
+const ago = (s) => s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : Math.round(s / 3600) + "h";
+function panels(d) {
+  const ev = d.events || [], now = d.now, B = 12, bk = Array(B).fill(0);
+  for (const e of ev) { const k = B - 1 - Math.floor((now - e.ts) / 600); if (k >= 0 && k < B) bk[k]++; }
+  const mx = Math.max(1, ...bk); $("bars").replaceChildren(...bk.map((v, i) => { const b = document.createElement("i"); b.style.height = Math.max(3, v / mx * 100) + "%"; if (i === B - 1) b.className = "now"; b.title = v + " actions"; return b; }));
+  $("kA").textContent = new Set(ev.filter((e) => now - e.ts < 900).map((e) => e.agent)).size; $("kE").textContent = ev.length; $("kM").textContent = ev.filter((e) => e.kind === "message").length;
+  $("kF").textContent = new Set(ev.flatMap((e) => e.files || [])).size;
+  const bl = (d.builds || []).slice(0, 24).reverse(); $("dots").replaceChildren(...bl.map((b) => { const i = document.createElement("i"); if (!b.ok) i.className = "f"; i.title = (b.ok ? "passed " : "failed ") + (b.cmd || ""); return i; }));
+  $("bp").textContent = bl.length ? Math.round(bl.filter((b) => b.ok).length / bl.length * 100) + "% pass" : "none yet";
+  const ul = $("log"); ul.replaceChildren(); const items = ev.slice(-14).reverse();
+  if (!items.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = "No activity yet."; ul.append(li); }
+  for (const e of items) { const li = document.createElement("li"), dot = document.createElement("span"), mid = document.createElement("div"), t = document.createElement("span"); dot.className = "d"; dot.style.background = KC.agent({ id: "a:" + e.agent }); const b = document.createElement("b"); b.textContent = e.agent; const x = document.createElement("span"); x.className = "x"; x.textContent = e.kind + (e.to ? " → " + e.to : "") + (e.text ? ": " + e.text : ""); mid.append(b, x); t.className = "t"; t.textContent = ago(now - e.ts); li.append(dot, mid, t); ul.append(li); }
+  $("hudt").textContent = `AGENTS ${[...nodes.values()].filter((n) => n.kind === "agent").length}\nNODES  ${nodes.size}\nLINKS  ${edges.length}`; $("hudb").textContent = new Date().toISOString().slice(11, 19) + " UTC";
+}
+/* Terrain view: columns = files/folders (path order), rows = 10-minute buckets, height = edits. A point cloud, blurred so busy areas read as peaks. */
+let mode = "brain", rot = .5, tilt = .42, drag = null, TZ = null, TLAB = [];
+const tc = $("ter"), tx2 = tc.getContext("2d");
+function terrain(d) {
+  const R = 14, C = 44, ev = (d.events || []).filter((e) => e.kind === "edit" && e.files && e.files.length), key = (f) => f;
+  const keys = [...new Set(ev.flatMap((e) => e.files.map(key)))].sort(); const col = new Map(keys.map((k, i) => [k, keys.length < 2 ? C >> 1 : Math.round(2 + i * (C - 5) / (keys.length - 1))]));
+  const Z = Array.from({ length: R }, () => Array(C).fill(0));
+  for (const e of ev) { const r = R - 1 - Math.floor((d.now - e.ts) / 600); if (r < 0 || r >= R) continue; for (const f of e.files) Z[r][Math.min(C - 1, col.get(key(f)))] += 1; }
+  const S = Z.map((row, r) => row.map((_, c) => { let a = 0, w = 0; for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) { const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= R || cc >= C) continue; const k = Math.exp(-(dr * dr + dc * dc) / 2.2); a += Z[rr][cc] * k; w += k; } return a / w * 3; }));   // gaussian-ish blur
+  TZ = { S, R, C, keys, peak: Math.max(0, ...Z.flat()), total: ev.length };
+  TLAB = [`TERRAIN  edits x files x time`, `FILES   ${keys.length}`, `EDITS   ${ev.length}`, `PEAK    ${TZ.peak}/cell`];
+  $("tl").textContent = TLAB.join("\n"); $("tr").textContent = `ROTATE  drag\nZOOM    wheel\nSPAN    ${R * 10}m`;
+  const top = keys.slice(0, 4).join("  "); $("tbl").textContent = "x: " + (top || "no edits yet") + (keys.length > 4 ? " ..." : ""); $("tbr").textContent = "z: older  ->  now";
+}
+function drawTerrain(t) {
+  const b = $("wrap").getBoundingClientRect(), dpr = devicePixelRatio || 1; if (tc.width !== Math.round(b.width * dpr)) { tc.width = Math.round(b.width * dpr); tc.height = Math.round(b.height * dpr); }
+  const w = tc.width, h = tc.height, g = tx2; g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = "#050505"; g.fillRect(0, 0, w, h);
+  g.strokeStyle = "rgba(255,255,255,.05)"; g.lineWidth = 1; for (let x = 0; x < w; x += 40 * dpr) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); } for (let y = 0; y < h; y += 40 * dpr) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }   // HUD grid
+  if (!TZ) return; const { S, R, C } = TZ, a = rot + (drag ? 0 : t / 9000), ca = Math.cos(a), sa = Math.sin(a), sc = Math.min(w / (C * 1.25), h / (C * .95)) * view.k, H3 = Math.max(1, TZ.peak) ;
+  const ct = Math.cos(tilt), st = Math.sin(tilt), zs = C / R * .75, hs = C * .95 / Math.max(1, TZ.peak * 3);
+  const P = (r, c) => { const x = c - C / 2, z = (r - R / 2) * zs, X = x * ca - z * sa, Zr = x * sa + z * ca, Y = -S[r][c] * hs, yy = Y * ct + Zr * st, dep = Zr * ct - Y * st, f = 1 / (1 + dep * .01); return [w / 2 + X * sc * f, h * .56 + yy * sc * f, f, S[r][c]]; };
+  for (let r = 0; r < R; r++) {   // rows as lines, back to front so near rows overdraw
+    const pts = Array.from({ length: C }, (_, c) => P(r, c)); g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]))); g.strokeStyle = `rgba(255,255,255,${.1 + r / R * .22})`; g.lineWidth = dpr * .8; g.stroke();
+    if (r) for (let c = 0; c < C; c += 2) { const q = P(r - 1, c); g.beginPath(); g.moveTo(q[0], q[1]); g.lineTo(pts[c][0], pts[c][1]); g.strokeStyle = "rgba(255,255,255,.07)"; g.stroke(); }
+    for (const p of pts) { const hh = Math.min(1, p[3] / Math.max(1, TZ.peak * 1.5)); g.fillStyle = hh > .45 ? `rgba(255,${160 - hh * 80 | 0},${140 - hh * 70 | 0},.95)` : `rgba(255,255,255,${.25 + hh})`; g.beginPath(); g.arc(p[0], p[1], dpr * (.7 + hh * 1.8) * p[2], 0, 7); g.fill(); }
+  }
+}
+function setMode(m) { mode = m; $("wrap").classList.toggle("t", m === "terrain"); $("vb").setAttribute("aria-pressed", m === "brain"); $("vt").setAttribute("aria-pressed", m === "terrain"); if (last) terrain(last); }
+$("vb").onclick = () => setMode("brain"); $("vt").onclick = () => setMode("terrain");
+tc.addEventListener("pointerdown", (ev) => { drag = { x: ev.clientX, y: ev.clientY }; tc.setPointerCapture(ev.pointerId); });
+tc.addEventListener("pointermove", (ev) => { if (!drag) return; rot += (ev.clientX - drag.x) * .01; tilt = Math.min(1.35, Math.max(.2, tilt + (ev.clientY - drag.y) * .006)); drag = { x: ev.clientX, y: ev.clientY }; });
+tc.addEventListener("pointerup", () => (drag = null));
+tc.addEventListener("wheel", (ev) => { ev.preventDefault(); view.k = Math.min(3, Math.max(.5, view.k * (ev.deltaY < 0 ? 1.1 : 1 / 1.1))); }, { passive: false });
+function frame(t) { if (mode === "terrain") drawTerrain(t); else { step(); paint(t); } requestAnimationFrame(frame); }
+function resize() { const b = $("wrap").getBoundingClientRect(); W = b.width || 800; H = b.height || 600; SC = Math.max(.8, Math.min(1.8, Math.min(W, H) / 520)); svg.setAttribute("viewBox", `0 0 ${W} ${H}`); }
+function render() { if (!last) return; terrain(last); build(last); draw(); panels(last); $("empty").style.display = nodes.size ? "none" : "grid"; }
+async function load() {
+  try {
+    last = demo ? DEMO() : await fetch("api/status" + (invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: token ? { Authorization: "Bearer " + token } : {} }).then((r) => { if (!r.ok) throw new Error(r.status === 401 ? "401: open this page as /brain?token=YOUR_TOKEN or /brain?invite=INVITE_TOKEN" : "hub returned " + r.status); return r.json(); });
+    $("err").style.display = "none"; render(); $("upd").replaceChildren(Object.assign(document.createElement("span"), { className: "live" }), "live · " + new Date().toLocaleTimeString());
+  } catch (e) { $("err").textContent = String(e.message || e); $("err").style.display = "block"; }
+}
+function DEMO() {   // ?demo=1: sample data so the page can be seen without a hub
+  const now = Date.now() / 1000, ev = [];
+  for (let i = 0; i < 40; i++) ev.push({ ts: now - Math.random() * 7000, kind: ["edit", "edit", "build", "message", "commit"][i % 5], agent: ["alice", "bob", "jarvis"][i % 3], to: i % 5 === 3 ? ["bob", "alice"][i % 2] : undefined, text: ["login form", "auth route", "fix types", "schema"][i % 4], files: i % 5 < 2 ? [["web/src/Login.tsx", "web/src/api.ts", "server/auth.py", "server/db.py", "web/src/App.tsx"][i % 5]] : [] });
+  const F = ["web/src/Login.tsx", "web/src/api.ts", "web/src/App.tsx", "web/src/hooks.ts", "server/auth.py", "server/db.py", "server/routes.py", "server/models.py", "docs/api.md", "tests/test_auth.py", "tests/test_db.py", "web/src/theme.ts"];
+  for (let i = 0; i < 160; i++) { const c = Math.floor(Math.abs(Math.sin(i * 1.7) * 11.99)), age = Math.abs(Math.sin(i * .9 + c)) * 6800; ev.push({ ts: now - age, kind: "edit", agent: ["alice", "bob", "jarvis"][c % 3], text: "demo", files: [F[c]] }); }
+  ev.push({ ts: now - 15, kind: "edit", agent: "alice", text: "login form", files: ["web/src/Login.tsx"] });
+  return { now, agents: [{ agent_id: "jarvis", role: "orchestrator" }, { agent_id: "alice", role: "frontend" }, { agent_id: "bob", role: "backend" }], events: ev, intents: [],
+    builds: Array.from({ length: 20 }, (_, i) => ({ ok: i % 7 !== 3, cmd: "npm test" })), tasks: [{ id: 1, title: "Ship login", status: "doing", owner: "alice" }, { id: 2, title: "Token refresh", status: "open", owner: "bob" }],
+    decisions: [{ id: 1, agent_id: "jarvis", topic: "Use JWT", text: "Short-lived access + refresh" }], contracts: [{ id: 1, agent_id: "bob", name: "POST /auth", spec: "{token, expires}", files: '["web/src/api.ts"]' }] };
+}
+for (const [id, k] of [["tf", "f"], ["tw", "w"]]) $(id).onclick = () => { layers[k] = !layers[k]; $(id).setAttribute("aria-pressed", layers[k]); render(); };
+addEventListener("resize", resize); resize(); load(); requestAnimationFrame(frame); setInterval(load, 8000);
+</script></body></html>

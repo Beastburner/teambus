@@ -2,14 +2,19 @@
 import asyncio, json, os, shutil, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 import pytest
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+try:
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+except ImportError:   # tests that need a running hub / the mcp package are skipped (see the `hub` fixture); the rest still run
+    ClientSession = streamablehttp_client = None
+os.environ["TEAMBUS_MODE"] = "full"   # the hooks default to "passive" (never block); the lifecycle tests below exercise the strict behaviour. Mode tests set their own env explicitly.
 
 HERE = os.path.dirname(os.path.abspath(__file__)); HOOK = f"{HERE}/hooks/hook.py"; URL = "http://127.0.0.1:8799"
 TOK = {"ta": {"agent_id": "alice", "role": "frontend", "owner": "alice"}, "tg": {"agent_id": "alice-tests", "role": "tests", "owner": "alice"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}, "tl": {"agent_id": "lena-lead", "role": "lead", "can_create": True}}
 
 @pytest.fixture(scope="module")
 def hub(tmp_path_factory):
+    pytest.importorskip("mcp")
     t = tmp_path_factory.mktemp("hub"); (t / "tokens.json").write_text(json.dumps(TOK))
     env = {**os.environ, "TEAMBUS_DB": str(t / "h.db"), "TEAMBUS_TOKENS": str(t / "tokens.json"), "TEAMBUS_TOKEN": "viewer", "PORT": "8799", "HOST": "127.0.0.1", "TEAMBUS_INTENT_TTL": "3"}
     p = subprocess.Popen([sys.executable, f"{HERE}/server.py"], env=env, stderr=subprocess.DEVNULL)
@@ -188,6 +193,7 @@ def test_hub_down_is_silent(tmp_path):
     assert "offline" in json.loads(s.stdout)["hookSpecificOutput"]["additionalContext"]
 
 def test_refuses_to_start_without_auth(tmp_path):
+    pytest.importorskip("mcp")
     r = subprocess.run([sys.executable, f"{HERE}/server.py"], env={k: v for k, v in os.environ.items() if not k.startswith("TEAMBUS")} | {"TEAMBUS_DB": str(tmp_path / "x.db"), "TEAMBUS_TOKENS": str(tmp_path / "none.json")}, capture_output=True, text=True, timeout=30)
     assert r.returncode != 0 and "refusing to start without auth" in r.stderr
 
@@ -351,6 +357,7 @@ def test_doctor_flags_an_mcp_json_that_points_at_a_different_hub(tmp_path):
 
 
 def test_hub_accepts_tokens_stored_only_as_sha256(tmp_path):
+    pytest.importorskip("mcp")
     import hashlib
     sha = lambda t: hashlib.sha256(t.encode()).hexdigest()
     (tmp_path / "tokens.json").write_text(json.dumps({"sha256:" + sha("agent-secret"): {"agent_id": "zed", "role": "ops"}, "plain-tok": {"agent_id": "amy", "role": "web"}}))
@@ -388,7 +395,7 @@ def _proj(tmp_path, agent="alice", tok="ta", name="p"):
 
 
 def _hook(mode, proj, env, payload=None):
-    r = subprocess.run([sys.executable, HOOK, mode], input=json.dumps(payload or {}), capture_output=True, text=True, timeout=20, env={**env, "CLAUDE_PROJECT_DIR": str(proj)}); assert r.returncode == 0
+    r = subprocess.run([sys.executable, HOOK, mode], input=json.dumps(payload or {}), capture_output=True, text=True, timeout=20, env={**env, "TEAMBUS_MODE": "full", "CLAUDE_PROJECT_DIR": str(proj)}); assert r.returncode == 0
     return r.stdout.strip()
 
 
@@ -1007,3 +1014,454 @@ def test_cli_attach_and_fetch_round_trip(hub, tmp_path):
     assert subprocess.run([sys.executable, CLI, "attach", str(shot), "--dir", str(proj)], env=env, capture_output=True, text=True).returncode == 2                   # --alt is required
     (tmp_path / "x.svg").write_text("<svg onload=alert(1)/>"); bad = subprocess.run([sys.executable, CLI, "attach", str(tmp_path / "x.svg"), "--alt", "svg", "--dir", str(proj)], env=env, capture_output=True, text=True)
     assert bad.returncode != 0 and "only PNG" in bad.stderr and "no image #99999" in run("fetch", "99999").stderr
+
+
+
+# =====================================================================================================================================================
+# Modes, server routes, `connect`, hook behaviour and secret scrubbing. None of these needs a running hub: HTTP is mocked or goes through a TestClient.
+# =====================================================================================================================================================
+import importlib.util, io
+
+_MODE_VARS = ("TEAMBUS_MODE", "TEAMBUS_URL", "TEAMBUS_TOKEN", "AGENT_ID", "AGENT_ROLE", "CLAUDE_PROJECT_DIR")
+
+
+def load_hook(monkeypatch, tmp_path, mode_env=None, project_mode=None, global_mode=None, settings_env=None):
+    """Import a fresh copy of hooks/hook.py (MODE, URL and STATE are computed at import time) inside an isolated project dir and HOME."""
+    proj, home = tmp_path / "proj", tmp_path / "home"; (proj / ".claude").mkdir(parents=True, exist_ok=True); home.mkdir(exist_ok=True)
+    for k in _MODE_VARS: monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HOME", str(home)); monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    if mode_env is not None: monkeypatch.setenv("TEAMBUS_MODE", mode_env)
+    if project_mode is not None: (proj / ".claude" / "teambus-mode").write_text(project_mode + "\n")
+    if global_mode is not None: (home / ".teambus").mkdir(exist_ok=True); (home / ".teambus" / "mode").write_text(global_mode + "\n")
+    if settings_env is not None: (proj / ".claude" / "settings.local.json").write_text(json.dumps({"env": settings_env}))
+    spec = importlib.util.spec_from_file_location(f"hook_under_test_{id(tmp_path)}", HOOK); H = importlib.util.module_from_spec(spec); spec.loader.exec_module(H)
+    H.PROJ = proj; return H
+
+
+def run_main(H, monkeypatch, capsys, mode, payload=None, api=None):
+    """Run H.main(mode) with stdin = payload and H.api replaced by `api(name, **kw)`; returns (parsed stdout json or None, list of api calls)."""
+    calls = []
+    def fake(name, **kw):
+        calls.append((name, kw)); return api(name, **kw) if api else None
+    monkeypatch.setattr(H, "api", fake); monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload or {})))
+    H.main(mode); out = capsys.readouterr().out.strip()
+    return (json.loads(out)["hookSpecificOutput"] if out.startswith('{"hookSpecificOutput"') else (json.loads(out) if out else None)), calls
+
+
+# ---- 1. modes ----
+def test_mode_defaults_to_passive(monkeypatch, tmp_path):
+    assert load_hook(monkeypatch, tmp_path).MODE == "passive"
+
+
+@pytest.mark.parametrize("value", ["off", "passive", "full"])
+def test_mode_reads_the_environment_variable(monkeypatch, tmp_path, value):
+    assert load_hook(monkeypatch, tmp_path, mode_env=value).MODE == value
+
+
+def test_mode_reads_the_project_settings_env_block(monkeypatch, tmp_path):
+    assert load_hook(monkeypatch, tmp_path, settings_env={"TEAMBUS_MODE": "full"}).MODE == "full"
+
+
+def test_mode_reads_the_project_file(monkeypatch, tmp_path):
+    assert load_hook(monkeypatch, tmp_path, project_mode="full").MODE == "full"
+
+
+def test_mode_reads_the_global_file(monkeypatch, tmp_path):
+    assert load_hook(monkeypatch, tmp_path, global_mode="off").MODE == "off"
+
+
+def test_mode_precedence_env_then_project_file_then_global_file(monkeypatch, tmp_path):
+    assert load_hook(monkeypatch, tmp_path / "a", mode_env="off", project_mode="full", global_mode="passive").MODE == "off"      # env beats both files
+    assert load_hook(monkeypatch, tmp_path / "b", project_mode="full", global_mode="off").MODE == "full"                          # project file beats the global one
+    assert load_hook(monkeypatch, tmp_path / "c", global_mode="full").MODE == "full"                                              # global file beats the default
+
+
+def test_mode_ignores_invalid_values_and_falls_through(monkeypatch, tmp_path):
+    assert load_hook(monkeypatch, tmp_path / "a", mode_env="bogus", project_mode="full").MODE == "full"
+    assert load_hook(monkeypatch, tmp_path / "b", project_mode="nonsense", global_mode="off").MODE == "off"
+    assert load_hook(monkeypatch, tmp_path / "c", project_mode="nonsense").MODE == "passive"
+
+
+def _mode_cli(proj, home, *a, extra_env=None):
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), **(extra_env or {})}
+    return subprocess.run([sys.executable, CLI, *a, "--dir", str(proj)], capture_output=True, text=True, env=env)
+
+
+def test_cli_mode_command_sets_and_shows_project_mode(tmp_path):
+    proj, home = tmp_path / "p", tmp_path / "h"; proj.mkdir(); home.mkdir()
+    r = _mode_cli(proj, home, "mode"); assert r.returncode == 0 and "passive (default)" in r.stdout and "this project" in r.stdout and not (proj / ".claude" / "teambus-mode").exists()   # showing writes nothing
+    r = _mode_cli(proj, home, "mode", "full"); assert r.returncode == 0 and "full" in r.stdout and (proj / ".claude" / "teambus-mode").read_text().strip() == "full"
+    r = _mode_cli(proj, home, "off"); assert (proj / ".claude" / "teambus-mode").read_text().strip() == "off" and "/mcp" in r.stdout          # off tells you MCP tools stay listed
+    r = _mode_cli(proj, home, "on"); assert (proj / ".claude" / "teambus-mode").read_text().strip() == "passive"                          # on == passive
+    assert not (home / ".teambus").exists()                                                                                              # nothing leaked into the global file
+    bad = _mode_cli(proj, home, "mode", "loud"); assert bad.returncode != 0                                                               # argparse rejects unknown modes
+
+
+def test_cli_mode_global_writes_the_home_file_and_the_hook_obeys_it(monkeypatch, tmp_path):
+    proj, home = tmp_path / "proj", tmp_path / "home"; proj.mkdir(); home.mkdir()
+    r = _mode_cli(proj, home, "mode", "full", "--global"); assert "global" in r.stdout and (home / ".teambus" / "mode").read_text().strip() == "full"
+    assert not (proj / ".claude" / "teambus-mode").exists()
+    H = load_hook(monkeypatch, tmp_path / "x", global_mode=(home / ".teambus" / "mode").read_text().strip()); assert H.MODE == "full"      # what the CLI wrote is what the hook reads
+
+
+def test_hook_mode_end_to_end_through_the_cli_written_file(tmp_path):
+    proj, home = tmp_path / "proj", tmp_path / "home"; proj.mkdir(); home.mkdir(); _mode_cli(proj, home, "off")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TEAMBUS_", "AGENT_"))} | {"HOME": str(home), "CLAUDE_PROJECT_DIR": str(proj), "TEAMBUS_URL": "http://127.0.0.1:9", "TEAMBUS_TOKEN": "x"}
+    r = subprocess.run([sys.executable, HOOK, "start"], input="{}", capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and "switched OFF" in json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+# ---- 4a. off mode: every event returns immediately ----
+@pytest.mark.parametrize("event", ["start", "prompt", "pre", "post", "fail", "stop"])
+def test_off_mode_does_nothing_for_every_event(monkeypatch, tmp_path, capsys, event):
+    H = load_hook(monkeypatch, tmp_path, mode_env="off")
+    def boom(name, **kw): raise AssertionError("off mode must not touch the network")
+    out, calls = run_main(H, monkeypatch, capsys, event, {"tool_name": "Edit", "tool_input": {"file_path": "a.py"}}, api=boom)
+    assert calls == []
+    if event == "start":
+        assert out["hookEventName"] == "SessionStart" and "switched OFF" in out["additionalContext"] and "Do not use its tools" in out["additionalContext"]
+    else: assert out is None
+
+
+# ---- 4b. start ----
+def _digest_api(name, **kw):
+    return {"digest": {"now": 5, "me": "alice", "inbox": [{"id": 3, "from_agent": "bob", "body": "hi alice", "reply_to": None}], "items": [{"type": "intent", "agent_id": "bob", "summary": "editing x.py"}]},
+            "tasks": {"tasks": [{"id": 1, "status": "open", "owner": "", "title": "write tests"}]}, "decisions": {"decisions": []}}.get(name)
+
+
+def test_start_with_the_hub_online_outputs_session_context(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    out, calls = run_main(H, monkeypatch, capsys, "start", {}, api=_digest_api)
+    assert out["hookEventName"] == "SessionStart"
+    t = out["additionalContext"]
+    assert "identifies you as agent 'alice'" in t and "offline" not in t and "Protocol:" in t
+    assert "NEW MESSAGE from bob" in t and "hi alice" in t and "editing x.py" in t and "#1 [open] write tests" in t
+    assert [c[0] for c in calls][:1] == ["digest"] and json.loads((H.PROJ / ".claude" / "teambus-state.json").read_text())["cursor"] == 5   # the cursor advanced
+
+
+def test_start_with_the_hub_offline_warns_the_agent(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full"); H.WHY = "the hub is unreachable"
+    out, _ = run_main(H, monkeypatch, capsys, "start", {}, api=lambda n, **kw: None)
+    t = out["additionalContext"]; assert out["hookEventName"] == "SessionStart" and "TeamBus is offline" in t and "do not assume you are coordinated" in t and "identifies you" not in t
+
+
+def test_start_in_passive_mode_still_greets_the_agent(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path)
+    out, _ = run_main(H, monkeypatch, capsys, "start", {}, api=_digest_api); assert "identifies you as agent 'alice'" in out["additionalContext"]
+
+
+# ---- 4c. pre: conflicts ----
+def _conflict_api(name, **kw):
+    if name == "conflicts": return {"conflicts": [{"kind": "same_file", "with": "bob", "files": ["src/a.py"], "summary": "refactoring a"}], "recent_commits": []}
+    if name == "asked": return {"asked": False}
+    return None
+
+EDIT = {"tool_name": "Edit", "tool_input": {"file_path": "src/a.py", "new_string": "x = 1"}}
+
+
+def test_pre_full_mode_denies_on_a_conflict(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    out, calls = run_main(H, monkeypatch, capsys, "pre", EDIT, api=_conflict_api)
+    assert out["hookEventName"] == "PreToolUse" and out["permissionDecision"] == "deny"
+    r = out["permissionDecisionReason"]; assert "TEAMBUS CONFLICT for src/a.py" in r and "bob" in r and "refactoring a" in r and "ask_teammate_agent(to_agent='bob'" in r and "blocked" in r
+    assert calls[0][0] == "conflicts" and calls[0][1]["files"] == ["src/a.py"]
+
+
+def test_pre_full_mode_blocks_a_retry_until_a_teammate_was_asked(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full"); run_main(H, monkeypatch, capsys, "pre", EDIT, api=_conflict_api)
+    out, _ = run_main(H, monkeypatch, capsys, "pre", EDIT, api=_conflict_api); assert out["permissionDecision"] == "deny" and "Still blocked (attempt 2/3)" in out["permissionDecisionReason"]
+    out, _ = run_main(H, monkeypatch, capsys, "pre", EDIT, api=lambda n, **kw: {"asked": True} if n == "asked" else _conflict_api(n, **kw))
+    assert "permissionDecision" not in out and "proceeding" in out["additionalContext"]
+
+
+def test_pre_passive_mode_gives_advice_only(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path)           # passive is the default
+    for _ in range(2):                              # never escalates, however often it is retried
+        out, _ = run_main(H, monkeypatch, capsys, "pre", EDIT, api=_conflict_api)
+        assert out["hookEventName"] == "PreToolUse" and "permissionDecision" not in out and "permissionDecisionReason" not in out
+        assert "TEAMBUS CONFLICT for src/a.py" in out["additionalContext"] and "Heads-up only (not blocked)" in out["additionalContext"] and "bob" in out["additionalContext"]
+        assert "blocked until" not in out["additionalContext"]
+    assert not (H.PROJ / ".claude" / "teambus-state.json").exists() or "denied" not in json.loads((H.PROJ / ".claude" / "teambus-state.json").read_text())
+
+
+def test_pre_without_a_conflict_is_silent_and_a_down_hub_never_blocks(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    assert run_main(H, monkeypatch, capsys, "pre", EDIT, api=lambda n, **kw: {"conflicts": [], "recent_commits": []})[0] is None
+    assert run_main(H, monkeypatch, capsys, "pre", EDIT, api=lambda n, **kw: None)[0] is None
+    assert run_main(H, monkeypatch, capsys, "pre", {"tool_name": "Bash", "tool_input": {"command": "ls"}}, api=_conflict_api)[0] is None      # no file path: nothing to check
+
+
+def test_pre_makes_absolute_paths_repo_relative(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full"); p = {"tool_name": "Edit", "tool_input": {"file_path": str(H.PROJ / "src" / "a.py"), "new_string": "x"}}
+    _, calls = run_main(H, monkeypatch, capsys, "pre", p, api=lambda n, **kw: {"conflicts": [], "recent_commits": []}); assert calls[0][1]["files"] == ["src/a.py"]
+
+
+# ---- 4d. post ----
+def test_post_with_a_build_command_reports_the_build(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    ok = {"tool_name": "Bash", "tool_input": {"command": "pytest -q"}, "tool_response": {"stdout": "3 passed", "stderr": ""}}
+    out, calls = run_main(H, monkeypatch, capsys, "post", ok, api=lambda n, **kw: [] if n == "inbox" else {})
+    b = [kw for n, kw in calls if n == "build"]; assert len(b) == 1 and b[0]["ok"] is True and b[0]["cmd"] == "pytest -q" and "3 passed" in b[0]["log_tail"]
+    # a pipe masks the exit code, so a failure marker in the output is what counts
+    piped = {"tool_name": "Bash", "tool_input": {"command": "make test | tail"}, "tool_response": {"stdout": "FAILED: x", "stderr": ""}}
+    _, calls = run_main(H, monkeypatch, capsys, "post", piped, api=lambda n, **kw: [] if n == "inbox" else {}); assert [kw["ok"] for n, kw in calls if n == "build"] == [False]
+    interrupted = {"tool_name": "Bash", "tool_input": {"command": "npm test"}, "tool_response": {"stdout": "", "interrupted": True}}
+    _, calls = run_main(H, monkeypatch, capsys, "post", interrupted, api=lambda n, **kw: [] if n == "inbox" else {}); assert [kw["ok"] for n, kw in calls if n == "build"] == [False]
+
+
+def test_post_with_a_non_build_command_reports_nothing(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    _, calls = run_main(H, monkeypatch, capsys, "post", {"tool_name": "Bash", "tool_input": {"command": "ls -la"}, "tool_response": {"stdout": "x"}}, api=lambda n, **kw: [] if n == "inbox" else {})
+    assert "build" not in [n for n, _ in calls]
+
+
+def test_post_edit_posts_an_intent_with_symbols_and_delivers_unread_mail(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    edit = {"tool_name": "Edit", "tool_input": {"file_path": "src/a.py", "new_string": "def loadUser():\n    pass"}}
+    mail = [{"id": 9, "from_agent": "bob", "body": "which port?", "reply_to": None}]
+    out, calls = run_main(H, monkeypatch, capsys, "post", edit, api=lambda n, **kw: mail if n == "inbox" else {})
+    i = next(kw for n, kw in calls if n == "post_intent"); assert i["files"] == ["src/a.py"] and i["symbols"] == ["loadUser"] and i["summary"] == "edited a.py"
+    assert out["hookEventName"] == "PostToolUse" and "which port?" in out["additionalContext"] and "from bob" in out["additionalContext"]
+
+
+def test_fail_event_reports_a_failed_build(monkeypatch, tmp_path, capsys):
+    H = load_hook(monkeypatch, tmp_path, mode_env="full")
+    _, calls = run_main(H, monkeypatch, capsys, "fail", {"tool_name": "Bash", "tool_input": {"command": "cargo test"}, "error": "Exit code 101\nboom"}, api=lambda n, **kw: {})
+    assert [(n, kw["ok"], kw["cmd"]) for n, kw in calls] == [("build", False, "cargo test")]
+    _, calls = run_main(H, monkeypatch, capsys, "fail", {"tool_name": "Bash", "tool_input": {"command": "cargo test"}, "is_interrupt": True}, api=lambda n, **kw: {}); assert calls == []
+
+
+def test_stop_gate_exists_only_in_full_mode(monkeypatch, tmp_path, capsys):
+    mail = lambda n, **kw: [{"id": 4, "from_agent": "bob", "body": "before you go", "reply_to": None}] if n == "inbox" else {}
+    out, _ = run_main(load_hook(monkeypatch, tmp_path / "a", mode_env="full"), monkeypatch, capsys, "stop", {}, api=mail); assert out["decision"] == "block" and "before you go" in out["reason"]
+    out, calls = run_main(load_hook(monkeypatch, tmp_path / "b"), monkeypatch, capsys, "stop", {}, api=mail); assert out is None and calls == []          # passive: never holds the agent back
+
+
+# ---- 5. secret scrubbing (server.scrub) ----
+@pytest.fixture(scope="module")
+def srv(tmp_path_factory):
+    """server.py imported in-process against a throw-away DB. Import creates the schema and nothing else (no port is opened)."""
+    pytest.importorskip("mcp"); pytest.importorskip("starlette")
+    t = tmp_path_factory.mktemp("srv"); (t / "tokens.json").write_text(json.dumps({"tok-alice": {"agent_id": "alice", "role": "frontend"}}))
+    keys = {"TEAMBUS_DB": str(t / "s.db"), "TEAMBUS_TOKENS": str(t / "tokens.json"), "TEAMBUS_TOKEN": "viewer-tok"}; old = {k: os.environ.get(k) for k in keys}; os.environ.update(keys)
+    try:
+        spec = importlib.util.spec_from_file_location("teambus_server_under_test", f"{HERE}/server.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    finally:
+        for k, v in old.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+    m.TMP = t; yield m
+
+
+@pytest.mark.parametrize("secret,text", [
+    ("abcdefghijklmnop123456", "curl -H 'Authorization: Bearer abcdefghijklmnop123456' https://api.example.com"),            # bearer token
+    ("ghp_" + "A1b2C3d4E5" * 3, "git clone https://x/y with ghp_" + "A1b2C3d4E5" * 3),                                       # github classic token
+    ("github_pat_" + "Zz9Yy8Xx7W" * 3, "token is github_pat_" + "Zz9Yy8Xx7W" * 3 + " ok"),                                    # github fine-grained token
+    ("AKIAIOSFODNN7EXAMPLE", "aws key AKIAIOSFODNN7EXAMPLE in the env"),                                                     # AWS access key id
+    ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r", "jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r end"),
+    ("sk-" + "a1B2c3D4e5" * 3, "OPENAI is sk-" + "a1B2c3D4e5" * 3),                                                           # sk- style key
+    ("AIza" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5", "google AIza" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5"),
+    ("xoxb-1234567890-abcdefghij", "slack xoxb-1234567890-abcdefghij here"),
+    ("0x" + "ab" * 32, "key 0x" + "ab" * 32 + " done"),                                                                       # 64-hex wallet key
+])
+def test_scrub_removes_credential_shapes(srv, secret, text):
+    out, n = srv.scrub(text); assert secret not in out and n >= 1 and "removed" in out
+
+
+def test_scrub_removes_private_keys_including_truncated_ones(srv):
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7c1\nabcdef\n-----END RSA PRIVATE KEY-----"
+    out, n = srv.scrub("before\n" + pem + "\nafter"); assert "MIIEowIBAAKCAQEA7c1" not in out and "[private key removed]" in out and "before" in out and "after" in out and n == 1
+    out, n = srv.scrub("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC"); assert "MIIEvQ" not in out and n == 1          # cut off mid-key: everything after the header goes
+
+
+@pytest.mark.parametrize("cmd,secret", [
+    ("deploy --token s3cr3tvalue99", "s3cr3tvalue99"), ("deploy --token=s3cr3tvalue99", "s3cr3tvalue99"), ("login --password hunter2hunter2", "hunter2hunter2"),
+    ("tool --api-key=abc123def456", "abc123def456"), ("tool --apikey abc123def456", "abc123def456"), ("run -p x --secret=zzz999yyy", "zzz999yyy"),
+])
+def test_scrub_removes_secrets_passed_as_cli_flags(srv, cmd, secret):
+    out, n = srv.scrub(cmd); assert secret not in out and n >= 1 and out.split()[0] == cmd.split()[0]
+
+
+@pytest.mark.parametrize("text,secret", [("export PIMLICO_API_KEY=pim_1234567890abcdef", "pim_1234567890abcdef"), ("password: hunter2hunter2 then deploy", "hunter2hunter2"),
+    pytest.param('{"client_secret": "abc123XYZ789"}', "abc123XYZ789", marks=pytest.mark.xfail(reason="known gap: the key=value pattern does not match a JSON-quoted key (the quote sits between the key and the colon)"))])
+def test_scrub_removes_assigned_secrets(srv, text, secret):
+    out, n = srv.scrub(text); assert secret not in out and n >= 1
+
+
+@pytest.mark.parametrize("url,pw", [("postgres://admin:s3cretPW@db.example.com:5432/app", "s3cretPW"), ("mongodb+srv://user:p4ssw0rd!@cluster0.mongodb.net/test", "p4ssw0rd!"), ("redis://default:abc123def@cache:6379", "abc123def")])
+def test_scrub_removes_passwords_in_connection_strings_but_keeps_the_rest(srv, url, pw):
+    out, n = srv.scrub(f"DATABASE_URL via {url}"); assert pw not in out and n >= 1 and url.split("://")[0] in out and "@" in out             # scheme, user and host stay useful for debugging
+
+
+def test_scrub_leaves_ordinary_text_alone(srv):
+    for t in ("token: refreshed", "the password field is required", "make test | tail -n 5", "def fn(): return 42", "see https://example.com/docs", "", None):
+        out, n = srv.scrub(t); assert n == 0 and out == (t or "")
+    assert srv.scrub("a bearer of bad news") == ("a bearer of bad news", 0)
+    out, n = srv.scrub("first AKIAIOSFODNN7EXAMPLE then Bearer abcdefghijklmnop123 and --token=abcdef123456"); assert n == 3
+
+
+# ---- 2. server routes (Starlette TestClient, no port) ----
+@pytest.fixture()
+def web(srv, tmp_path, monkeypatch):
+    """Point the routes at a temp web folder so each test controls which files exist; yields (client, folder)."""
+    from starlette.testclient import TestClient
+    d = tmp_path / "web"; (d / "assets").mkdir(parents=True); (d / "index.html").write_text("<html>index</html>")
+    monkeypatch.setattr(srv, "WEB", str(d / "index.html"))
+    yield TestClient(srv.app, raise_server_exceptions=True), d      # no `with`: the MCP session manager's lifespan can only run once per process and these routes do not need it
+
+
+VIEW = {"Authorization": "Bearer viewer-tok"}; AGENT = {"Authorization": "Bearer tok-alice"}   # the viewer token is GET-only on a few pages; an agent token reaches every route handler
+
+
+def test_brain_returns_html_when_the_file_exists(web):
+    c, d = web; (d / "brain.html").write_text("<html><body>brain view</body></html>")
+    r = c.get("/brain", headers=VIEW); assert r.status_code == 200 and r.headers["content-type"].startswith("text/html") and "brain view" in r.text
+
+
+def test_brain_returns_404_when_the_file_is_missing(web):
+    c, d = web; assert not (d / "brain.html").exists()
+    r = c.get("/brain", headers=VIEW); assert r.status_code == 404 and r.json() == {"error": "no brain view installed"}
+
+
+def test_brain_needs_a_token(web):
+    c, d = web; (d / "brain.html").write_text("<html>brain</html>"); assert c.get("/brain").status_code == 401
+
+
+def test_index_serves_the_web_view_or_404(web):
+    c, d = web; r = c.get("/", headers=VIEW); assert r.status_code == 200 and "index" in r.text
+    (d / "index.html").unlink(); assert c.get("/", headers=VIEW).status_code == 404
+
+
+def test_assets_serves_woff2_with_content_type_and_cache_headers_without_a_token(web):
+    c, d = web; blob = b"wOF2" + bytes(range(256)); (d / "assets" / "SomeFont.woff2").write_bytes(blob)
+    r = c.get("/assets/SomeFont.woff2")                    # fonts are public: a CSS url() cannot carry the viewer token
+    assert r.status_code == 200 and r.content == blob and r.headers["content-type"] == "font/woff2"
+    assert r.headers["cache-control"] == "public, max-age=86400" and r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_assets_missing_woff2_is_404(web):   # asset requests are anonymous in practice (CSS url() carries no token)
+    c, _ = web; assert c.get("/assets/Nope.woff2").status_code == 404 and c.get("/assets/Nope.woff2", headers=AGENT).status_code == 404
+
+
+@pytest.mark.parametrize("name", ["notes.txt", "gsap.min.js", "font.woff", "font.woff2.txt", "SomeFont.WOFF2x"])
+def test_assets_rejects_non_woff2_files_even_if_they_exist(web, name):
+    c, d = web; (d / "assets" / name).write_bytes(b"secret"); r = c.get(f"/assets/{name}", headers=AGENT); assert r.status_code == 404 and b"secret" not in r.content
+    assert c.get(f"/assets/{name}").status_code in (401, 404)               # anonymous callers only ever get woff2 names past the auth middleware
+
+
+@pytest.mark.parametrize("path", ["/assets/../etc/passwd.woff2", "/assets/..%2Fetc%2Fpasswd.woff2", "/assets/%2e%2e%2fsecret.woff2", "/assets/..\\secret.woff2", "/assets/sub/dir.woff2"])
+def test_assets_rejects_path_traversal(web, path):
+    c, d = web; (d / "secret.woff2").write_bytes(b"outside the assets folder"); (d.parent / "etc").mkdir(exist_ok=True); (d.parent / "etc" / "passwd.woff2").write_bytes(b"outside")
+    r = c.get(path, headers=AGENT); assert r.status_code == 404 and b"outside" not in r.content
+    anon = c.get(path); assert anon.status_code in (401, 404) and b"outside" not in anon.content
+
+
+def test_assets_regex_rejects_a_traversal_name_at_the_handler_level(srv, web):
+    """The route pattern normally keeps slashes out; this pins the second line of defence, the name regex, by calling the handler directly."""
+    import asyncio; c, d = web; (d / "secret.woff2").write_bytes(b"outside the assets folder")
+    class Req: path_params = {"name": "../secret.woff2"}
+    r = asyncio.run(srv._asset(Req())); assert r.status_code == 404 and b"outside" not in r.body
+
+
+def test_healthz_is_public_and_returns_ok(web):
+    c, _ = web; r = c.get("/healthz"); assert r.status_code == 200 and r.json() == {"ok": True}
+
+
+def test_api_status_returns_the_expected_keys(web):
+    c, _ = web; r = c.get("/api/status", headers=VIEW); assert r.status_code == 200 and r.headers["content-type"].startswith("application/json")
+    d = r.json()
+    for k in ("agents", "questions", "builds", "contracts", "feed"): assert k in d, k
+    assert isinstance(d["agents"], list) and isinstance(d["feed"], list)
+
+
+def test_api_status_rejects_missing_and_wrong_tokens_and_viewer_cannot_write(web):
+    c, _ = web; assert c.get("/api/status").status_code == 401 and c.get("/api/status", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert c.post("/api/post_intent", json={"files": ["x"], "summary": "s"}, headers=VIEW).status_code == 403
+    assert c.get("/api/status", headers={"Authorization": "Bearer tok-alice"}).status_code == 200      # an agent token can read it too
+
+
+# ---- 3. `teambus connect` ----
+def _joined(tmp_path, fake_npx=True, agent="alice", token="tok-secret-9"):
+    """A project that has 'joined' a hub (settings.local.json env), an isolated HOME and a PATH with (or without) a stub npx."""
+    proj, home, bindir = tmp_path / "proj", tmp_path / "home", tmp_path / "bin"
+    for d in (proj / ".claude", home, bindir): d.mkdir(parents=True, exist_ok=True)
+    (proj / ".claude" / "settings.local.json").write_text(json.dumps({"env": {"TEAMBUS_URL": "https://hub.example/s/AAAA", "TEAMBUS_TOKEN": token, "AGENT_ID": agent, "AGENT_ROLE": "frontend"}}))
+    if fake_npx: (bindir / "npx").write_text("#!/bin/sh\nexit 0\n"); (bindir / "npx").chmod(0o755)
+    return proj, home, {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(home)}
+
+
+def _connect(proj, env, *target):
+    return subprocess.run([sys.executable, CLI, "connect", *target, "--dir", str(proj)], capture_output=True, text=True, env=env)
+
+
+def test_connect_codex_writes_toml_and_valid_hooks_json(tmp_path):
+    proj, home, env = _joined(tmp_path)
+    r = _connect(proj, env, "codex"); assert r.returncode == 0, r.stdout + r.stderr
+    toml = (proj / ".codex" / "config.toml").read_text(); var = _cli().token_var("https://hub.example/s/AAAA", "alice")
+    assert "[mcp_servers.teambus]" in toml and 'url = "https://hub.example/s/AAAA/mcp"' in toml and f'bearer_token_env_var = "{var}"' in toml
+    assert "tok-secret-9" not in toml and f"export {var}=" in r.stdout and "tok-secret-9" not in r.stdout                  # the token itself is never written
+    try:
+        import tomllib; t = tomllib.loads(toml); assert t["mcp_servers"]["teambus"] == {"url": "https://hub.example/s/AAAA/mcp", "bearer_token_env_var": var}   # parses as real TOML
+    except ImportError: pass
+    h = json.loads((proj / ".codex" / "hooks.json").read_text())["hooks"]
+    assert set(h) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}                           # Codex has no PostToolUseFailure
+    cmds = [x["command"] for ev in h.values() for e in ev for x in e["hooks"]]; assert len(cmds) == 5 and all("hooks/hook.py" in c for c in cmds)
+    assert h["PreToolUse"][0]["matcher"] == "Edit|Write|MultiEdit" and "matcher" not in h["SessionStart"][0]
+    assert "## TeamBus" in (proj / "AGENTS.md").read_text()
+    assert not (home / ".gemini").exists()                                                                                # codex only: antigravity untouched
+
+
+def test_connect_codex_is_idempotent_backs_up_and_keeps_other_servers(tmp_path):
+    proj, home, env = _joined(tmp_path); (proj / ".codex").mkdir()
+    (proj / ".codex" / "config.toml").write_text('model = "gpt-5"\n\n[mcp_servers.other]\nurl = "https://o.example/mcp"\n\n[mcp_servers.teambus]\nurl = "https://old.example/mcp"\nbearer_token_env_var = "OLD"\n')
+    (proj / "AGENTS.md").write_text("# mine\n")
+    _connect(proj, env, "codex"); first = (proj / ".codex" / "config.toml").read_text(); assert (proj / ".codex" / "config.toml.bak").exists()
+    assert 'model = "gpt-5"' in first and "[mcp_servers.other]" in first and "old.example" not in first and first.count("[mcp_servers.teambus]") == 1 and "hub.example" in first
+    _connect(proj, env, "codex"); assert (proj / ".codex" / "config.toml").read_text().count("[mcp_servers.teambus]") == 1
+    assert len(json.loads((proj / ".codex" / "hooks.json").read_text())["hooks"]["PreToolUse"]) == 1 and (proj / "AGENTS.md").read_text().startswith("# mine\n") and (proj / "AGENTS.md").read_text().count("## TeamBus") == 1
+
+
+def test_connect_antigravity_writes_a_private_mcp_remote_config(tmp_path):
+    proj, home, env = _joined(tmp_path)
+    r = _connect(proj, env, "antigravity"); assert r.returncode == 0, r.stdout + r.stderr
+    f = home / ".gemini" / "antigravity" / "mcp_config.json"; d = json.loads(f.read_text()); s = d["mcpServers"]["teambus"]
+    assert s["command"] == "npx" and s["args"] == ["-y", "mcp-remote", "https://hub.example/s/AAAA/mcp", "--header", "Authorization:${TB_AUTH}"] and s["env"] == {"TB_AUTH": "Bearer tok-secret-9"}
+    assert oct(f.stat().st_mode & 0o777) == "0o600" and "restart Antigravity" in r.stdout and not (proj / ".codex").exists()
+
+
+def test_connect_antigravity_keeps_existing_servers_and_backs_up(tmp_path):
+    proj, home, env = _joined(tmp_path); f = home / ".gemini" / "antigravity" / "mcp_config.json"; f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}, "keep": 1}))
+    _connect(proj, env, "antigravity"); d = json.loads(f.read_text())
+    assert d["mcpServers"]["other"] == {"command": "x"} and "teambus" in d["mcpServers"] and d["keep"] == 1 and json.loads(Path(str(f) + ".bak").read_text())["mcpServers"].keys() == {"other"}
+
+
+def test_connect_antigravity_without_npx_is_skipped_not_written(tmp_path):
+    proj, home, env = _joined(tmp_path, fake_npx=False); env["PATH"] = str(tmp_path / "bin")        # a PATH with nothing on it
+    r = _connect(proj, env, "antigravity"); assert r.returncode == 0 and "skipped, npx not found" in r.stdout and not (home / ".gemini").exists()
+
+
+def test_connect_all_writes_both_configs(tmp_path):
+    proj, home, env = _joined(tmp_path)
+    r = _connect(proj, env, "all"); assert r.returncode == 0, r.stdout + r.stderr
+    assert (proj / ".codex" / "config.toml").exists() and json.loads((proj / ".codex" / "hooks.json").read_text()) and "teambus" in json.loads((home / ".gemini" / "antigravity" / "mcp_config.json").read_text())["mcpServers"]
+    assert "codex:" in r.stdout and "antigravity:" in r.stdout and not (proj / ".mcp.json").exists()     # the default does not touch Claude's own config
+    r2 = _connect(proj, env); assert r2.returncode == 0 and (proj / ".codex" / "config.toml").exists()    # no target given means "all"
+
+
+def test_connect_claude_target_reruns_init(tmp_path):
+    proj, home, env = _joined(tmp_path); r = _connect(proj, env, "claude"); assert r.returncode == 0, r.stdout + r.stderr
+    s = json.loads((proj / ".claude" / "settings.local.json").read_text()); assert "SessionStart" in s["hooks"] and s["env"]["TEAMBUS_URL"] == "https://hub.example/s/AAAA" and (proj / ".mcp.json").exists()
+
+
+def test_connect_refuses_without_a_hub(tmp_path):
+    proj, home = tmp_path / "proj", tmp_path / "home"; proj.mkdir(); home.mkdir()
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home)}                                                  # no TEAMBUS_* in the environment either
+    r = _connect(proj, env, "all"); assert r.returncode != 0 and "no hub configured" in r.stderr and "teambus-join" in r.stderr
+    assert not (proj / ".codex").exists() and not (home / ".gemini").exists()                             # nothing written
+    (proj / ".claude").mkdir(); (proj / ".claude" / "settings.local.json").write_text(json.dumps({"env": {"TEAMBUS_URL": "https://h.example"}}))     # a URL but no token is still not joined
+    assert _connect(proj, env, "codex").returncode != 0 and not (proj / ".codex").exists()
+
+
+def test_connect_rejects_an_unknown_target(tmp_path):
+    proj, home, env = _joined(tmp_path); assert _connect(proj, env, "vscode").returncode != 0

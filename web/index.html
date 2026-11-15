@@ -1,51 +1,63 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>TeamBus</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus</title>
 <style>
-/* Graphite surfaces, hairline borders, one accent (signal orange) reserved for blocked/warning states. Shape rule: panels 14px, controls 8px. */
-:root{color-scheme:light dark;
-  --bg:#f3f4f6;--panel:#ffffff;--line:rgba(15,20,26,.10);--fg:#14181d;--mut:#586270;--accent:#c4461a;--ok:#1f7a52;--chip:rgba(15,20,26,.05);--bar:rgba(243,244,246,.78)}
-@media (prefers-color-scheme:dark){:root{--bg:#0d0f11;--panel:#14171a;--line:rgba(255,255,255,.09);--fg:#e9ebee;--mut:#8f97a2;--accent:#f26b38;--ok:#5fb88c;--chip:rgba(255,255,255,.06);--bar:rgba(13,15,17,.72)}}
+@font-face{font-family:"Instrument Serif";src:url("assets/InstrumentSerif-Regular.woff2") format("woff2");font-display:swap}
+@font-face{font-family:"Caveat";src:url("assets/Caveat-SemiBold.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Geist";src:url("assets/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+/* Dark stage floating on a red aura (shared with brain.html). Shape rule: panels 14px, controls 8px. */
+:root{color-scheme:dark;--stage:#161616;--panel:#1d1d1d;--line:rgba(239,227,211,.12);--chalk:#efe3d3;--mut:#9a9088;--red:#cc3a37;--pink:#ff7a6b;--ok:#8fd3a8;--gold:#e8b44a;
+  --serif:"Instrument Serif","Times New Roman",serif;--hand:"Caveat","Segoe Print",cursive;--sans:"Geist",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;
+  --bg:var(--stage);--fg:var(--chalk);--accent:var(--red);--chip:rgba(239,227,211,.06);--bar:rgba(22,22,22,.78)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,-apple-system,"SF Pro Text","Segoe UI",system-ui,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:0 max(16px,calc((100% - 1200px)/2));height:56px;background:var(--bar);border-bottom:1px solid var(--line);-webkit-backdrop-filter:blur(16px) saturate(140%);backdrop-filter:blur(16px) saturate(140%)}
-h1{font-size:15px;font-weight:650;letter-spacing:-.01em;margin:0}
-header .m{font-size:13px}
-#upd{margin-left:auto;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}
+body{margin:0;background:#b83c4c;color:var(--chalk);font:14px/1.5 var(--sans);padding:14px;-webkit-font-smoothing:antialiased}
+.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%)}
+.stage{position:relative;z-index:1;background:var(--stage);border-radius:22px;min-height:calc(100vh - 28px);box-shadow:0 40px 90px -30px rgba(40,0,10,.6);overflow:clip}
+header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:0 max(16px,calc((100% - 1200px)/2));height:60px;background:var(--bar);border-bottom:1px solid var(--line);-webkit-backdrop-filter:blur(16px) saturate(140%);backdrop-filter:blur(16px) saturate(140%)}
+h1{font:400 30px/1 var(--serif);margin:0;letter-spacing:-.01em}
+h1 i{color:var(--pink)}
+header .m{font:12px var(--mono)}
+#brain-link{color:var(--pink);font:12px var(--mono);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:5px 10px;margin-left:auto}#brain-link:hover{border-color:var(--pink)}
+#upd{color:var(--mut);font:12px var(--mono);font-variant-numeric:tabular-nums}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.live{animation:none}}
 main{display:grid;gap:12px;padding:20px 16px 32px;max-width:1232px;margin:auto;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr))}
 section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 18px 8px;min-width:0}
 section.wide{grid-column:1/-1}
-h2{font-size:13px;font-weight:500;color:var(--mut);margin:0 0 4px}
+h2{font:400 12px var(--mono);color:var(--mut);margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em}
+h2 b{font:600 20px var(--hand);color:var(--pink);text-transform:none;letter-spacing:0}
 ul{list-style:none;margin:0;padding:0}
 li{padding:10px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}li:first-child{border-top:0}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);opacity:.55;margin-right:9px}.dot.on{background:var(--ok);opacity:1}
 .m{color:var(--mut)}
-.tag{display:inline-block;font:500 11px/1 ui-monospace,"SF Mono",Menlo,Consolas,monospace;padding:4px 7px;border-radius:6px;background:var(--chip);color:var(--mut);margin-left:7px;vertical-align:1px}
-.ok{color:var(--ok);font-weight:600}.bad{color:var(--accent);font-weight:600}.warn{color:var(--accent);font-weight:600}
-pre{margin:6px 0 0;padding:9px 11px;white-space:pre-wrap;color:var(--mut);font:12px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace;max-height:8.5em;overflow:hidden;border-radius:8px;background:var(--chip)}
+.tag{display:inline-block;background:var(--chip);color:var(--mut);font:500 11px/1 var(--mono);padding:4px 7px;border-radius:6px;margin-left:7px;vertical-align:1px}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--pink);font-weight:600}.warn{color:var(--pink);font-weight:600}
+pre{margin:6px 0 0;padding:9px 11px;white-space:pre-wrap;background:var(--chip);color:var(--mut);font:12px/1.5 var(--mono);max-height:8.5em;overflow:hidden;border-radius:8px}
 .empty{color:var(--mut)}
-#err{display:none;margin:16px auto 0;width:min(1200px,calc(100% - 32px));padding:11px 14px;border-radius:10px;color:var(--accent);font-weight:500;background:var(--panel);border:1px solid var(--accent)}
-a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-@media (max-width:520px){header>.m{display:none}main{padding-inline:12px}}
+#err{display:none;margin:16px auto 0;width:min(1200px,calc(100% - 32px));padding:11px 14px;border-radius:10px;font-weight:500;color:var(--pink);border:1px solid var(--red);background:var(--panel)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
+@media (max-width:520px){header>.m{display:none}main{padding-inline:12px}body{padding:8px}.stage{min-height:calc(100vh - 16px)}}
 li.done{opacity:.55;text-decoration:line-through}
 /* visual views: every agent gets a stable hue from its owner (or its own name), used for nodes, cards, chips and timeline marks */
-.agent{--c:hsl(var(--h) 55% 42%);--cs:hsl(var(--h) 55% 42% / .14)}
-@media (prefers-color-scheme:dark){.agent{--c:hsl(var(--h) 65% 64%);--cs:hsl(var(--h) 65% 64% / .16)}}
-.stats{display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 10px}.stat{padding:7px 11px;border-radius:10px;background:var(--chip);font-size:13px}.stat b{font-variant-numeric:tabular-nums;margin-right:4px}.stat.hot{color:var(--accent);background:transparent;border:1px solid var(--accent)}
-svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--fg);font:11px ui-sans-serif,system-ui,sans-serif}svg.viz .mut{fill:var(--mut)}
+.agent{--c:hsl(var(--h) 70% 62%);--cs:hsl(var(--h) 70% 62% / .16)}
+.stats{display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 10px}.stat{padding:7px 11px;border-radius:10px;background:var(--chip);color:var(--chalk);font-size:13px}.stat b{font-variant-numeric:tabular-nums;margin-right:4px}.stat.hot{color:var(--red);background:transparent;border:1px solid var(--red)}
+svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font:11px var(--sans)}svg.viz .mut{fill:var(--mut)}
 .node circle.core{fill:var(--cs);stroke:var(--c);stroke-width:2}.node.working circle.ring{fill:none;stroke:var(--ok);stroke-width:3}.node.offline circle.core{stroke-dasharray:3 3;opacity:.6}.node text.ini{fill:var(--c);font-weight:700;font-size:13px;text-anchor:middle}
-.edge{fill:none;stroke:var(--mut);opacity:.55}.edge.block{stroke:var(--accent);stroke-dasharray:5 4;opacity:.95}.edge.same{stroke:var(--accent);stroke-width:2.5;opacity:.95}
-.legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mut);font-size:12px;padding:6px 0 10px}.legend i{display:inline-block;width:18px;border-top:2px solid var(--mut);vertical-align:middle;margin-right:6px}.legend i.b{border-top:2px dashed var(--accent)}.legend i.s{border-top:3px solid var(--accent)}
+.edge{fill:none;stroke:var(--chalk);opacity:.4}.edge.block{stroke:var(--red);stroke-dasharray:5 4;opacity:.95}.edge.same{stroke:var(--red);stroke-width:2.5;opacity:.95}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mut);font-size:12px;padding:6px 0 10px}.legend i{display:inline-block;width:18px;border-top:2px solid var(--mut);vertical-align:middle;margin-right:6px}.legend i.b{border-top:2px dashed var(--red)}.legend i.s{border-top:3px solid var(--red)}
 .board{display:grid;gap:10px;grid-template-columns:repeat(4,minmax(0,1fr));padding-bottom:12px}@media (max-width:900px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:520px){.board{grid-template-columns:1fr}}
-.col{background:var(--chip);border-radius:10px;padding:8px;min-width:0}.col h3{margin:2px 4px 8px;font-size:12px;font-weight:600;color:var(--mut);display:flex;justify-content:space-between}
-.card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:8px 10px;margin-bottom:8px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--accent);margin-top:4px}
-.files{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}.dir{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mut)}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
-.fchip{font:12px ui-monospace,Menlo,Consolas,monospace;padding:4px 8px;border-radius:6px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--accent);color:var(--accent);font-weight:700}
+.col{background:var(--chip);border-radius:10px;padding:8px;min-width:0}.col h3{margin:2px 4px 8px;font:500 12px var(--mono);color:var(--mut);display:flex;justify-content:space-between}
+.card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:8px 10px;margin-bottom:8px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--pink);margin-top:4px}
+.files{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}.dir{font:12px var(--mono);color:var(--mut)}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.fchip{font:12px var(--mono);padding:4px 8px;border-radius:6px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--red);color:var(--pink);font-weight:700}
 .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding-bottom:12px}.shot{margin:0;min-width:0}.shot img,.thumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;background:var(--chip);border:1px solid var(--line);cursor:zoom-in}
 .shot figcaption{font-size:12px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}.shot figcaption b{color:var(--c);font-weight:600}.thumbs{display:flex;gap:6px;margin-top:6px}.thumbs .thumb{width:64px;aspect-ratio:1}
-#lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--panel)}#lightbox p{color:#fff;max-width:min(96vw,900px);text-align:center;margin:0}#lightbox button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer}
+#lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--panel)}#lightbox p{color:var(--chalk);max-width:min(96vw,900px);text-align:center;margin:0}#lightbox button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--chalk);cursor:pointer}
 .sr{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
 </style></head><body>
-<header><h1>TeamBus</h1><span class="m">read-only team view</span><span id="upd"></span></header>
+<div class="aura"></div>
+<div class="stage">
+<header><h1>Team<i>Bus</i></h1><span class="m">read-only team view</span><a href="brain" id="brain-link">brain view</a><span id="upd"></span></header>
 <div id="err"></div>
 <main>
  <section class="wide"><h2>At a glance</h2><div class="stats" id="stats"></div></section>
@@ -62,10 +74,13 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--fg);font:11
  <section><h2>Recent builds</h2><ul id="builds"></ul></section>
  <section class="wide"><h2>Live feed</h2><ul id="feed"></ul></section>
 </main>
+</div>
 <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" hidden><img id="lbimg" alt=""><p id="lbcap"></p><button type="button" id="lbclose">Close</button></div>
 <script>
-const token = new URLSearchParams(location.search).get("token") || "";
+const _q = new URLSearchParams(location.search), token = _q.get("token") || "", invite = _q.get("invite") || "", authKey = token || invite;
 const $ = (id) => document.getElementById(id);
+const brainLink = document.getElementById("brain-link");
+if (brainLink) brainLink.href = "brain?" + (token ? "token=" + encodeURIComponent(token) : invite ? "invite=" + encodeURIComponent(invite) : "");
 const ago = (t, now) => { const s = Math.max(0, now - t); return s < 90 ? Math.round(s) + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : s < 129600 ? Math.round(s / 3600) + "h ago" : Math.round(s / 86400) + "d ago"; };
 function fill(id, rows, render) {  // textContent only: nothing from the hub is ever parsed as HTML
   const ul = $(id); ul.replaceChildren();
@@ -81,7 +96,7 @@ const H = (d, id) => { const a = (d.agents || []).find((x) => x.agent_id === id)
 const dom = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const imgs = new Map();   // image id -> blob URL: fetched once with the viewer token (an <img> tag cannot send it), reused on every refresh
 async function imgUrl(id) {
-  if (!imgs.has(id)) imgs.set(id, fetch("api/attachment/" + id, { headers: { Authorization: "Bearer " + token } }).then((r) => r.ok ? r.blob() : Promise.reject()).then((b) => URL.createObjectURL(b)).catch(() => { imgs.delete(id); return ""; }));
+  if (!imgs.has(id)) imgs.set(id, fetch("api/attachment/" + id + (invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: authKey === token && token ? { Authorization: "Bearer " + token } : {} }).then((r) => r.ok ? r.blob() : Promise.reject()).then((b) => URL.createObjectURL(b)).catch(() => { imgs.delete(id); return ""; }));
   return imgs.get(id);
 }
 function openShot(a, d) {
@@ -112,7 +127,7 @@ function visuals(d) {
     const W = 760, Ht = 380, cx = W / 2, cy = Ht / 2 - 6, rx = Math.min(300, 60 + agents.length * 34), ry = 135, pos = {};
     agents.forEach((a, i) => { const t = agents.length === 1 ? 0 : (2 * Math.PI * i) / agents.length - Math.PI / 2; pos[a.agent_id] = [cx + rx * Math.cos(t), cy + ry * Math.sin(t)]; });
     const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Team map" });
-    svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", fill: "currentColor", class: "mut" }))));
+    svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", class: "mut" }))));
     const edges = [], sr = [], msgs = {};
     for (const e of ev) if (e.kind === "message" && n - e.ts < 3600 && pos[e.agent] && pos[e.to]) { const k = e.agent + ">" + e.to; msgs[k] = (msgs[k] || 0) + 1; }
     for (const k in msgs) { const [a, b] = k.split(">"); edges.push({ a, b, cls: "edge", w: 1 + Math.min(msgs[k], 6) * 0.9, arrow: true, curve: 26 }); sr.push(`${a} sent ${msgs[k]} message(s) to ${b}`); }
@@ -154,15 +169,15 @@ function visuals(d) {
   else {
     const W = 760, left = 150, top = 22, row = 30, Ht = top + row * lanes.length + 10, x = (ts) => left + ((Math.max(ts, n - span2) - (n - span2)) / span2) * (W - left - 14);
     const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Timeline" });
-    for (const m of [0, 30, 60, 90, 120]) { const xx = x(n - m * 60); svg.append(el("line", { x1: xx, x2: xx, y1: top - 6, y2: Ht - 6, stroke: "currentColor", "stroke-opacity": ".12" }), el("text", { x: xx, y: 12, "text-anchor": "middle", class: "mut" }, document.createTextNode(m === 0 ? "now" : "-" + m + "m"))); }
+    for (const m of [0, 30, 60, 90, 120]) { const xx = x(n - m * 60); svg.append(el("line", { x1: xx, x2: xx, y1: top - 6, y2: Ht - 6, stroke: "var(--chalk)", "stroke-opacity": ".14" }), el("text", { x: xx, y: 12, "text-anchor": "middle", class: "mut" }, document.createTextNode(m === 0 ? "now" : "-" + m + "m"))); }
     lanes.forEach((id, i) => { const y = top + row * i + row / 2, a = agents[i], g = el("g", { class: "agent" }); g.style.setProperty("--h", hue(group(a)));
       g.append(el("line", { x1: left - 6, x2: W - 10, y1: y, y2: y, stroke: "var(--c)", "stroke-opacity": ".25" }), el("text", { x: left - 12, y: y + 4, "text-anchor": "end", style: "fill:var(--c);font-weight:600" }, document.createTextNode(id.length > 20 ? id.slice(0, 19) + "…" : id)));
       for (const e of ev.filter((e) => e.agent === id && n - e.ts <= span2)) {
         const xx = x(e.ts); let m; const tip = el("title", {}, document.createTextNode(`${e.kind}${e.to ? " to " + e.to : ""}${e.text ? ": " + e.text : ""} · ${ago(e.ts, n)}`));
         if (e.kind === "commit") m = el("path", { d: `M${xx} ${y - 6} l6 6 l-6 6 l-6 -6 z`, fill: "var(--c)" });
-        else if (e.kind === "build") m = el("rect", { x: xx - 5, y: y - 5, width: 10, height: 10, fill: e.ok ? "var(--ok)" : "var(--accent)" });
+        else if (e.kind === "build") m = el("rect", { x: xx - 5, y: y - 5, width: 10, height: 10, fill: e.ok ? "var(--ok)" : "var(--red)" });
         else if (e.kind === "message") m = el("path", { d: `M${xx - 4} ${y - 6} l10 6 l-10 6 z`, fill: "none", stroke: "var(--c)", "stroke-width": 1.6 });
-        else if (e.kind === "task") m = el("path", { d: `M${xx - 3} ${y + 7} v-14 h9 l-3 4 l3 4 h-9`, fill: e.status === "blocked" ? "var(--accent)" : "var(--c)" });
+        else if (e.kind === "task") m = el("path", { d: `M${xx - 3} ${y + 7} v-14 h9 l-3 4 l3 4 h-9`, fill: e.status === "blocked" ? "var(--red)" : "var(--c)" });
         else if (e.kind === "image") m = el("rect", { x: xx - 5, y: y - 4, width: 10, height: 8, rx: 1.5, fill: "none", stroke: "var(--c)", "stroke-width": 2 });
         else if (e.kind === "decision" || e.kind === "contract") m = el("path", { d: `M${xx} ${y - 7} l7 7 l-7 7 l-7 -7 z`, fill: "none", stroke: "var(--c)", "stroke-width": 2 });
         else m = el("circle", { cx: xx, cy: y, r: 4, fill: "var(--c)", "fill-opacity": ".55" });
@@ -183,7 +198,7 @@ function visuals(d) {
 }
 async function load() {
   try {
-    const r = await fetch("api/status", { headers: { Authorization: "Bearer " + token } });
+    const r = await fetch("api/status" + (invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: token ? { Authorization: "Bearer " + token } : {} });
     if (!r.ok) throw new Error(r.status === 401 ? "401: missing or wrong token (open this page as /?token=YOUR_TOKEN)" : "hub returned " + r.status);
     const d = await r.json(); $("err").style.display = "none"; const n = d.now;
     visuals(d);
@@ -194,7 +209,7 @@ async function load() {
     fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", "  fixed after " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + " min")); if (!b.ok) li.append(pre(b.log_tail || "")); });
     fill("decisions", d.decisions || [], (li, x) => { li.append(span("tag", x.topic), span("", " " + x.text), span("m", "  · " + x.agent_id + ", " + ago(x.ts, n))); });
     fill("feed", d.feed, (li, f) => { li.append(span("m", f.type + " "), span("", f.agent_id + " "), span("m", f.text), f.status ? span("tag", f.status) : "", span("m", "  " + ago(f.ts, n)), f.note ? span("m", "  · " + f.note) : ""); });
-    $("upd").textContent = "updated " + new Date().toLocaleTimeString();
+    const u = $("upd"); u.replaceChildren(dom("span", "live"), "updated " + new Date().toLocaleTimeString());
   } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }
 load(); setInterval(load, 4000);

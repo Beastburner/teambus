@@ -1,7 +1,7 @@
 """TeamBus hub: MCP tools + REST mirror (for hooks/CLI) + read-only web view over one SQLite DB.
 Auth: every request needs a bearer token. TEAMBUS_TOKENS (json file) maps token -> agent (identity is derived from it, never from arguments).
 TEAMBUS_TOKEN is a shared read-only token (web view / status). TEAMBUS_NOAUTH=1 disables auth (local dev only)."""
-import asyncio, base64, difflib, hashlib, json, os, re, secrets, sqlite3, sys, threading, time
+import asyncio, base64, difflib, hashlib, hmac, json, os, re, secrets, sqlite3, sys, threading, time
 from urllib.parse import parse_qs
 import uvicorn
 from mcp.server.fastmcp import FastMCP, Context, Image
@@ -24,7 +24,8 @@ SCHEMA = {
     "tasks": "id INTEGER PRIMARY KEY, ts REAL, updated REAL, title TEXT, detail TEXT DEFAULT '', status TEXT DEFAULT 'open', owner TEXT DEFAULT '', created_by TEXT, blocked_on TEXT DEFAULT '', note TEXT DEFAULT ''",
     "decisions": "id INTEGER PRIMARY KEY, ts REAL, agent_id TEXT, topic TEXT, text TEXT, status TEXT DEFAULT 'active', supersedes INTEGER",
     "spawns": "id INTEGER PRIMARY KEY, ts REAL, requested_by TEXT, agent_id TEXT, role TEXT, brief TEXT, status TEXT DEFAULT 'pending', note TEXT DEFAULT ''",
-    "agents": "agent_id TEXT PRIMARY KEY, role TEXT, last_seen REAL, last_mcp REAL, last_hook REAL, last_event TEXT, last_event_ts REAL"}
+    "agents": "agent_id TEXT PRIMARY KEY, role TEXT, last_seen REAL, last_mcp REAL, last_hook REAL, last_event TEXT, last_event_ts REAL",
+    "invites": "id INTEGER PRIMARY KEY, ts REAL, email TEXT, token_hash TEXT, created_by TEXT, revoked INTEGER DEFAULT 0, revoked_ts REAL"}
 
 # Anything that looks like a credential is removed before it is stored or shown to other agents: build commands and logs, edit summaries and messages all travel to every
 # teammate (and sit in the hub's database). Teammates share secrets out of band, never through TeamBus.
@@ -87,6 +88,17 @@ def ident(tok):
         if VIEWER and tok == VIEWER or VIEWER_SHA256 and sha256(tok) in VIEWER_SHA256: return {"viewer": True}
     return {"agent_id": None} if NOAUTH else None
 
+def _invite_secret():
+    """Signing key for invite links: TEAMBUS_INVITE_SECRET, else derived from the first agent token in the tokens file."""
+    return (E("TEAMBUS_INVITE_SECRET") or sha256(next(iter(tokens()), "") + "invite")).encode()
+
+def _sign_invite(email): return base64.urlsafe_b64encode(hmac.new(_invite_secret(), email.strip().lower().encode(), hashlib.sha256).digest()).decode().rstrip("=")
+
+def _verify_invite(token):
+    """The email an invite link was issued to, or None when the token is unknown or revoked."""
+    r = rows("SELECT email FROM invites WHERE token_hash=? AND revoked=0", sha256(token or ""))
+    return r[0]["email"] if r else None
+
 def me(ctx, claimed=""):
     """The caller's agent_id: from the authenticated token when there is one; the claimed value only in NOAUTH dev mode."""
     req = getattr(getattr(ctx, "request_context", None), "request", ctx)
@@ -132,8 +144,14 @@ class Auth:
         if scope["type"] != "http" or scope["path"] == "/healthz": return await s.app(scope, receive, send)
         auth = dict(scope["headers"]).get(b"authorization", b"").decode()
         who = ident(auth[7:].strip() if auth.lower().startswith("bearer ") else parse_qs(scope["query_string"].decode()).get("token", [""])[0])
+        invite_tok = parse_qs(scope["query_string"].decode()).get("invite", [""])[0]
+        if not who and invite_tok:
+            email = _verify_invite(invite_tok)
+            if email: who = {"viewer": True, "invite_email": email}
+        if scope["path"] == "/invite" and scope["method"] == "GET": return await s.app(scope, receive, send)
+        if not who and re.fullmatch(r"/assets/[A-Za-z0-9._-]+\.woff2", scope["path"]) and scope["method"] == "GET": return await s.app(scope, receive, send)
         if not who: return await JSONResponse({"error": "unauthorized"}, 401)(scope, receive, send)
-        if who.get("viewer") and not (scope["method"] == "GET" and (scope["path"] in ("/", "/api/status") or re.fullmatch(r"/api/attachment/\d+", scope["path"]))):
+        if who.get("viewer") and not (scope["method"] == "GET" and (scope["path"] in ("/", "/brain", "/invite", "/agent", "/conversations", "/api/status", "/api/conversations", "/api/thread") or re.fullmatch(r"/api/attachment/\d+", scope["path"]) or scope["path"] == "/api/agent_detail")):
             return await JSONResponse({"error": "viewer token is read-only"}, 403)(scope, receive, send)
         scope["teambus"] = who
         if who.get("agent_id"):
@@ -385,6 +403,33 @@ def hub_url_of(ctx):
     try: return (req.headers.get("x-teambus-base") or E("TEAMBUS_PUBLIC_URL") or str(req.base_url)).rstrip("/")
     except Exception: return (E("TEAMBUS_PUBLIC_URL") or "").rstrip("/")
 
+def _valid_email(e): return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s.]+", e or ""))
+
+def invite_viewer(email, agent_id="", ctx=None):
+    """Create a read-only dashboard invite link bound to an email. Needs can_create; at most 20 active invites per hub."""
+    w = who_of(ctx)
+    if not (w.get("can_create") or NOAUTH): return {"error": "you may not create invites (needs can_create)."}
+    email = (email or "").strip().lower()
+    if not _valid_email(email): return {"error": "that does not look like an email address"}
+    tok = _sign_invite(email)
+    if rows("SELECT id FROM invites WHERE token_hash=? AND revoked=0", sha256(tok)): return {"error": f"{email} already has an active invite"}
+    if rows("SELECT COUNT(*) n FROM invites WHERE revoked=0")[0]["n"] >= 20: return {"error": "this hub already has 20 active invites; revoke one first"}
+    run("INSERT INTO invites(ts,email,token_hash,created_by) VALUES(?,?,?,?)", time.time(), email, sha256(tok), me(ctx, agent_id))
+    return {"email": email, "token": tok, "url": f"{hub_url_of(ctx)}/?invite={tok}"}
+
+def revoke_invite(email, agent_id="", ctx=None):
+    """Revoke the invite for an email. Only its creator or a can_create agent may."""
+    a, w, email = me(ctx, agent_id), who_of(ctx), (email or "").strip().lower()
+    r = rows("SELECT id, created_by FROM invites WHERE email=? AND revoked=0", email)
+    if not r: return {"error": f"no active invite for {email}"}
+    if not (w.get("can_create") or NOAUTH or all(x["created_by"] == a for x in r)): return {"error": "only the invite's creator or a can_create agent may revoke it"}
+    run("UPDATE invites SET revoked=1, revoked_ts=? WHERE email=? AND revoked=0", time.time(), email); return {"revoked": email}
+
+def list_invites(agent_id="", ctx=None):
+    """Active (non-revoked) dashboard invites. Needs can_create."""
+    if not (who_of(ctx).get("can_create") or NOAUTH): return {"error": "you may not list invites (needs can_create)."}
+    return {"invites": rows("SELECT email, created_by, ts FROM invites WHERE revoked=0 ORDER BY ts")}
+
 def _tokens_raw():
     try: return {t: ({"agent_id": v} if isinstance(v, str) else dict(v)) for t, v in json.load(open(TOKENS)).items()}
     except OSError: return {}
@@ -547,11 +592,33 @@ async def wait_for_messages(timeout_seconds: int = 30, agent_id: str = "", ctx: 
         await asyncio.sleep(1.5)
 mcp.tool(name="wait_for_messages")(wait_for_messages)
 
-for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions, list_attachments, view_attachment): mcp.tool()(fn)
+def agent_detail(agent_id_query: str, ctx: Context | None = None):
+    """Detailed view of one agent: presence, recent intents, builds, messages, tasks, commits, and the files they're currently editing."""
+    a = agent_id_query
+    if a not in known(): return {"error": f"unknown agent {a!r}"}
+    now = time.time()
+    p = next((x for x in presence() if x["agent_id"] == a), {})
+    intents = rows("SELECT * FROM intents WHERE agent_id=? ORDER BY ts DESC LIMIT 20", a)
+    builds = rows("SELECT * FROM builds WHERE agent_id=? ORDER BY ts DESC LIMIT 15", a)
+    msgs_sent = rows("SELECT * FROM messages WHERE from_agent=? ORDER BY ts DESC LIMIT 20", a)
+    msgs_recv = rows("SELECT * FROM messages WHERE to_agent=? ORDER BY ts DESC LIMIT 20", a)
+    tasks = rows("SELECT * FROM tasks WHERE owner=? OR created_by=? ORDER BY updated DESC LIMIT 20", a, a)
+    commits = rows("SELECT * FROM commits WHERE agent_id=? ORDER BY ts DESC LIMIT 15", a)
+    decisions = rows("SELECT * FROM decisions WHERE agent_id=? AND status='active' ORDER BY ts DESC LIMIT 10", a)
+    with adb() as c:
+        attachments = [dict(r) for r in c.execute("SELECT id, ts, agent_id, task_id, name, mime, alt, size FROM attachments WHERE agent_id=? ORDER BY id DESC LIMIT 10", (a,))]
+    return {"now": now, "agent": p, "intents": intents, "builds": builds, "messages_sent": msgs_sent, "messages_received": msgs_recv, "tasks": tasks, "commits": commits, "decisions": decisions, "attachments": attachments}
+
+def conversations(limit: int = 30, agent_id: str = "", ctx: Context | None = None):
+    """All message threads, newest first. Each thread shows the root message and reply count."""
+    roots = rows("SELECT m.*, (SELECT COUNT(*) FROM messages r WHERE r.reply_to=m.id) AS replies FROM messages m WHERE m.reply_to IS NULL ORDER BY m.ts DESC LIMIT ?", max(1, min(int(limit), 100)))
+    return {"conversations": roots}
+
+for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions, list_attachments, view_attachment, agent_detail, conversations, invite_viewer, revoke_invite, list_invites): mcp.tool()(fn)
 
 # ---- REST mirror so hooks/CLI (plain scripts) call the same functions, plus the web view ----
 API = dict(whoami=whoami, post_intent=post_intent, resolve=resolve_intent, resolve_contract=resolve_contract, asked=asked, feed=team_feed, ask=ask_teammate_agent, inbox=check_inbox, outbox=outbox, thread=thread,
-           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions, attach=attach_image, attachments=list_attachments)
+           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions, attach=attach_image, attachments=list_attachments, agent_detail=agent_detail, conversations=conversations, invite=invite_viewer, revoke=revoke_invite, invites=list_invites)
 
 def _route(name):
     async def h(request):
@@ -579,6 +646,52 @@ async def _health(request): return JSONResponse({"ok": True})
 
 @mcp.custom_route("/", methods=["GET"])
 async def _index(request): return HTMLResponse(open(WEB).read()) if os.path.exists(WEB) else JSONResponse({"error": "no web view installed"}, 404)
+
+@mcp.custom_route("/assets/{name}", methods=["GET"])
+async def _asset(request):
+    """The page's own fonts (public, OFL). Fixed folder, woff2 only, no path tricks: a CSS url() cannot carry the viewer token."""
+    n = request.path_params["name"]; f = os.path.join(os.path.dirname(WEB), "assets", n)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.woff2", n) or not os.path.isfile(f): return JSONResponse({"error": "not found"}, 404)
+    from starlette.responses import Response
+    return Response(open(f, "rb").read(), media_type="font/woff2", headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+@mcp.custom_route("/brain", methods=["GET"])
+async def _brain(request):
+    f = os.path.join(os.path.dirname(WEB), "brain.html")
+    return HTMLResponse(open(f).read()) if os.path.exists(f) else JSONResponse({"error": "no brain view installed"}, 404)
+
+@mcp.custom_route("/api/agent_detail", methods=["GET"])
+async def _agent_detail_api(request):
+    a = request.query_params.get("id", "")
+    if not a: return JSONResponse({"error": "id parameter required"}, 400)
+    return JSONResponse(agent_detail(a, ctx=request))
+
+@mcp.custom_route("/api/conversations", methods=["GET"])
+async def _conversations_api(request):
+    try: return JSONResponse(conversations(int(request.query_params.get("limit", 30)), ctx=request))
+    except ValueError: return JSONResponse({"error": "limit must be a number"}, 400)
+
+@mcp.custom_route("/api/thread", methods=["GET"])
+async def _thread_api(request):
+    mid = request.query_params.get("id", "")
+    if not mid: return JSONResponse({"error": "id parameter required"}, 400)
+    try: return JSONResponse(thread(int(mid), ctx=request))
+    except ValueError: return JSONResponse({"error": "id must be a number"}, 400)
+
+@mcp.custom_route("/agent", methods=["GET"])
+async def _agent_page(request):
+    f = os.path.join(os.path.dirname(WEB), "agent.html")
+    return HTMLResponse(open(f).read()) if os.path.exists(f) else JSONResponse({"error": "no agent page"}, 404)
+
+@mcp.custom_route("/conversations", methods=["GET"])
+async def _conversations_page(request):
+    f = os.path.join(os.path.dirname(WEB), "conversations.html")
+    return HTMLResponse(open(f).read()) if os.path.exists(f) else JSONResponse({"error": "no conversations page"}, 404)
+
+@mcp.custom_route("/invite", methods=["GET"])
+async def _invite_page(request):
+    f = os.path.join(os.path.dirname(WEB), "invite.html")
+    return HTMLResponse(open(f).read()) if os.path.exists(f) else JSONResponse({"error": "no invite page"}, 404)
 
 app = mcp.streamable_http_app(); app.add_middleware(Auth)
 

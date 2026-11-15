@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus Conversations</title>
+<style>
+@font-face{font-family:"Instrument Serif";src:url("assets/InstrumentSerif-Regular.woff2") format("woff2");font-display:swap}
+@font-face{font-family:"Caveat";src:url("assets/Caveat-SemiBold.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Geist";src:url("assets/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+/* Same language as the sandbox page: a dark stage inside a vivid gradient, one red, chalk text, hand-lettered labels. */
+:root{--stage:#161616;--panel:#1d1d1d;--line:rgba(239,227,211,.12);--chalk:#efe3d3;--mut:#9a9088;--red:#cc3a37;--pink:#ff7a6b;--ok:#8fd3a8;--gold:#e8b44a;
+  --serif:"Instrument Serif","Times New Roman",serif;--hand:"Caveat","Segoe Print",cursive;--sans:"Geist",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%}
+body{background:#b83c4c;color:var(--chalk);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased;padding:14px}
+.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%)}
+.stage{position:relative;z-index:1;background:var(--stage);border-radius:22px;min-height:calc(100vh - 28px);box-shadow:0 40px 90px -30px rgba(40,0,10,.6);display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line)}
+h1{font:400 30px/1 var(--serif);margin:0;letter-spacing:-.01em}h1 i{color:var(--pink)}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;min-width:0}
+.card h2{font:400 12px var(--mono);color:var(--mut);margin:0 0 8px;display:flex;justify-content:space-between;text-transform:uppercase;letter-spacing:.06em}
+.card h2 b{font:600 20px var(--hand);color:var(--pink);text-transform:none;letter-spacing:0}
+.empty{color:var(--mut);font:12px var(--mono)}
+@media (prefers-reduced-motion:reduce){.live{animation:none}}
+
+header h1{font-size:26px}header h1 a{color:inherit;text-decoration:none}header h1 i{font-style:normal}.crumb{color:var(--chalk)}
+header a{color:var(--mut);font:12px var(--mono)}header a:hover{color:var(--pink)}#upd{margin-left:auto;color:var(--mut);font:11px var(--mono)}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.tag{display:inline-block;font:600 11px var(--mono);color:var(--pink);border:1px solid var(--line);border-radius:99px;padding:2px 9px}
+.t{font:10px var(--mono);color:var(--mut);white-space:nowrap}.x{color:var(--mut);display:block;overflow-wrap:anywhere}
+.row{display:grid;grid-template-columns:10px 1fr auto;gap:8px;padding:7px 0;border-top:1px solid var(--line);align-items:start}.row:first-of-type{border:0}.row .dot{margin-top:5px}
+.row b{font-weight:600;overflow-wrap:anywhere}
+.err{display:none;position:fixed;left:24px;bottom:24px;padding:8px 12px;border:1px solid var(--red);color:var(--pink);background:var(--panel);border-radius:10px;max-width:80%;z-index:5}
+pre{margin:6px 0 0;padding:8px;background:#111;border:1px solid var(--line);border-radius:8px;font:10px/1.4 var(--mono);color:#cfc8c0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto}
+a.lnk{color:var(--pink);text-decoration:none}
+@media (max-width:640px){body{padding:8px}.stage{border-radius:16px}header{flex-wrap:wrap;padding:12px 14px}}
+
+main{padding:12px;display:flex;flex-direction:column;gap:10px;max-width:980px;width:100%;margin:0 auto}
+.th{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 14px;min-width:0}
+.th>button{all:unset;display:block;width:100%;cursor:pointer;box-sizing:border-box}.th>button:focus-visible{outline:2px solid var(--pink);outline-offset:4px}
+.top{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}.top .who{font:600 12px var(--mono)}.top .t{margin-left:auto}
+.body{margin-top:4px;overflow-wrap:anywhere}.sub{margin-top:4px;font:11px var(--mono);color:var(--mut)}.sub .ok{color:var(--ok)}
+.full{margin-top:10px;display:none;flex-direction:column;gap:8px}.th.open .full{display:flex}
+.m{padding:6px 0 6px 10px;border-left:3px solid var(--line)}.m.unread{border-left-color:var(--pink)}.m .who{font:600 12px var(--mono)}.m p{margin:3px 0 0;overflow-wrap:anywhere;white-space:pre-wrap}
+</style></head><body><div class="aura"></div>
+<div class="stage">
+<header><h1><a id="home" href="./">Team<i>Bus</i></a> <span class="crumb">/ Conversations</span></h1><a id="back" href="./">back</a><a id="brain" href="brain">brain</a><span id="upd"><span class="live"></span>connecting</span></header>
+<main id="list"></main></div>
+<div class="err" id="err"></div>
+<script>
+"use strict";
+const Q = new URLSearchParams(location.search), token = Q.get("token") || "", invite = Q.get("invite") || "", $ = (id) => document.getElementById(id);
+const tq = token ? "?token=" + encodeURIComponent(token) : invite ? "?invite=" + encodeURIComponent(invite) : "", AUTH = token ? { Authorization: "Bearer " + token } : {};
+const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const col = (n) => `hsl(${hue(n)} 70% 62%)`;
+const agoS = (s) => s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : s < 172800 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d";
+let NOW = Date.now() / 1000;
+const ago = (ts) => ts ? agoS(Math.max(0, NOW - ts)) + " ago" : "never";
+const dom = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+const dotEl = (color) => { const d = dom("span", "dot"); d.style.background = color; return d; };
+const jl = (v) => { try { return typeof v === "string" ? JSON.parse(v || "[]") : v || []; } catch (e) { return []; } };
+const trunc = (s, n) => { s = String(s || ""); return s.length > n ? s.slice(0, n) + "…" : s; };
+const card = (id, title, badge) => { const c = $(id); c.replaceChildren(); const h = dom("h2", "", title); if (badge != null) h.append(dom("b", "", badge)); c.append(h); return c; };
+const empty = (c, t) => c.append(dom("div", "empty", t));
+const showErr = (m) => { const e = $("err"); e.textContent = m || ""; e.style.display = m ? "block" : "none"; };
+
+for (const [i, p] of [["home", "./"], ["back", "./"], ["brain", "brain"]]) $(i).href = p + tq;
+const OPEN = new Set(), THREADS = new Map(); let want = Q.get("open"), lastData = null;
+async function api(name, body) {
+  const iq = invite ? "invite=" + encodeURIComponent(invite) : "";
+  let r = await fetch("api/" + name, { method: "POST", headers: { ...AUTH, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 403 && name === "conversations") r = await fetch("api/conversations" + (iq ? "?" + iq : ""), { headers: AUTH });
+  if (r.status === 403 && name === "thread" && body.message_id) r = await fetch("api/thread?id=" + body.message_id + (iq ? "&" + iq : ""), { headers: AUTH });
+  if (!r.ok) throw new Error(r.status === 401 ? "401: open this page as /conversations?token=YOUR_TOKEN (or &invite=)" : r.status === 403 ? "this token is read-only" : "hub returned " + r.status);
+  return r.json();
+}
+function msgEl(m) {
+  const x = dom("div", "m" + (!m.read ? " unread" : "")), w = dom("span", "who", m.from_agent + " → " + m.to_agent); w.style.color = col(m.from_agent);
+  x.append(w, dom("span", "t", "  " + ago(m.ts)), dom("p", "", m.body)); return x;
+}
+async function fillThread(id, box) {
+  try { const t = await api("thread", { message_id: id }); THREADS.set(id, t); box.replaceChildren(...(Array.isArray(t) && t.length ? t.map(msgEl) : [dom("div", "empty", "Empty thread.")])); }
+  catch (e) { box.replaceChildren(dom("div", "empty", String(e.message || e))); }
+}
+function render(d) {
+  const list = $("list"), C = d.conversations || []; list.replaceChildren();
+  if (!C.length) list.append(dom("div", "empty", "No conversations yet."));
+  for (const m of C) {
+    const th = dom("div", "th" + (OPEN.has(m.id) ? " open" : "")), btn = dom("button"), top = dom("div", "top"), a = dom("span", "who", m.from_agent + " → " + m.to_agent); a.style.color = col(m.from_agent);
+    btn.setAttribute("aria-expanded", OPEN.has(m.id));
+    top.append(a, dom("span", "t", ago(m.ts)));
+    const sub = dom("div", "sub"); sub.append((m.replies || 0) + (m.replies === 1 ? " reply" : " replies") + " · " + (m.read ? "read" : "unread") + " · "); sub.append(dom("span", m.answered ? "ok" : "", m.answered ? "answered" : "unanswered"));
+    btn.append(top, dom("div", "body", trunc(m.body, 200)), sub);
+    const full = dom("div", "full"); if (THREADS.has(m.id)) full.replaceChildren(...THREADS.get(m.id).map(msgEl));
+    btn.onclick = () => { const o = th.classList.toggle("open"); btn.setAttribute("aria-expanded", o); if (o) { OPEN.add(m.id); fillThread(m.id, full); } else OPEN.delete(m.id); };
+    th.append(btn, full); list.append(th);
+    if (OPEN.has(m.id)) fillThread(m.id, full);
+  }
+  if (want) { const id = +want; want = null; const m = C.find((x) => x.id === id); if (m) { const th = list.children[C.indexOf(m)]; th.querySelector("button").click(); th.scrollIntoView({ block: "center" }); } }
+}
+async function load() {
+  try { const d = await api("conversations", { limit: 30 }); NOW = Date.now() / 1000; showErr(""); render(d); $("upd").replaceChildren(dom("span", "live"), "live · " + new Date().toLocaleTimeString()); }
+  catch (e) { showErr(String(e.message || e)); }
+}
+load(); setInterval(load, 8000);
+</script></body></html>

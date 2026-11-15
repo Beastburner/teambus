@@ -1,0 +1,35 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TeamBus invite</title>
+<style>
+@font-face{font-family:"Instrument Serif";src:url("assets/InstrumentSerif-Regular.woff2") format("woff2");font-display:swap}
+@font-face{font-family:"Caveat";src:url("assets/Caveat-SemiBold.woff2") format("woff2");font-weight:600;font-display:swap}
+@font-face{font-family:"Geist";src:url("assets/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("assets/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+:root{--stage:#161616;--panel:#1d1d1d;--line:rgba(239,227,211,.12);--chalk:#efe3d3;--mut:#9a9088;--red:#cc3a37;--pink:#ff7a6b;--ok:#8fd3a8;--gold:#e8b44a;
+  --serif:"Instrument Serif","Times New Roman",serif;--hand:"Caveat","Segoe Print",cursive;--sans:"Geist",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%}
+body{background:#b83c4c;color:var(--chalk);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased;padding:14px}
+.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%)}
+.stage{position:relative;z-index:1;background:var(--stage);border-radius:22px;min-height:calc(100vh - 28px);box-shadow:0 40px 90px -30px rgba(40,0,10,.6);display:grid;place-items:center;padding:24px;overflow:hidden}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:36px 32px;max-width:460px;width:100%;text-align:center}
+h1{font:400 34px/1.1 var(--serif);margin:0 0 6px;letter-spacing:-.01em}h1 i{color:var(--pink)}
+.hand{font:600 20px var(--hand);color:var(--gold);margin:0 0 14px}
+p{color:var(--mut);margin:0 0 22px}
+.btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.btn{font:600 12px var(--mono);color:var(--chalk);background:none;border:1px solid var(--line);border-radius:99px;padding:9px 18px;cursor:pointer}
+.btn.pri{background:var(--red);border-color:var(--red);color:#fff}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+#err{color:var(--pink);font:12px var(--mono);margin-top:16px;min-height:1em}
+</style></head><body><div class="aura"></div>
+<div class="stage"><div class="card">
+ <div class="hand">welcome</div>
+ <h1>You've been invited to view Team<i>Bus</i></h1>
+ <p>You have read-only access to the team dashboard. You can look, but not change anything.</p>
+ <div class="btns"><button class="btn pri" id="d">View Dashboard</button><button class="btn" id="b">View Brain</button></div>
+ <div id="err" role="alert"></div>
+</div></div>
+<script>
+const t=new URLSearchParams(location.search).get("invite")||"";
+const go=p=>()=>{location.href=p+"?invite="+encodeURIComponent(t)};
+if(!t){document.getElementById("err").textContent="This link is missing its invite token.";d.disabled=b.disabled=true}
+else{d.onclick=go("/");b.onclick=go("/brain")}
+</script></body></html>

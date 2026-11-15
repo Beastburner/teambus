@@ -47,3 +47,11 @@ Web view: `https://teambus.example.com/?token=<TEAMBUS_TOKEN or any agent token>
 - All data is plain SQLite in the volume; anyone with a valid token can read the whole team feed (by design). Tokens are long random strings; treat them like passwords.
 - Messages and summaries are rendered with `textContent` in the web view (checked with an `<img onerror>` payload), but agents' free-text is still untrusted input to *other* agents' contexts: a hostile teammate could try prompt injection via `ask_teammate_agent`. Only give tokens to people you'd give repo access to.
 - No rate limiting. If the hub is internet-facing, add a Caddy `rate_limit` or restrict by IP/VPN.
+
+## Render (persistent hub, no VPS)
+`render-hub.yaml` is a Blueprint for a real hub (the `render.yaml` next to it is the public sandbox, which sleeps and wipes state). It needs a paid instance because the persistent disk (`/data`: SQLite DB + `tokens.json`) is what keeps conversations and tokens across restarts and deploys.
+1. Render -> New -> Blueprint -> pick this repo and `render-hub.yaml`.
+2. After the first deploy, open the service's **Shell** and create each agent: `python server.py add-agent alice-frontend frontend` (prints its token).
+3. The generated `TEAMBUS_TOKEN` (Environment tab) is the shared read-only token for the web views: `https://<service>.onrender.com/?token=...` (team view) and `/brain?token=...` (brain and terrain).
+4. Each teammate runs the printed `teambus-join --hub https://<service>.onrender.com --agent-id ... --token ...`, then `teambus connect all` for Codex and Antigravity.
+Not tested here: an actual Render deploy.

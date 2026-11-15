@@ -1,0 +1,26 @@
+# Render Blueprint for a REAL, persistent TeamBus hub (not the public sandbox in render.yaml).
+# Needs a paid instance: a persistent disk is what keeps messages, tasks, decisions and tokens across restarts and deploys,
+# and free instances sleep after 15 idle minutes (every agent would see "offline"). Use: Render -> New -> Blueprint -> this file.
+services:
+  - type: web
+    name: teambus-hub
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - {key: TEAMBUS_MODE, value: hub}               # start.sh: run server.py, never the sandbox
+      - {key: PORT, value: "10000"}
+      - {key: HOST, value: 0.0.0.0}
+      - {key: TEAMBUS_DB, value: /data/teambus.db}
+      - {key: TEAMBUS_TOKENS, value: /data/tokens.json}
+      - {key: TEAMBUS_TOKEN, generateValue: true}     # shared READ-ONLY token for the web views (/ and /brain); read it in the dashboard's Environment tab
+    disk:
+      name: teambus-data
+      mountPath: /data
+      sizeGB: 1
+# After the first deploy, open the service's Shell and create each teammate's agent (prints its token and the join line):
+#   python server.py add-agent alice-frontend frontend
+# Then on each machine:  teambus-join --hub https://<service>.onrender.com --agent-id alice-frontend --role frontend --token <token>
