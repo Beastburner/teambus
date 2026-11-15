@@ -321,6 +321,11 @@ async def create(ip, agents=None, label="", lifetime=None, owner=""):
     track(REG.put(record(sb))); kick(); return sb, None
 
 def join_line(url, aid, role, tok): return f'claude mcp add teambus --transport http {shlex.quote(url + "/mcp")} --header {shlex.quote("Authorization: Bearer " + tok)}'
+def join_lines(url, aid, role, tok):
+    mcp = url + "/mcp"
+    return {"claude": f'claude mcp add teambus --transport http {shlex.quote(mcp)} --header {shlex.quote("Authorization: Bearer " + tok)}',
+            "codex": f'# .codex/config.toml\n[mcp_servers.teambus]\nurl = "{mcp}"\nbearer_token_env_var = "TEAMBUS_TOKEN"\n\n# then: export TEAMBUS_TOKEN={shlex.quote(tok)}',
+            "antigravity": f'npx -y mcp-remote {shlex.quote(mcp)} --header {shlex.quote("Authorization: Bearer " + tok)}'}
 
 def describe(sb, base):
     sync_tokens(sb)
@@ -328,7 +333,7 @@ def describe(sb, base):
     return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
             "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")), "owned": bool(sb.get("owner")),
             **({"web_view": f"{url}/?token={sb['viewer']}", "manage_token": sb["manage"]} if "manage" in sb else {}),    # a resumed sandbox only knows hashes: its owner already holds the real tokens
-            "agents": [{"agent_id": v["agent_id"], "role": v["role"], **({} if t.startswith("sha256:") else {"token": t, "join": join_line(url, v["agent_id"], v["role"], t)})} for t, v in sb["tokens"].items()]}
+            "agents": [{"agent_id": v["agent_id"], "role": v["role"], **({} if t.startswith("sha256:") else {"token": t, "join": join_line(url, v["agent_id"], v["role"], t), "join_all": join_lines(url, v["agent_id"], v["role"], t)})} for t, v in sb["tokens"].items()]}
 
 async def body_json(request: Request):
     raw = b""

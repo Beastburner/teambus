@@ -464,7 +464,9 @@ def create_agent(name: str, role: str, brief: str = "", spawn: bool = False, ctx
     hub = hub_url_of(ctx)
     return {"agent_id": name, "role": role, "token": tok, "created_by": a, "hub": hub, **out_spawn,
             "join": f'claude mcp add teambus --transport http {hub}/mcp --header "Authorization: Bearer {tok}"',
-            "next": "Run `join` in the project folder, then start `claude`. The brief, if you gave one, is in their inbox."}
+            "join_codex": f'# .codex/config.toml\n[mcp_servers.teambus]\nurl = "{hub}/mcp"\nbearer_token_env_var = "TEAMBUS_TOKEN"',
+            "join_antigravity": f'npx -y mcp-remote {hub}/mcp --header "Authorization: Bearer {tok}"',
+            "next": "Run `join` (or `join_codex` / `join_antigravity`) in the project folder, then start your agent."}
 
 def list_spawns(status: str = "pending", ctx: Context | None = None):
     """Spawn requests YOU made (what your `teambus worker` acts on), with the new agent's token so the worker can join it. Only the requester ever sees them."""

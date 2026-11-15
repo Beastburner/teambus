@@ -275,10 +275,13 @@ function renderList(){
  const meta=mk("div","meta"),hub=mk("span","chip"),code=mk("code","",b.hub_url);hub.append("Hub ",code);
  const view=mk("span","chip"),a=mk("a","","Open web view");a.href=b.web_view;a.target="_blank";a.rel="noopener";view.append(a);meta.append(hub,view);
  const list=mk("div","list");
- for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join||"Not shown again: a woken or account sandbox only keeps a hash of each token. Press \"Get new join lines\" below for fresh ones."),c=mk("button","copy","Copy");c.type="button";
-  c.onclick=async()=>{try{await navigator.clipboard.writeText(g.join);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
+ let curPlatform="claude";
+ function platformCmd(g,p){const ja=g.join_all||{};if(p==="claude")return g.join||"";if(p==="codex")return ja.codex||"";if(p==="antigravity")return ja.antigravity||"";return g.join||""}
+ const tabs=mk("div","tabs");for(const p of["claude","codex","antigravity"]){const t=mk("button","tab",{claude:"Claude Code",codex:"Codex",antigravity:"Antigravity"}[p]);t.type="button";if(p===curPlatform)t.setAttribute("aria-selected","true");t.onclick=()=>{curPlatform=p;tabs.querySelectorAll(".tab").forEach(x=>x.removeAttribute("aria-selected"));t.setAttribute("aria-selected","true");list.querySelectorAll("[data-platform]").forEach(el=>{el.textContent=platformCmd(b.agents.find(a=>a.agent_id===el.dataset.agent),p)||"Token not available"})};tabs.append(t)}
+ for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","","");pre.dataset.platform="1";pre.dataset.agent=g.agent_id;pre.textContent=platformCmd(g,curPlatform)||"Not shown again: a woken or account sandbox only keeps a hash of each token. Press \"Get new join lines\" below for fresh ones.";const c=mk("button","copy","Copy");c.type="button";
+  c.onclick=async()=>{const txt=platformCmd(g,curPlatform);try{await navigator.clipboard.writeText(txt);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
   line.append(pre);if(g.join)line.append(c);const who=mk("div","who",g.agent_id+" ("+g.role+")"),jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);row.append(who,line);list.append(row)}
- const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Run one command per agent — no install needed:"),list];
+ const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Pick your platform and run one command per agent:"),tabs,list];
  if(NOTICE)parts.splice(2,0,mk("p","notice",NOTICE));
  if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
   n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ro.setAttribute("list","roles");ad.type="button";
