@@ -17,7 +17,7 @@ header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;
 h1{font:400 30px/1 var(--serif);margin:0;letter-spacing:-.01em}
 h1 i{color:var(--pink)}
 header .m{font:12px var(--mono)}
-#brain-link{color:var(--pink);font:12px var(--mono);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:5px 10px;margin-left:auto}#brain-link:hover{border-color:var(--pink)}
+#conv-link,#brain-link{color:var(--pink);font:12px var(--mono);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:5px 10px}#conv-link{margin-left:auto}#conv-link:hover,#brain-link:hover{border-color:var(--pink)}
 #upd{color:var(--mut);font:12px var(--mono);font-variant-numeric:tabular-nums}
 .live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.live{animation:none}}
@@ -50,6 +50,7 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font
 .card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:8px 10px;margin-bottom:8px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--pink);margin-top:4px}
 .files{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}.dir{font:12px var(--mono);color:var(--mut)}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .fchip{font:12px var(--mono);padding:4px 8px;border-radius:6px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--red);color:var(--pink);font-weight:700}
+.agent-link{color:hsl(var(--h,0) 70% 62%);text-decoration:none;font-weight:600}.agent-link:hover{text-decoration:underline}
 .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding-bottom:12px}.shot{margin:0;min-width:0}.shot img,.thumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;background:var(--chip);border:1px solid var(--line);cursor:zoom-in}
 .shot figcaption{font-size:12px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}.shot figcaption b{color:var(--c);font-weight:600}.thumbs{display:flex;gap:6px;margin-top:6px}.thumbs .thumb{width:64px;aspect-ratio:1}
 #lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--panel)}#lightbox p{color:var(--chalk);max-width:min(96vw,900px);text-align:center;margin:0}#lightbox button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--chalk);cursor:pointer}
@@ -57,7 +58,7 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font
 </style></head><body>
 <div class="aura"></div>
 <div class="stage">
-<header><h1>Team<i>Bus</i></h1><span class="m">read-only team view</span><a href="brain" id="brain-link">brain view</a><span id="upd"></span></header>
+<header><h1>Team<i>Bus</i></h1><span class="m">read-only team view</span><a href="conversations" id="conv-link">conversations</a><a href="brain" id="brain-link">brain view</a><span id="upd"></span></header>
 <div id="err"></div>
 <main>
  <section class="wide"><h2>At a glance</h2><div class="stats" id="stats"></div></section>
@@ -79,8 +80,11 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font
 <script>
 const _q = new URLSearchParams(location.search), token = _q.get("token") || "", invite = _q.get("invite") || "", authKey = token || invite;
 const $ = (id) => document.getElementById(id);
+const tq = token ? "token=" + encodeURIComponent(token) : invite ? "invite=" + encodeURIComponent(invite) : "";
 const brainLink = document.getElementById("brain-link");
-if (brainLink) brainLink.href = "brain?" + (token ? "token=" + encodeURIComponent(token) : invite ? "invite=" + encodeURIComponent(invite) : "");
+if (brainLink) brainLink.href = "brain?" + tq;
+const convLink = document.getElementById("conv-link");
+if (convLink) convLink.href = "conversations?" + tq;
 const ago = (t, now) => { const s = Math.max(0, now - t); return s < 90 ? Math.round(s) + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : s < 129600 ? Math.round(s / 3600) + "h ago" : Math.round(s / 86400) + "d ago"; };
 function fill(id, rows, render) {  // textContent only: nothing from the hub is ever parsed as HTML
   const ul = $(id); ul.replaceChildren();
@@ -202,7 +206,7 @@ async function load() {
     if (!r.ok) throw new Error(r.status === 401 ? "401: missing or wrong token (open this page as /?token=YOUR_TOKEN)" : "hub returned " + r.status);
     const d = await r.json(); $("err").style.display = "none"; const n = d.now;
     visuals(d);
-    fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); li.append(dot, span("", a.agent_id), span("tag", (a.owner ? a.owner + " · " : "") + (a.role || "-")), span("m", "  " + (a.last_seen_ago == null ? "never seen" : (a.state || "") + " · " + ago(n - a.last_seen_ago, n))), a.last_seen_ago != null && a.hook_ago == null ? span("tag", "no hooks") : "", a.last_seen_ago != null && a.mcp_ago == null ? span("tag", "no tools") : ""); });
+    fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); const lnk = document.createElement("a"); lnk.href = "agent?id=" + encodeURIComponent(a.agent_id) + (tq ? "&" + tq : ""); lnk.textContent = a.agent_id; lnk.className = "agent-link"; lnk.style.setProperty("--h", H(d, a.agent_id)); li.append(dot, lnk, span("tag", (a.owner ? a.owner + " · " : "") + (a.role || "-")), span("m", "  " + (a.last_seen_ago == null ? "never seen" : (a.state || "") + " · " + ago(n - a.last_seen_ago, n))), a.last_seen_ago != null && a.hook_ago == null ? span("tag", "no hooks") : "", a.last_seen_ago != null && a.mcp_ago == null ? span("tag", "no tools") : ""); });
     fill("questions", d.questions.filter((q) => !q.answered), (li, q) => { li.append(span("", q.from_agent + " → " + q.to_agent), span("m", "  " + ago(q.ts, n)), pre(q.body)); });
     fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
     fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });

@@ -31,5 +31,5 @@ p{color:var(--mut);margin:0 0 22px}
 const t=new URLSearchParams(location.search).get("invite")||"";
 const go=p=>()=>{location.href=p+"?invite="+encodeURIComponent(t)};
 if(!t){document.getElementById("err").textContent="This link is missing its invite token.";d.disabled=b.disabled=true}
-else{d.onclick=go("/");b.onclick=go("/brain")}
+else{d.onclick=go("./");b.onclick=go("brain")}
 </script></body></html>
