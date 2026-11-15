@@ -215,7 +215,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 /* Sandboxes. Plain script: it works even if WebGL or GSAP are unavailable. A visitor can hold several sandboxes (kept in this browser), choose each one's agents and roles,
    add agents later and delete a sandbox to free its slot. */
 const $=(i)=>document.getElementById(i),mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
-const INSTALL=__INSTALL__,NOTICE=__NOTICE__,LS="tb.sandboxes",DEFAULTS=[["alice-frontend","frontend"],["bob-backend","backend"],["carol-fullstack","fullstack"]],MAXA=__MAX_AGENTS__,IDLE_M=__IDLE__,MAXMIN=__MAXH__*60;
+const INSTALL=__INSTALL__,NOTICE=__NOTICE__,LS="tb.sandboxes",DEFAULTS=[],MAXA=__MAX_AGENTS__,IDLE_M=__IDLE__,MAXMIN=__MAXH__*60;
 [...document.querySelectorAll("#life option")].forEach((o)=>{if(Number(o.value)>MAXMIN)o.remove()});
 const nowS=()=>Date.now()/1000;
 let boxes=[],sel=null,creating=false,delArmed=false;
@@ -254,7 +254,7 @@ function addRow(name="",role=""){const rows=$("agrows");if(rows.children.length>
  n.placeholder="agent-name";n.value=name;n.maxLength=31;n.autocomplete="off";n.setAttribute("aria-label","Agent name");o.placeholder="role";o.value=role;o.maxLength=24;o.autocomplete="off";o.setAttribute("aria-label","Role");o.setAttribute("list","roles");
  x.type="button";x.setAttribute("aria-label","Remove this agent");x.onclick=()=>{if(rows.children.length>2){r.remove();syncRows()}};r.append(n,o,x);rows.append(r);syncRows()}
 function syncRows(){const rows=$("agrows"),n=rows.children.length;$("addrow").disabled=n>=MAXA;[...rows.querySelectorAll(".sq")].forEach((b)=>{b.disabled=n<=2})}
-function resetBuilder(){$("lbl").value="";$("agrows").replaceChildren();DEFAULTS.forEach(([n,r])=>addRow(n,r));$("nerr").textContent=""}
+function resetBuilder(){$("lbl").value="";$("agrows").replaceChildren();if(DEFAULTS.length)DEFAULTS.forEach(([n,r])=>addRow(n,r));else addRow();$("nerr").textContent=""}
 async function doCreate(){
  if(creating)return;const agents=[...$("agrows").children].map((r)=>({agent_id:r.children[0].value.trim(),role:r.children[1].value.trim()}));
  const btn=$("docreate");creating=true;btn.disabled=true;btn.textContent="Creating";$("nerr").textContent="";
