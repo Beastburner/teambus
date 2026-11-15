@@ -320,7 +320,7 @@ async def create(ip, agents=None, label="", lifetime=None, owner=""):
     sb.update(ip=ip, owner=owner, label=label, manage=(m := secrets.token_urlsafe(24)), manage_hash=sha(m), created=now, joined={}, hard=now + MAX_AGE, until=now + life, active=now); sb["expires"] = deadline(sb); SBX[sb["id"]] = sb
     track(REG.put(record(sb))); kick(); return sb, None
 
-def join_line(url, aid, role, tok): return f"teambus-join --hub {shlex.quote(url)} --agent-id {shlex.quote(aid)} --role {shlex.quote(role)} --token {shlex.quote(tok)}"
+def join_line(url, aid, role, tok): return f'claude mcp add teambus --transport http {shlex.quote(url + "/mcp")} --header {shlex.quote("Authorization: Bearer " + tok)}'
 
 def describe(sb, base):
     sync_tokens(sb)

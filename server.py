@@ -442,7 +442,7 @@ def _write_tokens(d):
 def create_agent(name: str, role: str, brief: str = "", spawn: bool = False, ctx: Context | None = None):
     """Create a new agent on this team and get its token (only agents the hub owner allowed may; in a sandbox that is the `orchestrator` role).
     `name` is lowercase letters, digits and dashes (2 to 31 characters); `role` is letters, digits, dashes, underscores. `brief` is delivered to the new agent as its first message, from you. With `spawn=true` you also ask your own TeamBus worker (`teambus worker`, running on your machine, if your user started one) to set up a folder and START that agent's Claude session; without a worker the request stays pending.
-    Returns the new agent's token and the exact `teambus-join` command to run, in the project folder where that new agent's Claude session will work. Give the token only to that session; never
+    Returns the new agent's token and the `claude mcp add` command to run in the project folder. Give the token only to that session; never
     post it in a message. Limits: you can create a few agents, not unlimited ones, and agents you create cannot create more."""
     w = who_of(ctx); a = w.get("agent_id") or ""
     if not a: return {"error": "no identity: connect through a token"}
@@ -463,8 +463,8 @@ def create_agent(name: str, role: str, brief: str = "", spawn: bool = False, ctx
                            "spawn": "requested: a `teambus worker` running for you will start this agent's session. If none is running, the request stays pending until your user starts one."}
     hub = hub_url_of(ctx)
     return {"agent_id": name, "role": role, "token": tok, "created_by": a, "hub": hub, **out_spawn,
-            "join": f"teambus-join --hub {hub} --agent-id {name} --role {role} --token {tok}",
-            "next": "Run `join` in the project folder where the new agent's Claude session will work (it sets up that folder), then start `claude` there. The brief, if you gave one, is in its inbox."}
+            "join": f'claude mcp add teambus --transport http {hub}/mcp --header "Authorization: Bearer {tok}"',
+            "next": "Run `join` in the project folder, then start `claude`. The brief, if you gave one, is in their inbox."}
 
 def list_spawns(status: str = "pending", ctx: Context | None = None):
     """Spawn requests YOU made (what your `teambus worker` acts on), with the new agent's token so the worker can join it. Only the requester ever sees them."""

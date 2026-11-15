@@ -278,10 +278,7 @@ function renderList(){
  for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","",g.join||"Not shown again: a woken or account sandbox only keeps a hash of each token. Press \"Get new join lines\" below for fresh ones."),c=mk("button","copy","Copy");c.type="button";
   c.onclick=async()=>{try{await navigator.clipboard.writeText(g.join);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
   line.append(pre);if(g.join)line.append(c);const who=mk("div","who",g.agent_id+" ("+g.role+")"),jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);row.append(who,line);list.append(row)}
- const inst=mk("div","inst"),il=mk("div","line"),ip=mk("pre","",INSTALL),ic=mk("button","copy","Copy");ic.type="button";
- ic.onclick=async()=>{try{await navigator.clipboard.writeText(INSTALL);ic.textContent="Copied"}catch(e){ic.textContent="Select"}setTimeout(()=>ic.textContent="Copy",1500)};
- il.append(ip,ic);inst.append(mk("span","fl","First time on this machine? Install TeamBus once:"),il);
- const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Run one command in each project folder:"),list,inst];
+ const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Run one command per agent — no install needed:"),list];
  if(NOTICE)parts.splice(2,0,mk("p","notice",NOTICE));
  if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
   n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ro.setAttribute("list","roles");ad.type="button";
