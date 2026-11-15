@@ -159,13 +159,14 @@ function visuals(d) {
   const map = $("map"); map.replaceChildren();
   if (!agents.length) map.append(dom("p", "empty", "No agents have joined yet."));
   else {
-    const W = 760, Ht = Math.min(380, 120 + agents.length * 60), cx = W / 2, cy = Ht / 2 - 6, rx = Math.min(300, 60 + agents.length * 34), ry = Math.min(135, Ht / 2 - 40), pos = {};
+    const W = 760, Ht = Math.max(240, Math.min(420, 140 + agents.length * 60)), cx = W / 2, cy = Ht / 2, rx = Math.min(280, 60 + agents.length * 34), ry = Math.min(140, Ht / 2 - 50), pos = {};
     agents.forEach((a, i) => { const t = agents.length === 1 ? 0 : (2 * Math.PI * i) / agents.length - Math.PI / 2; pos[a.agent_id] = [cx + rx * Math.cos(t), cy + ry * Math.sin(t)]; });
     const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Team map" });
     const glow = el("filter", { id: "glow", x: "-50%", y: "-50%", width: "200%", height: "200%" }); glow.append(el("feGaussianBlur", { stdDeviation: "3", result: "blur" }), el("feMerge", {}, el("feMergeNode", { in: "blur" }), el("feMergeNode", { in: "SourceGraphic" })));
     const gridPat = el("pattern", { id: "grid", width: 40, height: 40, patternUnits: "userSpaceOnUse" }); gridPat.append(el("path", { d: "M 40 0 L 0 0 0 40", fill: "none", stroke: "var(--chalk)", "stroke-opacity": ".06", "stroke-width": .5 }));
-    svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", class: "mut" })), glow, gridPat));
-    svg.append(el("rect", { width: W, height: Ht, fill: "url(#grid)" }));
+    const bgGrad = el("radialGradient", { id: "mapbg", cx: "50%", cy: "50%", r: "50%" }); bgGrad.append(el("stop", { offset: "0%", "stop-color": "rgba(204,58,55,.06)" }), el("stop", { offset: "100%", "stop-color": "transparent" }));
+    svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", class: "mut" })), glow, gridPat, bgGrad));
+    svg.append(el("rect", { width: W, height: Ht, fill: "url(#mapbg)" }), el("rect", { width: W, height: Ht, fill: "url(#grid)" }));
     const edges = [], sr = [], msgs = {};
     for (const e of ev) if (e.kind === "message" && n - e.ts < 3600 && pos[e.agent] && pos[e.to]) { const k = e.agent + ">" + e.to; msgs[k] = (msgs[k] || 0) + 1; }
     for (const k in msgs) { const [a, b] = k.split(">"); edges.push({ a, b, cls: "edge", w: 1 + Math.min(msgs[k], 6) * 0.9, arrow: true, curve: 26 }); sr.push(`${a} sent ${msgs[k]} message(s) to ${b}`); }
@@ -245,9 +246,9 @@ async function load() {
     visuals(d);
     fill("agents", d.agents, (li, a) => { const dot = span("dot" + (a.active ? " on" : ""), ""); const lnk = document.createElement("a"); lnk.href = "agent?id=" + encodeURIComponent(a.agent_id) + (tq ? "&" + tq : ""); lnk.textContent = a.agent_id; lnk.className = "agent-link"; lnk.style.setProperty("--h", H(d, a.agent_id)); li.append(dot, lnk, span("tag", (a.owner ? a.owner + " · " : "") + (a.role || "-")), span("m", "  " + (a.last_seen_ago == null ? "never seen" : (a.state || "") + " · " + ago(n - a.last_seen_ago, n))), a.last_seen_ago != null && a.hook_ago == null ? span("tag", "no hooks") : "", a.last_seen_ago != null && a.mcp_ago == null ? span("tag", "no tools") : ""); });
     fill("questions", d.questions.filter((q) => !q.answered), (li, q) => { li.append(span("", q.from_agent + " → " + q.to_agent), span("m", "  " + ago(q.ts, n)), pre(q.body)); });
-    fill("intents", d.intents, (li, i) => { li.append(span("", i.agent_id), span("m", "  " + JSON.parse(i.files).join(", ")), span("m", "  " + ago(i.ts, n)), pre(i.summary)); });
+    fill("intents", d.intents, (li, i) => { li.className = "agent"; li.style.setProperty("--h", H(d, i.agent_id)); const files = JSON.parse(i.files || "[]"); const fStr = files.map(f => f.split("/").pop()).join(", "); li.append(span("agent-link", i.agent_id), span("m", "  " + fStr), span("m", "  " + ago(i.ts, n))); if (i.summary) li.append(pre(i.summary)); });
     fill("contracts", d.contracts, (li, c) => { li.append(span("warn", c.name), span("m", "  by " + c.agent_id + " · " + ago(c.ts, n)), pre(c.spec + "\nconsumers: " + JSON.parse(c.files).join(", "))); });
-    fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", "  fixed after " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + " min")); if (!b.ok) li.append(pre(b.log_tail || "")); });
+    fill("builds", d.builds, (li, b) => { li.className = "agent"; li.style.setProperty("--h", H(d, b.agent_id)); li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔" : "✘"), span("agent-link", " " + b.agent_id), span("m", "  " + (b.cmd || "build") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", " fixed " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + "m")); if (!b.ok) li.append(pre((b.log_tail || "").slice(0, 120))); });
     fill("decisions", d.decisions || [], (li, x) => { li.append(span("tag", x.topic), span("", " " + x.text), span("m", "  · " + x.agent_id + ", " + ago(x.ts, n))); });
     const fb2 = $("feedbox"); fb2.replaceChildren();
     for (const f of (d.feed || []).slice(0, 25)) { const row = dom("div", "feed-item agent"); row.style.setProperty("--h", H(d, f.agent_id)); const kind = dom("span", "kind", f.type); const who = dom("span", "who", f.agent_id); const what = dom("span", "what", f.text); const ts2 = dom("span", "ts", ago(f.ts, n)); row.append(kind, who, what, ts2); fb2.append(row); }
