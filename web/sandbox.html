@@ -295,8 +295,13 @@ function renderList(){
    const wa=mk("button","","WhatsApp");wa.type="button";wa.onclick=()=>{const cmd=shareCmd(g,curPlatform);window.open("https://wa.me/?text="+encodeURIComponent("Join TeamBus as "+g.agent_id+":\n\n"+cmd))};
    const sl=mk("button","","Slack");sl.type="button";sl.onclick=()=>{const cmd=shareCmd(g,curPlatform);try{navigator.clipboard.writeText("Join TeamBus as "+g.agent_id+":\n```\n"+cmd+"\n```");sl.textContent="Copied for Slack"}catch(e){}setTimeout(()=>sl.textContent="Slack",1500)};
    sh.append(em,wa,sl)}
-  const inv=mk("div","invite-row");if(g.join){const inp=mk("input","");inp.type="email";inp.placeholder="teammate@example.com";const send=mk("button","","Send invite");send.type="button";
-   send.onclick=()=>{const email=inp.value.trim();if(!email)return;const cmd=shareCmd(g,curPlatform);window.open("mailto:"+encodeURIComponent(email)+"?subject="+encodeURIComponent("Join our TeamBus as "+g.agent_id)+"&body="+encodeURIComponent("Hey! Join our TeamBus team as "+g.agent_id+" ("+g.role+").\n\nRun this in your project folder:\n\n"+cmd+"\n\nThen start your agent. That's it — no install needed!"));inp.value=""};inv.append(inp,send)}
+  const inv=mk("div","invite-row");if(g.join){const inp=mk("input","");inp.type="email";inp.placeholder="teammate@example.com";const send=mk("button","","Send invite");send.type="button";const invErr=mk("span","");invErr.style.cssText="font:600 12px var(--sans);margin-left:6px";
+   send.onclick=async()=>{const email=inp.value.trim();if(!email)return;send.disabled=true;invErr.textContent="";
+    try{const rs=await fetch("manage/"+b.id+"/invite",{method:"POST",headers:{...auth(b),"Content-Type":"application/json"},body:JSON.stringify({email,agent_id:g.agent_id,platform:curPlatform})});const d=await rs.json();
+     if(rs.ok){invErr.style.color="#2a9d46";invErr.textContent="Sent to "+email;inp.value=""}
+     else{invErr.style.color="var(--red-ink)";invErr.textContent=d.error||"Failed to send"}}
+    catch(e){invErr.style.color="var(--red-ink)";invErr.textContent="Could not reach server"}
+    finally{send.disabled=false;setTimeout(()=>invErr.textContent="",5000)}};inv.append(inp,send,invErr)}
   row.append(who,line,sh,inv);list.append(row)}
  const mcpDl=mk("div","mcp-dl");const dlBtn=mk("button","ghost","Download .mcp.json");dlBtn.type="button";
  dlBtn.onclick=()=>{const first=b.agents.find(a=>a.join);if(!first)return;const cfg={mcpServers:{teambus:{type:"streamableHttp",url:b.hub_url+"/mcp",headers:{"Authorization":"Bearer <PASTE_YOUR_TOKEN>"}}}};const blob=new Blob([JSON.stringify(cfg,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=".mcp.json";a.click();URL.revokeObjectURL(a.href)};

@@ -513,6 +513,48 @@ async def manage_add_agent(request: Request):
     add_token(sb, *c); track(REG.update(sb["id"], agents=record(sb)["agents"])); d = describe(sb, public_base(request))
     return JSONResponse(next(a for a in d["agents"] if a["agent_id"] == c[0]), 201)
 
+RESEND_KEY = E("RESEND_API_KEY")
+RESEND_FROM = E("RESEND_FROM", "TeamBus <onboarding@resend.dev>")
+
+async def manage_invite(request: Request):
+    sb, err = await managed(request)
+    if err: return err
+    if not RESEND_KEY: return JSONResponse({"error": "email invites are not configured on this server (set RESEND_API_KEY)"}, 501)
+    body, err = await body_json(request)
+    if err: return err
+    body = body if isinstance(body, dict) else {}
+    email = (body.get("email") or "").strip().lower()
+    agent_id = (body.get("agent_id") or "").strip()
+    platform = (body.get("platform") or "claude").strip()
+    if not email or "@" not in email: return JSONResponse({"error": "a valid email address is required"}, 400)
+    agent = next((a for t, a in sb["tokens"].items() if a["agent_id"] == agent_id and not t.startswith("sha256:")), None)
+    if not agent: return JSONResponse({"error": f"agent {agent_id!r} not found or token not available"}, 404)
+    token = next(t for t, a in sb["tokens"].items() if a["agent_id"] == agent_id and not t.startswith("sha256:"))
+    url = f"{public_base(request)}/s/{sb['id']}"
+    ja = join_lines(url, agent_id, agent["role"], token)
+    cmd = ja.get(platform, ja["claude"])
+    mins = max(0, int((sb["expires"] - time.time()) / 60))
+    html = f"""<div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:20px">
+<h2 style="color:#c23a37">You're invited to TeamBus</h2>
+<p>Someone invited you to join a TeamBus session as <strong>{agent_id}</strong> ({agent['role']}).</p>
+<p>Run this in your project folder:</p>
+<pre style="background:#fff5ee;border:2px solid #2a1f1b;border-radius:10px;padding:14px;font-size:13px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">{cmd}</pre>
+<p>Then start your agent. That's it — no install needed!</p>
+<p style="color:#888;font-size:13px">This sandbox expires in {mins} minutes. The join command contains a secret token — don't share it publicly.</p>
+</div>"""
+    import urllib.request, urllib.error
+    payload = json.dumps({"from": RESEND_FROM, "to": [email], "subject": f"Join TeamBus as {agent_id}", "html": html}).encode()
+    req = urllib.request.Request("https://api.resend.com/emails", payload, {"Content-Type": "application/json", "Authorization": f"Bearer {RESEND_KEY}"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp: result = json.loads(resp.read())
+        return JSONResponse({"sent": email, "agent_id": agent_id, "resend_id": result.get("id")})
+    except urllib.error.HTTPError as e:
+        try: detail = json.loads(e.read())
+        except Exception: detail = {"status": e.code}
+        return JSONResponse({"error": f"email service error: {detail.get('message', detail)}"}, 502)
+    except Exception as e:
+        return JSONResponse({"error": f"could not send email: {e}"}, 502)
+
 def when(ts): return time.strftime("%H:%M UTC", time.gmtime(ts)) if ts else "an unknown time"
 
 def ended_view(rec, base):
@@ -638,7 +680,7 @@ async def lifespan(app):
     await client.aclose()
 
 app = Starlette(routes=[Route("/", home), Route("/healthz", healthz), *([Route("/_ip", debug_ip)] if DEBUG_IP else []), Route("/assets/{name}", asset), Route("/new", new, methods=["POST"]),
-                        Route("/status/{sid}", status, methods=["GET"]), Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]), Route("/manage/{sid}/extend", manage_extend, methods=["POST"]),
+                        Route("/status/{sid}", status, methods=["GET"]), Route("/manage/{sid}", manage_get, methods=["GET"]), Route("/manage/{sid}", manage_delete, methods=["DELETE"]), Route("/manage/{sid}/agents", manage_add_agent, methods=["POST"]), Route("/manage/{sid}/extend", manage_extend, methods=["POST"]), Route("/manage/{sid}/invite", manage_invite, methods=["POST"]),
                         Route("/auth/config", auth_config, methods=["GET"]), Route("/auth/google", auth_google, methods=["POST"]), Route("/auth/logout", auth_logout, methods=["POST"]),
                         Route("/me/sandboxes", my_sandboxes, methods=["GET"]), Route("/me/sandboxes/{sid}", my_sandbox, methods=["GET"]), Route("/me/sandboxes/{sid}/reissue", my_reissue, methods=["POST"]), Route("/me/claim", my_claim, methods=["POST"]),
                         Route("/s/{sid}/{rest:path}", proxy, methods=["GET", "POST", "DELETE", "OPTIONS"]), Route("/s/{sid}", proxy, methods=["GET"], name="bare")], lifespan=lifespan)
