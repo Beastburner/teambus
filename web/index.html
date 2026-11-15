@@ -21,7 +21,8 @@ header .m{font:12px var(--mono)}
 #upd{color:var(--mut);font:12px var(--mono);font-variant-numeric:tabular-nums}
 .live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.live{animation:none}}
-main{display:grid;gap:12px;padding:20px 16px 32px;max-width:1232px;margin:auto;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr))}
+main{display:grid;gap:10px;padding:16px 16px 28px;max-width:1232px;margin:auto;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr))}
+section.hide{display:none}
 section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 18px 8px;min-width:0}
 section.wide{grid-column:1/-1}
 h2{font:400 12px var(--mono);color:var(--mut);margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em}
@@ -55,6 +56,7 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font
 .shot figcaption{font-size:12px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}.shot figcaption b{color:var(--c);font-weight:600}.thumbs{display:flex;gap:6px;margin-top:6px}.thumbs .thumb{width:64px;aspect-ratio:1}
 #lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--panel)}#lightbox p{color:var(--chalk);max-width:min(96vw,900px);text-align:center;margin:0}#lightbox button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--chalk);cursor:pointer}
 .sr{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.convs{display:flex;flex-direction:column;gap:8px;padding-bottom:8px}.msg{display:flex;gap:10px;align-items:flex-start}.msg .av{width:32px;height:32px;border-radius:50%;background:var(--cs);border:2px solid var(--c);display:flex;align-items:center;justify-content:center;font:700 12px var(--sans);color:var(--c);flex-shrink:0}.msg .body{flex:1;min-width:0}.msg .head{font-size:12px;display:flex;gap:8px;align-items:baseline}.msg .who{font-weight:700;color:var(--c)}.msg .to{color:var(--mut)}.msg .when{color:var(--mut);font-size:11px}.msg .text{margin:2px 0 0;font-size:13px;color:var(--chalk);overflow-wrap:anywhere}.msg .reply{margin:4px 0 0 0;padding:6px 10px;background:var(--chip);border-radius:8px;border-left:3px solid var(--c);font-size:12px;color:var(--mut)}
 </style></head><body>
 <div class="aura"></div>
 <div class="stage">
@@ -63,17 +65,18 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font
 <main>
  <section class="wide"><h2>At a glance</h2><div class="stats" id="stats"></div></section>
  <section class="wide"><h2>Team map: who is talking to whom, who is blocked, who is on the same file</h2><div id="map"></div><div class="legend"><span><i></i>messages (last hour; thicker = more)</span><span><i class="b"></i>blocked task: owner to the agent who asked for it</span><span><i class="s"></i>editing the same file</span><span>green ring = working now, dashed = offline</span></div><p class="sr" id="mapsr"></p></section>
- <section class="wide"><h2>Board</h2><div class="board" id="board"></div></section>
- <section class="wide"><h2>Timeline: the last two hours, one lane per agent</h2><div id="timeline"></div><div class="legend"><span>● editing</span><span>◆ commit</span><span>■ build (red = failed)</span><span>▶ message sent</span><span>⚑ task update</span><span>◈ decision or contract</span><span>▭ image shared</span></div></section>
- <section class="wide"><h2>Files in play</h2><div class="files" id="files"></div></section>
- <section class="wide"><h2>Shared images (screenshots, mockups)</h2><div class="gallery" id="gallery"></div></section>
+ <section class="wide" id="sec-conv"><h2>Recent conversations</h2><div id="convbox"></div></section>
+ <section class="wide" id="sec-board"><h2>Board</h2><div class="board" id="board"></div></section>
  <section><h2>Team</h2><ul id="agents"></ul></section>
- <section><h2>Decisions in force</h2><ul id="decisions"></ul></section>
- <section><h2>Open questions</h2><ul id="questions"></ul></section>
- <section><h2>Working on now</h2><ul id="intents"></ul></section>
- <section><h2>Contracts (breaking changes)</h2><ul id="contracts"></ul></section>
- <section><h2>Recent builds</h2><ul id="builds"></ul></section>
- <section class="wide"><h2>Live feed</h2><ul id="feed"></ul></section>
+ <section id="sec-decisions"><h2>Decisions in force</h2><ul id="decisions"></ul></section>
+ <section id="sec-questions"><h2>Open questions</h2><ul id="questions"></ul></section>
+ <section class="wide" id="sec-timeline"><h2>Timeline: the last two hours, one lane per agent</h2><div id="timeline"></div><div class="legend"><span>● editing</span><span>◆ commit</span><span>■ build (red = failed)</span><span>▶ message sent</span><span>⚑ task update</span><span>◈ decision or contract</span><span>▭ image shared</span></div></section>
+ <section id="sec-intents"><h2>Working on now</h2><ul id="intents"></ul></section>
+ <section id="sec-contracts"><h2>Contracts (breaking changes)</h2><ul id="contracts"></ul></section>
+ <section id="sec-builds"><h2>Recent builds</h2><ul id="builds"></ul></section>
+ <section class="wide" id="sec-files"><h2>Files in play</h2><div class="files" id="files"></div></section>
+ <section class="wide" id="sec-gallery"><h2>Shared images (screenshots, mockups)</h2><div class="gallery" id="gallery"></div></section>
+ <section class="wide" id="sec-feed"><h2>Live feed</h2><ul id="feed"></ul></section>
 </main>
 </div>
 <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" hidden><img id="lbimg" alt=""><p id="lbcap"></p><button type="button" id="lbclose">Close</button></div>
@@ -128,7 +131,7 @@ function visuals(d) {
   const map = $("map"); map.replaceChildren();
   if (!agents.length) map.append(dom("p", "empty", "No agents have joined yet."));
   else {
-    const W = 760, Ht = 380, cx = W / 2, cy = Ht / 2 - 6, rx = Math.min(300, 60 + agents.length * 34), ry = 135, pos = {};
+    const W = 760, Ht = Math.min(380, 120 + agents.length * 60), cx = W / 2, cy = Ht / 2 - 6, rx = Math.min(300, 60 + agents.length * 34), ry = Math.min(135, Ht / 2 - 40), pos = {};
     agents.forEach((a, i) => { const t = agents.length === 1 ? 0 : (2 * Math.PI * i) / agents.length - Math.PI / 2; pos[a.agent_id] = [cx + rx * Math.cos(t), cy + ry * Math.sin(t)]; });
     const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Team map" });
     svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", class: "mut" }))));
@@ -213,6 +216,22 @@ async function load() {
     fill("builds", d.builds, (li, b) => { li.append(span(b.ok ? "ok" : "bad", b.ok ? "✔ pass" : "✘ FAIL"), span("", "  " + b.agent_id), span("m", "  " + (b.cmd || "") + " · " + ago(b.ts, n))); if (!b.ok && b.fixed_ts) li.append(span("ok", "  fixed after " + Math.max(1, Math.round((b.fixed_ts - b.ts) / 60)) + " min")); if (!b.ok) li.append(pre(b.log_tail || "")); });
     fill("decisions", d.decisions || [], (li, x) => { li.append(span("tag", x.topic), span("", " " + x.text), span("m", "  · " + x.agent_id + ", " + ago(x.ts, n))); });
     fill("feed", d.feed, (li, f) => { li.append(span("m", f.type + " "), span("", f.agent_id + " "), span("m", f.text), f.status ? span("tag", f.status) : "", span("m", "  " + ago(f.ts, n)), f.note ? span("m", "  · " + f.note) : ""); });
+    // recent conversations inline
+    const cb = $("convbox"); cb.replaceChildren();
+    const msgs = (d.questions || []).slice().sort((a, b) => b.ts - a.ts).slice(0, 12);
+    if (msgs.length) { const wrap = dom("div", "convs"); for (const q of msgs) { const m = dom("div", "msg agent"); m.style.setProperty("--h", H(d, q.from_agent)); const av = dom("div", "av", q.from_agent.split("-").map(s => s[0] || "").join("").slice(0, 2).toUpperCase()); const body = dom("div", "body"); const head = dom("div", "head"); const who = dom("span", "who", q.from_agent); const to = dom("span", "to", "→ " + q.to_agent); const when = dom("span", "when", ago(q.ts, n)); head.append(who, to, when); const txt = dom("div", "text", q.body); body.append(head, txt); if (q.answered && q.reply_body) { const re = dom("div", "reply agent"); re.style.setProperty("--h", H(d, q.to_agent)); re.textContent = q.to_agent + ": " + q.reply_body; body.append(re); } m.append(av, body); wrap.append(m); } cb.append(wrap); }
+    // hide empty sections
+    const hideIf = (id, empty) => { const s = $(id); if (s) s.classList.toggle("hide", empty); };
+    hideIf("sec-conv", !msgs.length);
+    hideIf("sec-board", !d.tasks || !d.tasks.length);
+    hideIf("sec-decisions", !(d.decisions || []).length);
+    hideIf("sec-questions", !(d.questions || []).filter(q => !q.answered).length);
+    hideIf("sec-intents", !(d.intents || []).length);
+    hideIf("sec-contracts", !(d.contracts || []).length);
+    hideIf("sec-builds", !(d.builds || []).length);
+    hideIf("sec-files", !(d.intents || []).length);
+    hideIf("sec-gallery", !(d.attachments || []).length);
+    hideIf("sec-feed", !(d.feed || []).length);
     const u = $("upd"); u.replaceChildren(dom("span", "live"), "updated " + new Date().toLocaleTimeString());
   } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }

@@ -570,9 +570,12 @@ def _events(now, span=3 * 3600, cap=200):
 def status(ctx=None):
     """Everything the web view shows (read-only)."""
     now = time.time(); q = rows("SELECT * FROM messages WHERE reply_to IS NULL ORDER BY id DESC LIMIT 30"); pres = presence(); by = {p["agent_id"]: p for p in pres}
+    replies = {}
+    for r in rows("SELECT reply_to, body, from_agent FROM messages WHERE reply_to IN ({}) ORDER BY id".format(",".join(str(m["id"]) for m in q) or "0")):
+        if r["reply_to"] not in replies: replies[r["reply_to"]] = r
     d = {"now": now, "agents": pres, "intents": rows("SELECT * FROM intents WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", now - INTENT_TTL),
             "contracts": rows("SELECT * FROM contracts WHERE ts>? AND status='open' ORDER BY ts DESC LIMIT 20", now - CONTRACT_TTL), "builds": rows("SELECT * FROM builds ORDER BY ts DESC LIMIT 20"),
-            "questions": [{**m, "answered": bool(m["answered"]), **({} if m["read"] else {"waiting": delivery_note(by.get(m["to_agent"], {}))})} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
+            "questions": [{**m, "answered": bool(m["answered"]), **({} if m["read"] else {"waiting": delivery_note(by.get(m["to_agent"], {}))}), **({"reply_body": replies[m["id"]]["body"], "reply_from": replies[m["id"]]["from_agent"]} if m["answered"] and m["id"] in replies else {})} for m in q], "feed": rows("SELECT 'intent' AS type, ts, agent_id, summary AS text, status FROM intents UNION ALL SELECT 'contract', ts, agent_id, name || ': ' || spec, '' FROM contracts UNION ALL SELECT 'message', ts, from_agent, '-> ' || to_agent || ': ' || body, CASE WHEN answered=1 THEN 'answered' WHEN read=1 THEN 'read' ELSE 'unread' END FROM messages ORDER BY ts DESC LIMIT 40")}
     d["tasks"] = list_tasks()["tasks"]; d["decisions"] = list_decisions()["decisions"]; d["events"] = _events(now); d["attachments"] = list_attachments(limit=40)["attachments"]
     for f in d["feed"]:
         if f["type"] == "message" and f["status"] == "unread": f["note"] = delivery_note(by.get(f["text"][3:f["text"].index(":")], {}))
