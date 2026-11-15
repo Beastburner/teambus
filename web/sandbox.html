@@ -112,6 +112,10 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.tab{font:700 13px var(--sans);color:var(--ink);background:var(--cream-2);border:2px solid var(--ink);border-radius:10px;height:34px;padding:0 11px;cursor:pointer;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tab[aria-selected="true"]{background:var(--red);color:#fff4ea}.tab.new{background:transparent}
 .addag{margin:12px 0 4px;padding-top:6px;border-top:2px dashed rgba(42,31,27,.35)}.addag .agrow{grid-template-columns:1.35fr 1fr auto}
+.status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}.status.online{background:#2a9d46}.status.idle{background:#e6a817}.status.offline{background:#aaa}
+.share{display:flex;gap:6px;flex-wrap:wrap;margin:3px 0 0}.share button{font:600 12px var(--sans);color:var(--ink);background:var(--cream-2);border:2px solid var(--ink);border-radius:8px;height:28px;padding:0 9px;cursor:pointer}.share button:hover{background:var(--red);color:#fff4ea}
+.invite-row{display:flex;gap:8px;margin:4px 0 0;align-items:center}.invite-row input{flex:1;font:500 13px var(--sans);color:var(--ink);background:#fff9f1;border:2px solid var(--ink);border-radius:8px;padding:6px 9px;min-width:0}.invite-row button{font:700 12px var(--sans);color:#fff4ea;background:var(--red);border:2px solid var(--ink);border-radius:8px;height:30px;padding:0 10px;cursor:pointer;white-space:nowrap}
+.mcp-dl{margin:12px 0 4px;padding-top:6px;border-top:2px dashed rgba(42,31,27,.35)}
 .exp{margin:0 0 10px;font-size:14px;font-weight:500}.notice{margin:8px 0 6px;padding-left:10px;border-left:4px solid var(--red);font:600 13px/1.35 var(--sans);color:var(--red-ink)}.jn{margin-left:8px;font-weight:600;color:var(--red-ink)}.jn.ok{color:#1f6b3a}
 .endnote{display:flex;gap:10px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border:2px solid var(--red);border-radius:12px;background:#fff1e6;font:600 13.5px/1.35 var(--sans)}.endnote span{flex:1}.endnote button{font:700 12px var(--sans);background:transparent;border:2px solid var(--ink);border-radius:8px;height:26px;padding:0 8px;cursor:pointer}.inst{margin:10px 0 2px}.inst .fl{margin-top:4px}
 @media (max-width:860px){.linkbtn{margin:10px 0 0;display:block}}
@@ -277,11 +281,27 @@ function renderList(){
  const list=mk("div","list");
  let curPlatform="claude";
  function platformCmd(g,p){const ja=g.join_all||{};if(p==="claude")return g.join||"";if(p==="codex")return ja.codex||"";if(p==="antigravity")return ja.antigravity||"";return g.join||""}
+ function statusClass(g){if(!g.joined)return"offline";if(g.last_seen_ago!=null&&g.last_seen_ago<120)return"online";if(g.joined)return"idle";return"offline"}
+ function statusLabel(g){if(!g.joined)return"not connected";if(g.last_seen_ago!=null&&g.last_seen_ago<120)return"online";if(g.last_seen_ago!=null)return"idle ("+span(Math.round(g.last_seen_ago/60))+" ago)";return"joined"}
+ function shareCmd(g,p){return platformCmd(g,p)}
  const tabs=mk("div","tabs");for(const p of["claude","codex","antigravity"]){const t=mk("button","tab",{claude:"Claude Code",codex:"Codex",antigravity:"Antigravity"}[p]);t.type="button";if(p===curPlatform)t.setAttribute("aria-selected","true");t.onclick=()=>{curPlatform=p;tabs.querySelectorAll(".tab").forEach(x=>x.removeAttribute("aria-selected"));t.setAttribute("aria-selected","true");list.querySelectorAll("[data-platform]").forEach(el=>{el.textContent=platformCmd(b.agents.find(a=>a.agent_id===el.dataset.agent),p)||"Token not available"})};tabs.append(t)}
  for(const g of b.agents){const row=mk("div","row"),line=mk("div","line"),pre=mk("pre","","");pre.dataset.platform="1";pre.dataset.agent=g.agent_id;pre.textContent=platformCmd(g,curPlatform)||"Not shown again: a woken or account sandbox only keeps a hash of each token. Press \"Get new join lines\" below for fresh ones.";const c=mk("button","copy","Copy");c.type="button";
   c.onclick=async()=>{const txt=platformCmd(g,curPlatform);try{await navigator.clipboard.writeText(txt);c.textContent="Copied"}catch(e){c.textContent="Select"}setTimeout(()=>c.textContent="Copy",1500)};
-  line.append(pre);if(g.join)line.append(c);const who=mk("div","who",g.agent_id+" ("+g.role+")"),jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);row.append(who,line);list.append(row)}
- const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Pick your platform and run one command per agent:"),tabs,list];
+  line.append(pre);if(g.join)line.append(c);
+  const dot=mk("span","status "+statusClass(g));dot.title=statusLabel(g);
+  const who=mk("div","who");who.append(dot,document.createTextNode(g.agent_id+" ("+g.role+")"));const jn=mk("span","jn");jn.dataset.agent=g.agent_id;setJoin(jn,g);who.append(jn);
+  const sh=mk("div","share");if(g.join){
+   const em=mk("button","","Email");em.type="button";em.onclick=()=>{const cmd=shareCmd(g,curPlatform);window.open("mailto:?subject="+encodeURIComponent("Join TeamBus as "+g.agent_id)+"&body="+encodeURIComponent("Run this command in your project folder:\n\n"+cmd+"\n\nThen start your agent."))};
+   const wa=mk("button","","WhatsApp");wa.type="button";wa.onclick=()=>{const cmd=shareCmd(g,curPlatform);window.open("https://wa.me/?text="+encodeURIComponent("Join TeamBus as "+g.agent_id+":\n\n"+cmd))};
+   const sl=mk("button","","Slack");sl.type="button";sl.onclick=()=>{const cmd=shareCmd(g,curPlatform);try{navigator.clipboard.writeText("Join TeamBus as "+g.agent_id+":\n```\n"+cmd+"\n```");sl.textContent="Copied for Slack"}catch(e){}setTimeout(()=>sl.textContent="Slack",1500)};
+   sh.append(em,wa,sl)}
+  const inv=mk("div","invite-row");if(g.join){const inp=mk("input","");inp.type="email";inp.placeholder="teammate@example.com";const send=mk("button","","Send invite");send.type="button";
+   send.onclick=()=>{const email=inp.value.trim();if(!email)return;const cmd=shareCmd(g,curPlatform);window.open("mailto:"+encodeURIComponent(email)+"?subject="+encodeURIComponent("Join our TeamBus as "+g.agent_id)+"&body="+encodeURIComponent("Hey! Join our TeamBus team as "+g.agent_id+" ("+g.role+").\n\nRun this in your project folder:\n\n"+cmd+"\n\nThen start your agent. That's it — no install needed!"));inp.value=""};inv.append(inp,send)}
+  row.append(who,line,sh,inv);list.append(row)}
+ const mcpDl=mk("div","mcp-dl");const dlBtn=mk("button","ghost","Download .mcp.json");dlBtn.type="button";
+ dlBtn.onclick=()=>{const first=b.agents.find(a=>a.join);if(!first)return;const cfg={mcpServers:{teambus:{type:"streamableHttp",url:b.hub_url+"/mcp",headers:{"Authorization":"Bearer <PASTE_YOUR_TOKEN>"}}}};const blob=new Blob([JSON.stringify(cfg,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=".mcp.json";a.click();URL.revokeObjectURL(a.href)};
+ mcpDl.append(mk("span","fl","Zero-config repo setup: drop this file in your project root"),dlBtn);
+ const parts=[meta,mk("p","exp","Ends at "+clock(b.expires_at)+" (in "+span(minsLeft(b))+"), sooner if unused for "+(b.idle_minutes||IDLE_M)+" min. Pick your platform and run one command per agent:"),tabs,list,mcpDl];
  if(NOTICE)parts.splice(2,0,mk("p","notice",NOTICE));
  if(b.agents.length<MAXA){const f=mk("div","addag"),r=mk("div","agrow"),n=mk("input","in"),ro=mk("input","in"),ad=mk("button","ghost","Add agent");
   n.placeholder="agent-name";n.maxLength=31;n.setAttribute("aria-label","New agent name");ro.placeholder="role";ro.maxLength=24;ro.setAttribute("aria-label","New agent role");ro.setAttribute("list","roles");ad.type="button";
