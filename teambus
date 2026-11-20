@@ -299,6 +299,30 @@ def add_agent(a):
     init(argparse.Namespace(dir=str(dest), hub=hub, agent_id=a.agent_id, role=a.role, token=a.token))
     print(f"\nAgent '{a.agent_id}' is ready in {dest}\nStart it with:  cd {dest} && claude\n(each folder is a separate session with its own identity; run `teambus doctor --dir {dest}` to check it)")
 
+def remove_agent_cmd(a):
+    """Undo add-agent: revoke the agent's token on the hub (hub rule: only the agent that CREATED it may, so run this from the creator's folder; use --keep-files to skip the folder step)
+    and delete its folder. A git worktree is removed with `git worktree remove`, which refuses while it has uncommitted work; --force overrides that and is also needed for a plain folder."""
+    root = Path(a.dir).resolve(); c = cfg(root); name = a.agent_id
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name): sys.exit("bad agent id")
+    if name == c["agent"]: sys.exit(f"'{name}' is the agent of THIS folder; run remove-agent from a different agent's folder")
+    dest = Path(a.dest).resolve() if a.dest else root.parent / name
+    if dest.exists() and not a.keep_files:
+        own = {**jload(dest / ".claude" / "settings.json").get("env", {}), **jload(dest / ".claude" / "settings.local.json").get("env", {})}.get("AGENT_ID", "")   # the folder's own files only, never the ambient environment
+        if own != name: sys.exit(f"{dest} is not agent '{name}'s folder (its AGENT_ID is '{own or 'unset'}'); refusing to delete it. Pass --dest.")
+        if not a.yes and (not sys.stdin.isatty() or input(f"Delete {dest} and revoke '{name}' on the hub? [y/N] ").strip().lower() not in ("y", "yes")): sys.exit("cancelled (use --yes to skip the prompt)")
+    try: r = call(c, "api/remove_agent", {"name": name}); print("hub:", f"revoked '{name}'; its token no longer works" if r.get("removed") else r.get("error", r))
+    except Exception as e: print("hub: could not reach it (" + why(e, "request failed") + "); the token is NOT revoked")
+    if a.keep_files or not dest.exists(): return print("folder: left as is" if dest.exists() else f"folder: {dest} does not exist")
+    try: os.kill(int((dest / ".claude" / "teambus-worker.pid").read_text()), 15); print("stopped its worker")
+    except Exception: pass
+    top = subprocess.run(["git", "-C", str(dest), "rev-parse", "--show-toplevel"], capture_output=True, text=True).stdout.strip()
+    if top == str(dest) and (dest / ".git").is_file():          # a linked worktree: .git is a file pointing at the main repo
+        r = subprocess.run(["git", "-C", str(root), "worktree", "remove", *(["--force"] if a.force else []), str(dest)], capture_output=True, text=True)
+        if r.returncode: sys.exit("folder kept: " + r.stderr.strip()[:200] + ("" if a.force else "  (add --force to discard those changes)"))
+    elif a.force: shutil.rmtree(dest)
+    else: sys.exit(f"folder kept: {dest} is not a git worktree; add --force to delete it")
+    print(f"folder: removed {dest}")
+
 def worker(a):
     """Give an agent a heartbeat. A Claude session runs nothing while it waits, so this watches the hub for the agent's unread mail and, when some is waiting, runs ONE headless turn
     (`claude -p`, resuming the same session so context continues) with a fixed prompt that tells the agent to read its inbox. With --spawn it also brings to life agents that its orchestrator
@@ -492,12 +516,14 @@ def connect(a):
 
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("add-agent", add_agent), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("connect", connect), ("on", mode), ("off", mode), ("mode", mode), ("invite", invite), ("revoke", revoke_invite_cmd), ("invites", invites), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("add-agent", add_agent), ("remove-agent", remove_agent_cmd), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("connect", connect), ("on", mode), ("off", mode), ("mode", mode), ("invite", invite), ("revoke", revoke_invite_cmd), ("invites", invites), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
         if n == "add-agent":
             [p.add_argument(f"--{k}", required=True) for k in ("agent-id", "role", "token")]; p.add_argument("--hub", help="default: this folder's hub"); p.add_argument("--dest", help="folder for the new agent (default: ../<agent-id>)")
             p.add_argument("--clone", metavar="URL"); p.add_argument("--empty", action="store_true", help="create a bare folder instead of a git worktree")
+        if n == "remove-agent":
+            p.add_argument("agent_id"); p.add_argument("--dest"); p.add_argument("--keep-files", action="store_true", help="only revoke on the hub"); p.add_argument("--force", action="store_true", help="discard uncommitted work / delete a non-worktree folder"); p.add_argument("--yes", action="store_true")
         if n in ("on", "off", "mode"): p.add_argument("--global", dest="glob", action="store_true")
         if n == "mode": p.add_argument("value", nargs="?", choices=["off", "passive", "full"])
         if n == "connect": p.add_argument("target", nargs="?", choices=["claude", "codex", "antigravity", "all"], default="all")
