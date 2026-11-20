@@ -57,6 +57,8 @@ def init(a):
         lst = s.setdefault("hooks", {}).setdefault(ev, [])
         if not has_hook(lst): lst.append(({"matcher": matcher} if matcher else {}) | {"hooks": [{"type": "command", "command": hook_cmd(mode)}]}); done.append(f"hook {ev}")
     tv = token_var(a.hub, a.agent_id); e = s.setdefault("env", {})
+    prev = e.get("AGENT_ID")
+    if prev and prev != a.agent_id: done.append(f"WARNING: this folder was agent '{prev}' and is now '{a.agent_id}'. One folder holds ONE agent (identity, token and state live in .claude/). For a second agent use: teambus add-agent --agent-id ... --role ... --token ...")
     for k in [k for k in e if k.startswith("TEAMBUS_TOKEN_") and k != tv]: del e[k]          # an earlier join's variable
     e.update({"TEAMBUS_URL": a.hub.rstrip("/"), "TEAMBUS_TOKEN": a.token, tv: a.token, "AGENT_ID": a.agent_id, "AGENT_ROLE": a.role})
     if "teambus" not in s.setdefault("enabledMcpjsonServers", []): s["enabledMcpjsonServers"].append("teambus")
@@ -273,6 +275,30 @@ WAKE_PROMPT = ("TeamBus: you have unread messages from teammates. Call check_inb
 FIRST_WAKE = "TeamBus: you were just created as {agent} ({role}) by a teammate. Your first message (the brief) is in your inbox. "
 DEFAULT_ALLOW = ["mcp__teambus", "Bash(git:*)", "Bash(python:*)", "Bash(python3:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(mkdir:*)"]
 
+def add_agent(a):
+    """A second (third, ...) agent for the same project: its own folder next to this one, joined to the same hub with its own token. A folder can hold only one agent because the
+    identity, token, MCP entry and state file all live in that folder's .claude/. In a git repo the folder is a `git worktree` (shares history, own branch teambus/<id>); otherwise
+    pass --empty for a bare folder, or --clone URL."""
+    root = Path(a.dir).resolve(); c = cfg(root); hub = (a.hub or c["url"]).rstrip("/")
+    if not hub: sys.exit("no hub known: pass --hub or run teambus-join in this folder first")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", a.agent_id): sys.exit("agent id must be lowercase letters, digits and dashes (2-31 chars, starting with a letter)")
+    if a.agent_id == c["agent"]: sys.exit(f"'{a.agent_id}' is already the agent of {root}")
+    dest = Path(a.dest).resolve() if a.dest else root.parent / a.agent_id
+    if dest.exists(): sys.exit(f"{dest} already exists; not touching it (choose --dest)")
+    git = lambda *x: subprocess.run(["git", "-C", str(root), *x], capture_output=True, text=True)
+    if a.clone:
+        r = subprocess.run(["git", "clone", "-q", a.clone, str(dest)], capture_output=True, text=True)
+        if r.returncode: sys.exit("git clone failed: " + r.stderr.strip()[:200])
+    elif git("rev-parse", "--git-dir").returncode == 0 and not a.empty:
+        r = git("worktree", "add", "-q", str(dest), "-b", f"teambus/{a.agent_id}")
+        if r.returncode: r = git("worktree", "add", "-q", "--detach", str(dest))          # branch name taken: fall back to a detached checkout
+        if r.returncode: sys.exit("git worktree failed: " + r.stderr.strip()[:200])
+    else:
+        if not a.empty: sys.exit(f"{root} is not a git repository: pass --empty (new bare folder) or --clone URL")
+        dest.mkdir(parents=True)
+    init(argparse.Namespace(dir=str(dest), hub=hub, agent_id=a.agent_id, role=a.role, token=a.token))
+    print(f"\nAgent '{a.agent_id}' is ready in {dest}\nStart it with:  cd {dest} && claude\n(each folder is a separate session with its own identity; run `teambus doctor --dir {dest}` to check it)")
+
 def worker(a):
     """Give an agent a heartbeat. A Claude session runs nothing while it waits, so this watches the hub for the agent's unread mail and, when some is waiting, runs ONE headless turn
     (`claude -p`, resuming the same session so context continues) with a fixed prompt that tells the agent to read its inbox. With --spawn it also brings to life agents that its orchestrator
@@ -466,9 +492,12 @@ def connect(a):
 
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
-    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("connect", connect), ("on", mode), ("off", mode), ("mode", mode), ("invite", invite), ("revoke", revoke_invite_cmd), ("invites", invites), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
+    for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("add-agent", add_agent), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("connect", connect), ("on", mode), ("off", mode), ("mode", mode), ("invite", invite), ("revoke", revoke_invite_cmd), ("invites", invites), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
         p = sub.add_parser(n); p.add_argument("--dir", default="."); p.set_defaults(f=f)
         if n == "init": [p.add_argument(f"--{k}", required=True) for k in ("hub", "agent-id", "role", "token")]
+        if n == "add-agent":
+            [p.add_argument(f"--{k}", required=True) for k in ("agent-id", "role", "token")]; p.add_argument("--hub", help="default: this folder's hub"); p.add_argument("--dest", help="folder for the new agent (default: ../<agent-id>)")
+            p.add_argument("--clone", metavar="URL"); p.add_argument("--empty", action="store_true", help="create a bare folder instead of a git worktree")
         if n in ("on", "off", "mode"): p.add_argument("--global", dest="glob", action="store_true")
         if n == "mode": p.add_argument("value", nargs="?", choices=["off", "passive", "full"])
         if n == "connect": p.add_argument("target", nargs="?", choices=["claude", "codex", "antigravity", "all"], default="all")
@@ -498,7 +527,7 @@ def main():
     # Tokens are random URL-safe strings, so about 1 in 64 starts with "-", which argparse would take for an option ("expected one argument"). Bind each value flag to its value first.
     argv, out, i = sys.argv[1:], [], 0
     while i < len(argv):
-        if argv[i] in ("--hub", "--agent-id", "--role", "--token") and i + 1 < len(argv): out.append(f"{argv[i]}={argv[i + 1]}"); i += 2
+        if argv[i] in ("--hub", "--agent-id", "--role", "--token", "--dest", "--clone") and i + 1 < len(argv): out.append(f"{argv[i]}={argv[i + 1]}"); i += 2
         else: out.append(argv[i]); i += 1
     a = ap.parse_args(out); a.f(a)
 
