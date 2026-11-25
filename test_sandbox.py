@@ -119,6 +119,12 @@ def test_landing_page_is_served_with_live_limits(mgr):
     assert st == 200 and b"TeamBus sandbox" in html and b'id="b"' in html
     assert b"90 minutes" in html and b"7 new sandboxes per hour, 4 at once" in html and b"Up to 6 agents each" in html and b"2 MB" in html and b"https://example.test/i.sh" in html and b",MAXA=6,IDLE_M=120,MAXMIN=24*60;" in html and b"__" not in html.replace(b"__proto__", b"")   # every placeholder filled from the real config
 
+def test_a_sandbox_can_never_read_the_hosts_code_even_if_the_host_sets_a_repo(mgr, tmp_path):
+    (tmp_path / "host_secret.py").write_text("TOP_SECRET = 1\n"); m = mgr(TEAMBUS_REPO=str(tmp_path))
+    st, sb = jreq(m.url + "/new", "POST"); assert st == 201; viewer = sb["web_view"].split("token=")[1]
+    st, body = jreq(sb["hub_url"] + "/api/code/tree", token=viewer); assert st == 404 and "no repo configured" in json.dumps(body)
+
+
 def test_assets_served_from_a_fixed_whitelist(mgr):
     m = mgr()
     for name, ctype in (("PixelifySans-Variable.woff2", "font/woff2"), ("SpaceGrotesk-Variable.woff2", "font/woff2"), ("GeistMono-Variable.woff2", "font/woff2"), ("pixel.css", "text/css"), ("pixel.js", "javascript")):

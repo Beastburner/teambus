@@ -41,7 +41,7 @@
     const logo = document.createElement("span"); logo.className = "logo"; logo.append(icon("rocket", 2));
     const pill = document.createElement("nav"); pill.className = "pill"; pill.setAttribute("aria-label", "TeamBus");
     if (active === "sandbox") pill.append(link("sandbox", "sandbox", "./"), logo, link("github", "source", "https://github.com/Beastburner/teambus"));
-    else pill.append(link("team", "team", "./" + qs), link("brain", "brain", "brain" + qs), logo, link("talk", "talk", "conversations" + qs), link("agents", "agents", "./" + qs + "#sec-team"));
+    else pill.append(link("team", "team", "./" + qs), link("brain", "brain", "brain" + qs), logo, link("memory", "memory", "memory" + qs), link("talk", "talk", "conversations" + qs));
     host.className = "topbar"; host.replaceChildren(pill);
   }
   function foot(extra) {

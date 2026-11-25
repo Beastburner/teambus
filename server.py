@@ -4,6 +4,7 @@ TEAMBUS_TOKEN is a shared read-only token (web view / status). TEAMBUS_NOAUTH=1 
 import asyncio, base64, difflib, hashlib, hmac, json, os, re, secrets, sqlite3, sys, threading, time
 from urllib.parse import parse_qs
 import uvicorn
+import codemap
 from mcp.server.fastmcp import FastMCP, Context, Image
 from starlette.responses import HTMLResponse, JSONResponse
 
@@ -15,6 +16,8 @@ ADMIN, ADMIN_AGENT = E("TEAMBUS_ADMIN_TOKEN"), E("TEAMBUS_ADMIN_AGENT", "orchest
 INTENT_TTL, CONTRACT_TTL = float(E("TEAMBUS_INTENT_TTL", 4 * 3600)), float(E("TEAMBUS_CONTRACT_TTL", 3 * 86400))
 ACTIVE, OFFLINE = float(E("TEAMBUS_ACTIVE_SECS", 900)), float(E("TEAMBUS_OFFLINE_SECS", 86400))
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
+REPO_DIR = E("TEAMBUS_REPO", "")        # optional project folder the Memory view may read (read-only); empty = the Memory view shows setup help
+
 mcp = FastMCP("teambus", host=E("HOST", "0.0.0.0"), port=int(E("PORT", 8765)))
 
 SCHEMA = {
@@ -154,7 +157,7 @@ class Auth:
         if scope["path"] == "/invite" and scope["method"] == "GET": return await s.app(scope, receive, send)
         if not who and re.fullmatch(ASSET_RE, scope["path"][len("/assets/"):] if scope["path"].startswith("/assets/") else "-") and scope["method"] == "GET": return await s.app(scope, receive, send)
         if not who: return await JSONResponse({"error": "unauthorized"}, 401)(scope, receive, send)
-        if who.get("viewer") and not (scope["method"] == "GET" and (scope["path"] in ("/", "/brain", "/invite", "/agent", "/conversations", "/api/status", "/api/conversations", "/api/thread") or re.fullmatch(r"/api/attachment/\d+", scope["path"]) or scope["path"] == "/api/agent_detail")):
+        if who.get("viewer") and not (scope["method"] == "GET" and (scope["path"] in ("/", "/brain", "/invite", "/agent", "/conversations", "/memory", "/api/status", "/api/conversations", "/api/thread") or re.fullmatch(r"/api/attachment/\d+", scope["path"]) or scope["path"] == "/api/agent_detail" or (scope["path"].startswith("/api/code/") and not who.get("invite_email")))):
             return await JSONResponse({"error": "viewer token is read-only"}, 403)(scope, receive, send)
         scope["teambus"] = who
         if who.get("agent_id"):
@@ -735,6 +738,51 @@ async def _thread_api(request):
     if not mid: return JSONResponse({"error": "id parameter required"}, 400)
     try: return JSONResponse(thread(int(mid), ctx=request))
     except ValueError: return JSONResponse({"error": "id must be a number"}, 400)
+
+# ---- Memory view: read-only code index of TEAMBUS_REPO (see codemap.py). Needs an agent, admin or the shared viewer token; invite viewers never get code. ----
+_REPO = None
+def _repo():
+    global _REPO
+    if not REPO_DIR: raise codemap.CodeError("no repo configured: start the hub with TEAMBUS_REPO=/path/to/project", 404)
+    if _REPO is None or _REPO.root != os.path.realpath(REPO_DIR):
+        if not os.path.isdir(REPO_DIR): raise codemap.CodeError("TEAMBUS_REPO is not a folder", 404)
+        _REPO = codemap.Repo(REPO_DIR)
+    return _REPO
+
+def _code(fn):
+    async def h(request):
+        try: return JSONResponse(await asyncio.to_thread(fn, request))
+        except codemap.CodeError as e: return JSONResponse({"error": str(e), "configured": bool(REPO_DIR)}, e.status)
+    return h
+
+def _code_tree(r): return _repo().tree()
+def _code_file(r):
+    repo = _repo(); p = r.query_params.get("path", ""); d = repo.read(p); d["info"] = codemap.file_info(repo.analysis(), p); return d
+def _code_summary(r):
+    a = _repo().analysis(); return {"stats": a["stats"], "entries": codemap.entries(a), "tables": sorted(a["tables"]), "routes": a["routes"][:200]}
+def _code_graph(r): return _repo().graph()
+def _code_diagram(r): return _repo().diagram(r.query_params.get("kind", ""), r.query_params.get("entry", ""))
+
+mcp.custom_route("/api/code/tree", methods=["GET"])(_code(_code_tree))
+mcp.custom_route("/api/code/file", methods=["GET"])(_code(_code_file))
+mcp.custom_route("/api/code/summary", methods=["GET"])(_code(_code_summary))
+mcp.custom_route("/api/code/diagram", methods=["GET"])(_code(_code_diagram))
+mcp.custom_route("/api/code/graph", methods=["GET"])(_code(_code_graph))
+
+@mcp.custom_route("/api/code/design.md", methods=["GET"])
+async def _code_design(request):
+    from starlette.responses import PlainTextResponse
+    try:
+        s = status()
+        extra = {"Decisions": [f"**{d['topic']}**: {d['text']} ({d['agent_id']})" for d in (s.get("decisions") or [])[:30]],
+                 "Open contracts": [f"`{c['name']}` by {c['agent_id']}: {(c['spec'] or '')[:160]}" for c in (s.get("contracts") or [])[:30]]}
+        return PlainTextResponse(await asyncio.to_thread(lambda: _repo().design_md(extra)), headers={"Content-Disposition": 'attachment; filename="design.md"', "X-Content-Type-Options": "nosniff"})
+    except codemap.CodeError as e: return JSONResponse({"error": str(e)}, e.status)
+
+@mcp.custom_route("/memory", methods=["GET"])
+async def _memory(request):
+    f = os.path.join(os.path.dirname(WEB), "memory.html")
+    return HTMLResponse(open(f).read()) if os.path.exists(f) else JSONResponse({"error": "no memory page"}, 404)
 
 @mcp.custom_route("/agent", methods=["GET"])
 async def _agent_page(request):

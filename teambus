@@ -531,10 +531,12 @@ def local(a):
     act = a.action; LOCAL.mkdir(parents=True, exist_ok=True); os.chmod(LOCAL, 0o700); lc = local_cfg()
     if act == "install":
         port = a.port or lc.get("port") or 8765
-        lc = {"port": port, "url": f"http://127.0.0.1:{port}", "admin_token": lc.get("admin_token") or secrets_token()}
+        repo = str(Path(a.repo).expanduser().resolve()) if getattr(a, "repo", None) else lc.get("repo", "")
+        if repo and not Path(repo).is_dir(): sys.exit(f"--repo {repo} is not a folder")
+        lc = {"port": port, "url": f"http://127.0.0.1:{port}", "admin_token": lc.get("admin_token") or secrets_token(), **({"repo": repo} if repo else {})}
         (LOCAL / "local.json").write_text(json.dumps(lc, indent=1)); os.chmod(LOCAL / "local.json", 0o600)
         env = {"HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(LOCAL / "hub.db"), "TEAMBUS_TOKENS": str(LOCAL / "tokens.json"), "TEAMBUS_ADMIN_TOKEN": lc["admin_token"], "TEAMBUS_ADMIN_AGENT": "orchestrator",
-               "TEAMBUS_PUBLIC_URL": lc["url"], "TEAMBUS_MAX_CREATED": "500", "TEAMBUS_MAX_AGENTS": "1000", "TEAMBUS_INTENT_TTL": "14400"}
+               "TEAMBUS_PUBLIC_URL": lc["url"], "TEAMBUS_MAX_CREATED": "500", "TEAMBUS_MAX_AGENTS": "1000", "TEAMBUS_INTENT_TTL": "14400", **({"TEAMBUS_REPO": lc["repo"]} if lc.get("repo") else {})}
         ef = LOCAL / "hub.env"; ef.write_text("".join(f"{k}={v}\n" for k, v in env.items())); os.chmod(ef, 0o600)
         py = _hub_python(); cmd = [py, str(HERE / "server.py")]
         if _systemd_user():
@@ -546,7 +548,7 @@ def local(a):
             with open(LOCAL / "hub.log", "a") as lf: p = subprocess.Popen(cmd, cwd=HERE, env={**os.environ, **env}, start_new_session=True, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
             (LOCAL / "hub.pid").write_text(str(p.pid)); how = f"a background process (pid {p.pid}); no systemd here, so run `teambus local start` after a reboot"
         if not _hub_up(lc["url"], 60): sys.exit(f"the hub did not come up; see {LOCAL / 'hub.log'} (or: journalctl --user -u teambus-hub)")
-        print(f"TeamBus hub is running at {lc['url']} as {how}.\nData: {LOCAL}.\nNext, in each project folder: teambus local join   (then plain `claude` works; `teambus session NAME` adds another agent in the same folder)")
+        print(f"TeamBus hub is running at {lc['url']} as {how}.\nData: {LOCAL}.\n{('Memory view reads ' + lc['repo'] + ' (read-only): ' + lc['url'] + '/memory?token=<your viewer or agent token>.' + chr(10)) if lc.get('repo') else 'Memory view (code, diagrams): re-run with --repo /path/to/project.' + chr(10)}Next, in each project folder: teambus local join   (then plain `claude` works; `teambus session NAME` adds another agent in the same folder)")
     elif act == "start":
         if not lc: sys.exit("not installed: run `teambus local install`")
         if _systemd_user() and UNIT.exists(): subprocess.run(["systemctl", "--user", "start", "teambus-hub.service"])
@@ -637,7 +639,7 @@ def main():
             p.add_argument("--max-nudges", type=int, default=3); p.add_argument("--once", action="store_true", help="exit after the first nudge")
             p.add_argument("--tmux", metavar="PANE", help="wake the idle session by typing one fixed line into this tmux pane (target like 0:1.0), only if it is running claude")
             p.add_argument("--exec", metavar="CMD", help="run this shell command to wake the session (gets TEAMBUS_COUNT, TEAMBUS_FROM, TEAMBUS_AGENT)")
-    pl = sub.add_parser("local", help="the laptop hub: install | start | stop | status | join"); pl.add_argument("action", choices=["install", "start", "stop", "status", "join"]); pl.add_argument("--dir", default="."); pl.add_argument("--port", type=int); pl.add_argument("--agent-id"); pl.add_argument("--role", default="dev"); pl.set_defaults(f=local)
+    pl = sub.add_parser("local", help="the laptop hub: install | start | stop | status | join"); pl.add_argument("action", choices=["install", "start", "stop", "status", "join"]); pl.add_argument("--dir", default="."); pl.add_argument("--port", type=int); pl.add_argument("--repo", help="install: project folder the Memory view may read (read-only)"); pl.add_argument("--agent-id"); pl.add_argument("--role", default="dev"); pl.set_defaults(f=local)
     ps = sub.add_parser("session", help="start claude here as its own agent: teambus session [NAME] [--role R] [-- claude args]"); ps.add_argument("name", nargs="?"); ps.add_argument("--dir", default="."); ps.add_argument("--role", default="dev"); ps.add_argument("--claude"); ps.add_argument("claude_args", nargs=argparse.REMAINDER); ps.set_defaults(f=session)
     # Tokens are random URL-safe strings, so about 1 in 64 starts with "-", which argparse would take for an option ("expected one argument"). Bind each value flag to its value first.
     argv, out, i = sys.argv[1:], [], 0

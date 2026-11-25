@@ -59,6 +59,16 @@ teambus local status             # who is on the hub and what they are doing
 - Everything is also callable by Claude itself: the `orchestrator` agent (admin token in `~/.teambus/local/local.json`) has `create_agent`, `list_agents`, `team_status`, and so on. Without systemd, `teambus local install` runs the hub as a background process; run `teambus local start` after a reboot.
 - It never stops an agent: hooks default to **passive** (advice only, nothing is denied and no stop is held), every hook call has a 3 s timeout and swallows errors, and a down hub just means no coordination. `teambus off` pauses all hook traffic; `teambus mode full` opts into conflict blocks.
 
+## Memory view: your code as a map, plus diagrams (read-only)
+Point the hub at a project folder and the **Memory** page (`/memory`) shows it: a force-directed map of every file (imports, doc links and `[[wikilinks]]`, and the tables files touch), a code viewer with a live "who is editing this" marker, and one-click diagrams: **flow** (which file imports which), **sequence** (calls through a route or `main()`, or the agents' own messages), **ER** (from `CREATE TABLE`, `.sql` files and SQLAlchemy/Django models; `<name>_id` columns are drawn as dashed, inferred relations), **classes**, and a **design pack** (one Markdown file with every diagram as Mermaid, routes and table DDL). Each diagram can be copied as Mermaid or saved as `.svg` / `.mmd`.
+```bash
+teambus local install --repo /path/to/project          # laptop hub
+TEAMBUS_REPO=/path/to/project python server.py         # any hub (Docker: mount the folder and set the variable)
+```
+- Open `https://<hub>/memory?token=<TEAMBUS_TOKEN or an agent token>`. Invite viewers never get code, and a public **sandbox never reads the host's `TEAMBUS_REPO`** (it is forced empty for every sandbox).
+- Never listed or read: `.env*`, keys and certificates, `tokens.json`, databases, `node_modules`, `.git`, virtualenvs, binaries, symlinks, and anything that resolves outside the folder. Files over 300 KB are cut; at most 3000 files are indexed.
+- Anyone with a token that can open Memory can read the whole indexed folder, so treat it like repo access.
+
 ## Let Claude create the agents (orchestrator token, no shell)
 Set `TEAMBUS_ADMIN_TOKEN` (24+ characters, a secret like any token) on the hub. It is the token of one agent, `orchestrator` (rename it with `TEAMBUS_ADMIN_AGENT`), which may call `create_agent`; with it a fresh hub needs no `add-agent` step and no shell. Point your Claude at the hub with it:
 ```bash

@@ -33,16 +33,20 @@ svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--cream);font
 .msg .body{min-width:0;font-size:13px}.msg .head{display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}.msg .who{color:var(--c);font-weight:600}.msg .arrow,.msg .ts{color:var(--mut);font-size:11px}
 .feed-item{padding:6px 0;border-bottom:1px dashed var(--line-2);font-size:12px;display:flex;gap:6px;align-items:baseline}.feed-item:last-child{border-bottom:0}
 .feed-item .kind{font:500 10px var(--mono);color:var(--cream-2);border:1px solid var(--line-2);padding:2px 5px;border-radius:3px;white-space:nowrap}.feed-item .who{color:var(--c);font-weight:600;white-space:nowrap}.feed-item .what{flex:1;overflow-wrap:anywhere}.feed-item .ts{color:var(--mut);white-space:nowrap}
-.sec-h{display:flex;justify-content:space-between;align-items:center}
+.status{gap:10px}#flt{max-width:340px;margin-right:auto;font:12px var(--mono);padding:7px 10px}
+.tbtn{font:500 11px var(--px);color:var(--cream);background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer}.tbtn:hover,.tbtn[aria-pressed=true]{border-color:var(--cream)}.tbtn[aria-pressed=true]{background:var(--cream);color:var(--ink)}
+section>h2{cursor:pointer;user-select:none}section>h2::after{content:"−";margin-left:8px;color:var(--mut)}section.fold>h2::after{content:"+"}section.fold>:not(h2){display:none!important}
+.fhide{display:none!important}
+.hero .acts .btn{white-space:nowrap}
 </style></head><body>
 <div class="stage">
 <header id="nav"></header>
-<div class="status"><span id="upd"></span></div>
+<div class="status"><input id="flt" class="in" type="search" placeholder="filter by agent, task or text… ( / )" aria-label="Filter the dashboard" autocomplete="off"><button class="tbtn" id="pz" type="button" aria-pressed="false" title="Stop auto-refresh">pause</button><span id="upd"></span></div>
 <div id="err"></div>
 <h1 class="title">TeamBus<small>one hub for every agent. no collisions, no guessing.</small></h1>
 <div class="frame hero"><canvas id="scene" aria-label="Pixel art: a rainy neon block of flats"></canvas>
  <div class="note" id="heronote">Connecting to the hub…</div>
- <div class="acts"><a class="btn" id="brain-link" href="brain">open the brain</a><a class="btn pix" id="conv-link" href="conversations">read the talk</a></div></div>
+ <div class="acts"><a class="btn" id="mem-link" href="memory">open memory</a><a class="btn" id="brain-link" href="brain">open the brain</a><a class="btn pix" id="conv-link" href="conversations">read the talk</a></div></div>
 <div class="dock" id="stats" role="list" aria-label="At a glance"></div>
 <main>
  <div class="cmd-grid">
@@ -79,7 +83,17 @@ const _q = new URLSearchParams(location.search), token = _q.get("token") || "", 
 const $ = (id) => document.getElementById(id);
 const tq = token ? "token=" + encodeURIComponent(token) : invite ? "invite=" + encodeURIComponent(invite) : "";
 px.nav("team"); px.foot("read-only team view"); px.scene($("scene"));
-for (const [id, p] of [["brain-link", "brain"], ["conv-link", "conversations"]]) $(id).href = p + (tq ? "?" + tq : "");
+{ // usability: filter, collapsible sections, pause, "/" to search
+  const FOLD = "tb.fold", folded = new Set(JSON.parse(localStorage.getItem(FOLD) || "[]"));
+  document.querySelectorAll("main section").forEach((sec, i) => { const key = sec.id || "s" + i, h = sec.querySelector(":scope > h2"); if (!h) return; if (folded.has(key)) sec.classList.add("fold"); h.tabIndex = 0; h.setAttribute("role", "button");
+    const tg = () => { sec.classList.toggle("fold"); sec.classList.contains("fold") ? folded.add(key) : folded.delete(key); try { localStorage.setItem(FOLD, JSON.stringify([...folded])); } catch (e) {} h.setAttribute("aria-expanded", !sec.classList.contains("fold")); };
+    h.onclick = tg; h.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); tg(); } }; h.setAttribute("aria-expanded", !sec.classList.contains("fold")); });
+  window.applyFilter = () => { const t = $("flt").value.trim().toLowerCase(); document.querySelectorAll("main li, main .card, main .feed-item, main .msg, main .fchip").forEach((e) => e.classList.toggle("fhide", !!t && !e.textContent.toLowerCase().includes(t))); };
+  $("flt").oninput = () => applyFilter();
+  window.paused = false; $("pz").onclick = () => { paused = !paused; $("pz").setAttribute("aria-pressed", paused); $("pz").textContent = paused ? "resume" : "pause"; if (!paused) load(); };
+  addEventListener("keydown", (e) => { if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $("flt").focus(); } else if (e.key === "Escape" && document.activeElement === $("flt")) { $("flt").value = ""; applyFilter(); $("flt").blur(); } });
+}
+for (const [id, p] of [["brain-link", "brain"], ["conv-link", "conversations"], ["mem-link", "memory"]]) $(id).href = p + (tq ? "?" + tq : "");
 const ago = (t, now) => { const s = Math.max(0, now - t); return s < 90 ? Math.round(s) + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : s < 129600 ? Math.round(s / 3600) + "h ago" : Math.round(s / 86400) + "d ago"; };
 function fill(id, rows, render) {  // textContent only: nothing from the hub is ever parsed as HTML
   const ul = $(id); ul.replaceChildren();
@@ -235,8 +249,8 @@ async function load() {
     hideIf("sec-gallery", !(d.attachments || []).length);
     hideIf("sec-feed", !(d.feed || []).length);
     hideIf("sec-timeline", !(d.events || []).length);
-    const u = $("upd"); u.replaceChildren(dom("span", "live"), "updated " + new Date().toLocaleTimeString());
+    const u = $("upd"); u.replaceChildren(dom("span", "live"), "updated " + new Date().toLocaleTimeString()); applyFilter();
   } catch (e) { $("err").textContent = e.message; $("err").style.display = "block"; }
 }
-load(); setInterval(load, 4000);
+load(); setInterval(() => { if (!window.paused) load(); }, 4000);
 </script></body></html>

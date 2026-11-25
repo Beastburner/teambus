@@ -51,7 +51,7 @@ a.lnk{color:var(--neon);text-decoration:none}
 <script src="assets/pixel.js"></script>
 <script>
 "use strict";
-px.nav("agents"); px.foot("read-only agent view");
+px.nav("team"); px.foot("read-only agent view");
 const Q = new URLSearchParams(location.search), token = Q.get("token") || "", invite = Q.get("invite") || "", $ = (id) => document.getElementById(id);
 const tq = token ? "?token=" + encodeURIComponent(token) : invite ? "?invite=" + encodeURIComponent(invite) : "", AUTH = token ? { Authorization: "Bearer " + token } : {};
 const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };

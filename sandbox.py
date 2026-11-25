@@ -215,7 +215,8 @@ async def launch(sid=None, toks=None, viewer_hash=None, db=None, folder=None):
         toks = toks or {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in AGENTS}; viewer = secrets.token_urlsafe(18)
         (d / "tokens.json").write_text(json.dumps(toks)); (d / "tokens.json").chmod(0o600)
         if db is not None: (d / "hub.db").write_bytes(db)
-        env = {**os.environ, "HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(d / "hub.db"), "TEAMBUS_TOKENS": str(d / "tokens.json"), "TEAMBUS_TOKEN": viewer, "TEAMBUS_MAX_AGENTS": str(MAX_AGENTS),
+        env = {**os.environ, "TEAMBUS_REPO": "", "HOST": "127.0.0.1",   # a sandbox is a public stranger's hub: it must never read the host's code
+                 "PORT": str(port), "TEAMBUS_DB": str(d / "hub.db"), "TEAMBUS_TOKENS": str(d / "tokens.json"), "TEAMBUS_TOKEN": viewer, "TEAMBUS_MAX_AGENTS": str(MAX_AGENTS),
                **({"TEAMBUS_TOKEN_SHA256": viewer_hash} if viewer_hash else {})}
         proc = subprocess.Popen([sys.executable, str(HERE / "server.py")], cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
         sb = dict(id=sid, dir=d, port=port, proc=proc, expires=None, hits=collections.deque(), tokens=toks, viewer=viewer, viewer_hash=viewer_hash or sha(viewer))   # viewer: what this service uses itself

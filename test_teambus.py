@@ -1344,6 +1344,35 @@ def test_assets_missing_woff2_is_404(web):   # asset requests are anonymous in p
     c, _ = web; assert c.get("/assets/Nope.woff2").status_code == 404 and c.get("/assets/Nope.woff2", headers=AGENT).status_code == 404
 
 
+# ---- Memory view: read-only code API ----
+@pytest.fixture()
+def coderepo(srv, web, tmp_path, monkeypatch):
+    c, d = web; r = tmp_path / "proj"; (r / "app").mkdir(parents=True)
+    (r / "app" / "a.py").write_text("from app import b\ndef f(): return b.g()\n"); (r / "app" / "b.py").write_text("def g(): return 1\n"); (r / ".env").write_text("SECRET=1\n"); (r / "tokens.json").write_text("{}")
+    (d / "memory.html").write_text("<html>memory</html>"); monkeypatch.setattr(srv, "REPO_DIR", str(r)); monkeypatch.setattr(srv, "_REPO", None); return c
+
+
+def test_code_api_serves_tree_file_graph_and_diagrams_to_the_viewer_token(coderepo):
+    c = coderepo; t = c.get("/api/code/tree", headers=VIEW).json(); assert {f["path"] for f in t["files"]} == {"app/a.py", "app/b.py"}
+    f = c.get("/api/code/file?path=app/a.py", headers=VIEW).json(); assert "def f" in f["text"] and f["info"]["imports"] == ["app/b.py"]
+    assert {(e["from"], e["to"]) for e in c.get("/api/code/graph", headers=VIEW).json()["edges"]} == {("app/a.py", "app/b.py")}
+    assert c.get("/api/code/diagram?kind=flow", headers=VIEW).json()["mermaid"].startswith("flowchart")
+    assert c.get("/api/code/design.md", headers=VIEW).text.startswith("# Design notes") and c.get("/memory", headers=VIEW).status_code == 200
+
+
+@pytest.mark.parametrize("path", [".env", "tokens.json", "../proj/.env", "..%2F..%2Fetc%2Fpasswd", "/etc/passwd", "nope.py"])
+def test_code_api_never_reads_secrets_or_outside_the_repo(coderepo, path):
+    assert coderepo.get(f"/api/code/file?path={path}", headers=AGENT).status_code in (400, 403, 404)
+
+
+def test_code_api_needs_a_token_and_is_read_only_for_viewers(coderepo):
+    assert coderepo.get("/api/code/tree").status_code == 401 and coderepo.post("/api/code/tree", headers=VIEW).status_code == 403
+
+
+def test_code_api_is_off_without_a_repo_and_says_how_to_turn_it_on(web, srv, monkeypatch):
+    c, _ = web; monkeypatch.setattr(srv, "REPO_DIR", ""); r = c.get("/api/code/tree", headers=VIEW); assert r.status_code == 404 and "TEAMBUS_REPO" in r.json()["error"]
+
+
 @pytest.mark.parametrize("name,ctype", [("pixel.css", "text/css"), ("pixel.js", "text/javascript")])
 def test_assets_serves_the_two_theme_files_without_a_token(web, name, ctype):
     c, d = web; (d / "assets" / name).write_bytes(b"/* theme */")

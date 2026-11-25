@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus Memory</title>
+<link rel="stylesheet" href="assets/pixel.css">
+<style>
+[hidden]{display:none!important}
+.bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;margin:14px 0}
+.bar h1{font:700 clamp(26px,4vw,44px)/1 var(--px);letter-spacing:.07em;text-transform:uppercase;margin:0 10px 0 0}
+.bar .grow{flex:1}
+#upd{color:var(--mut);font:11px var(--mono)}
+.tools{display:flex;flex-wrap:wrap;gap:8px}
+.tbtn{font:500 12px var(--px);letter-spacing:.03em;color:var(--cream);background:transparent;border:1px solid var(--line);border-radius:999px;padding:8px 14px;cursor:pointer;display:inline-flex;gap:8px;align-items:center;text-decoration:none}
+.tbtn:hover{border-color:var(--cream)}.tbtn.on{background:var(--cream);color:var(--ink);border-color:var(--cream)}.tbtn:disabled{opacity:.4;cursor:not-allowed}
+.mem{display:grid;grid-template-columns:270px minmax(0,1fr) 300px;gap:14px;align-items:start}
+@media(max-width:1100px){.mem{grid-template-columns:1fr}.pane-tree{max-height:42vh}}
+.pane{background:var(--ink-2);border:1px solid var(--line-2);border-radius:14px;min-width:0;display:flex;flex-direction:column}
+.pane-tree{height:calc(100vh - 230px);min-height:360px}.pane-code{height:calc(100vh - 230px);min-height:360px}
+.side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.search{margin:12px 12px 6px;position:relative}.search input{width:100%;background:var(--ink);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:8px 34px 8px 10px;font:12px var(--mono)}
+.search kbd{position:absolute;right:8px;top:7px;font:11px var(--mono);color:var(--mut);border:1px solid var(--line-2);border-radius:4px;padding:0 5px}
+.tree{overflow:auto;padding:4px 6px 12px;flex:1;scrollbar-width:thin;scrollbar-color:var(--line) transparent;font:12px/1.3 var(--mono)}
+.tree .row{display:flex;align-items:center;gap:6px;width:100%;text-align:left;background:none;border:0;color:var(--cream-2);padding:4px 6px;border-radius:5px;cursor:pointer;font:inherit;white-space:nowrap}
+.tree .row:hover{background:var(--chip)}.tree .row.sel{background:var(--cream);color:var(--ink)}
+.tree .row .nm{overflow:hidden;text-overflow:ellipsis;flex:1}.tree .dir{color:var(--cream)}
+.tree .sub{margin-left:12px;border-left:1px dashed var(--line-2);padding-left:4px}
+.tree .ag{width:8px;height:8px;flex:none}
+.tree .more{color:var(--mut);padding:6px}
+.cv-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px dashed var(--line-2)}
+.cv-head b{font:500 14px var(--px);overflow-wrap:anywhere}.cv-head .m{font:11px var(--mono)}
+.cv-head .sp{flex:1}
+.banner{margin:10px 14px 0;padding:8px 12px;border:1px solid var(--amber);border-radius:8px;color:var(--amber);font-size:12px}
+.code{display:flex;overflow:auto;flex:1;background:var(--ink);border-radius:0 0 14px 14px;font:12.5px/20px var(--mono);scrollbar-width:thin;scrollbar-color:var(--line) transparent;position:relative}
+.code pre{margin:0;padding:10px 0;background:none;border:0;border-radius:0;max-height:none;overflow:visible;color:var(--cream);font:inherit;white-space:pre;tab-size:4}
+.code .gut{position:sticky;left:0;background:var(--ink);color:var(--mut);text-align:right;padding:10px 10px 10px 12px;border-right:1px solid var(--line-2);user-select:none;z-index:1}
+.code .src{padding:10px 18px 10px 14px;flex:1}
+.code .hl{position:absolute;left:0;right:0;height:20px;background:rgba(94,230,216,.14);border-left:3px solid var(--neon);pointer-events:none}
+.c{color:#8a8a72;font-style:italic}.s{color:#9ad47a}.k{color:#f0b24a}.n{color:#5ee6d8}
+.empty-state{padding:34px 22px;text-align:center;color:var(--cream-2)}
+.empty-state h3{font:700 20px var(--px);color:var(--cream);margin:0 0 10px}
+.empty-state pre{display:inline-block;text-align:left;max-width:100%;overflow:auto}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 4px}
+.chip{font:11px var(--mono);border:1px solid var(--line-2);background:var(--chip);color:var(--cream);border-radius:5px;padding:3px 7px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chip:hover{border-color:var(--cream)}
+.side .card h2{margin-bottom:12px}.side .card{padding-bottom:14px}.kv{font:11px var(--mono);color:var(--mut);margin:8px 0 4px}
+.mi{padding:7px 0;border-top:1px dashed var(--line-2);font-size:12px;overflow-wrap:anywhere}.mi:first-child{border:0}.mi b{color:var(--cream)}.mi .m{display:block}
+/* graph */
+.vtabs{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-bottom:1px dashed var(--line-2)}
+.vtabs .sp{flex:1}.vtabs small{font:11px var(--mono);color:var(--mut)}
+.tbtn.sm{padding:5px 10px;font-size:11px}
+#gview{position:relative;flex:1;min-height:0;display:none;background:#101713;border-radius:0 0 14px 14px;overflow:hidden}
+#gview.on{display:block}#cview{display:none;flex:1;min-height:0;flex-direction:column}#cview.on{display:flex}
+#gc{position:absolute;inset:0;width:100%;height:100%;cursor:grab;touch-action:none}#gc.drag{cursor:grabbing}#gc.hand{cursor:pointer}
+.gctl{position:absolute;left:10px;top:10px;display:flex;gap:6px;flex-wrap:wrap;z-index:2;max-width:calc(100% - 20px)}
+.gctl select{background:var(--ink);color:var(--cream);border:1px solid var(--line);border-radius:999px;padding:5px 8px;font:11px var(--mono)}
+.glegend{position:absolute;left:12px;bottom:10px;display:flex;gap:4px 12px;flex-wrap:wrap;font:10px var(--mono);color:var(--cream-2);z-index:2;pointer-events:none;max-width:70%}.glegend i{display:inline-block;width:8px;height:8px;margin-right:5px}
+#gtip{position:absolute;pointer-events:none;background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:11px/1.4 var(--mono);max-width:280px;overflow-wrap:anywhere;opacity:0;transition:opacity .1s;z-index:3}
+.gzoom{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:6px;z-index:2}.gzoom button{width:30px;height:30px;border:1px solid var(--line);background:var(--ink);color:var(--cream);border-radius:8px;cursor:pointer;font:500 15px var(--px)}.gzoom button:hover{background:var(--cream);color:var(--ink)}
+.gmsg{position:absolute;inset:0;display:grid;place-items:center;color:var(--cream-2);text-align:center;padding:20px}
+/* diagram modal */
+#dm{position:fixed;inset:0;z-index:50;background:rgba(10,10,9,.84);display:flex;padding:min(3vw,28px)}#dm[hidden]{display:none}
+.dwin{margin:auto;width:min(1500px,100%);height:100%;background:var(--ink);border:1px solid var(--cream);border-radius:14px;display:flex;flex-direction:column;box-shadow:0 0 0 6px var(--slate)}
+.dtop{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px dashed var(--line)}
+.dtop h2{margin:0;border:0;background:var(--cream);color:var(--ink);border-radius:999px;padding:6px 16px}
+.dtop select{background:var(--ink-2);color:var(--cream);border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:12px var(--mono);max-width:320px}
+.dnote{padding:8px 16px;color:var(--cream-2);font-size:12px;border-bottom:1px dashed var(--line-2)}
+.dbody{flex:1;overflow:auto;padding:14px;background:#161615;border-radius:0 0 14px 14px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.dbody svg{display:block;margin:0 auto}
+.dmsg{padding:40px 20px;text-align:center;color:var(--cream-2)}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--cream);color:var(--ink);font:500 12px var(--px);padding:9px 16px;border-radius:999px;z-index:80;opacity:0;pointer-events:none;transition:opacity .15s}#toast.on{opacity:1}
+svg .nd{cursor:pointer}svg .nd:hover rect.box{stroke:#5ee6d8}
+</style></head><body>
+<div class="stage">
+<header id="nav"></header>
+<div class="bar"><h1>Memory</h1>
+ <div class="tools" role="group" aria-label="Make a diagram">
+  <button class="tbtn" data-d="flow" type="button" title="Which files import which">flow diagram</button>
+  <button class="tbtn" data-d="sequence" type="button" title="Calls through the code, or agents talking">sequence</button>
+  <button class="tbtn" data-d="er" type="button" title="Tables and how they relate">ER diagram</button>
+  <button class="tbtn" data-d="classes" type="button" title="Classes and inheritance">classes</button>
+  <a class="tbtn" id="pack" href="#" title="One Markdown file with every diagram, routes and table DDL">design pack</a>
+ </div>
+ <span class="grow"></span><span id="upd"></span></div>
+<div id="err"></div>
+<div class="mem">
+ <div class="pane pane-tree">
+  <div class="search"><input id="q" type="search" placeholder="find a file…" autocomplete="off" aria-label="Find a file"><kbd>/</kbd></div>
+  <div class="tree" id="tree" role="tree"></div>
+ </div>
+ <div class="pane pane-code" id="cpane">
+  <div class="vtabs"><button class="tbtn on" id="tg" type="button">graph</button><button class="tbtn" id="tc" type="button">code</button><span class="sp"></span><small id="gstat"></small></div>
+  <div id="gview"><canvas id="gc" aria-label="Map of files and how they connect. Drag nodes, scroll to zoom, click a node to open it."></canvas>
+   <div class="gctl"><button class="tbtn sm on" data-e="import" type="button">imports</button><button class="tbtn sm on" data-e="link" type="button">doc links</button><button class="tbtn sm on" data-e="table" type="button">tables</button><button class="tbtn sm on" id="gorph" type="button">orphans</button><button class="tbtn sm" id="glab" type="button">labels</button>
+    <select id="gdepth" aria-label="Show"><option value="0">whole map</option><option value="1">selected + 1 hop</option><option value="2">selected + 2 hops</option></select></div>
+   <div class="gzoom"><button id="gz+" type="button" aria-label="Zoom in">+</button><button id="gz-" type="button" aria-label="Zoom out">−</button><button id="gzf" type="button" aria-label="Fit">⟲</button></div>
+   <div class="glegend" id="glegend"></div><div id="gtip"></div></div>
+  <div id="cview"><div class="cv-head"><b id="cpath">Pick a file</b><span class="m" id="cmeta"></span><span class="sp"></span><button class="tbtn" id="cpy" type="button" hidden>copy code</button><button class="tbtn" id="cpp" type="button" hidden>copy path</button></div>
+  <div id="banner" class="banner" hidden></div>
+  <div class="code" id="code"><div class="empty-state" style="margin:auto"><h3>Your code, with the team on top</h3><p>Choose a file on the left. Coloured squares show which agent is working on it right now.</p></div></div>
+  </div>
+ </div>
+ <div class="side">
+  <section class="card" id="finfo"><h2>This file</h2><div id="finfob"><p class="empty">Nothing selected.</p></div></section>
+  <section class="card"><h2>Team memory</h2><div id="tmem"></div></section>
+ </div>
+</div>
+</div>
+<div id="dm" role="dialog" aria-modal="true" aria-labelledby="dt" hidden>
+ <div class="dwin">
+  <div class="dtop"><h2 id="dt">Diagram</h2>
+   <span id="dmode" class="tools" hidden><button class="tbtn on" data-m="calls" type="button">code calls</button><button class="tbtn" data-m="agents" type="button">agent messages</button></span>
+   <select id="dentry" hidden aria-label="Start from"></select>
+   <span style="flex:1"></span>
+   <button class="tbtn" id="dz-" type="button" aria-label="Zoom out">−</button><button class="tbtn" id="dz+" type="button" aria-label="Zoom in">+</button><button class="tbtn" id="dzf" type="button">fit</button>
+   <button class="tbtn" id="dmer" type="button">copy mermaid</button><button class="tbtn" id="dmmd" type="button">.mmd</button><button class="tbtn" id="dsvg" type="button">.svg</button>
+   <button class="tbtn" id="dx" type="button">close</button></div>
+  <div class="dnote" id="dnote"></div>
+  <div class="dbody" id="dbody"></div>
+ </div>
+</div>
+<div id="toast" role="status"></div>
+<script src="assets/pixel.js"></script>
+<script>
+"use strict";
+const Q = new URLSearchParams(location.search), token = Q.get("token") || "", invite = Q.get("invite") || "", $ = (id) => document.getElementById(id), NS = "http://www.w3.org/2000/svg";
+const mk = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+px.nav("memory"); px.foot("read-only code view");
+const hdr = token ? { Authorization: "Bearer " + token } : {};
+async function api(path, params) {
+  const u = new URL("api/" + path, location.href); for (const k in params || {}) u.searchParams.set(k, params[k]); if (!token && invite) u.searchParams.set("invite", invite);
+  const r = await fetch(u, { headers: hdr }); let j = null; try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw Object.assign(new Error((j && j.error) || "hub returned " + r.status), { status: r.status, body: j }); return j;
+}
+const toast = (m) => { const t = $("toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("on"), 1600); };
+const copy = async (text, msg) => { try { await navigator.clipboard.writeText(text); } catch (e) { const a = mk("textarea"); a.value = text; document.body.append(a); a.select(); document.execCommand("copy"); a.remove(); } toast(msg || "copied"); };
+const hue = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const col = (a) => `hsl(${hue(a)} 62% 68%)`;
+const fmtSize = (n) => n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B";
+
+let FILES = [], STATUS = null, SUMMARY = null, current = null, openDirs = new Set([""]), SETUP = null;
+const q = $("q");
+
+/* ---------- activity: which agent is on which file ---------- */
+function activity() {
+  const m = new Map();
+  for (const i of (STATUS && STATUS.intents) || []) { let fs = []; try { fs = JSON.parse(i.files || "[]"); } catch (e) {} for (const f of fs) { const k = f.replace(/^\.?\//, ""); (m.get(k) || m.set(k, []).get(k)).push({ agent: i.agent_id, summary: i.summary || "" }); } }
+  return m;
+}
+const ACT = { m: new Map() };
+const actFor = (path) => { for (const [k, v] of ACT.m) if (path === k || path.endsWith("/" + k) || k.endsWith("/" + path)) return v; return null; };
+
+/* ---------- file tree ---------- */
+function buildTree(files) { const root = { dirs: new Map(), files: [] }; for (const f of files) { const parts = f.path.split("/"); let n = root; for (let i = 0; i < parts.length - 1; i++) { if (!n.dirs.has(parts[i])) n.dirs.set(parts[i], { dirs: new Map(), files: [] }); n = n.dirs.get(parts[i]); } n.files.push(f); } return root; }
+function rowFor(f, label) {
+  const b = mk("button", "row" + (current === f.path ? " sel" : "")); b.type = "button"; b.setAttribute("role", "treeitem"); b.title = f.path;
+  const a = actFor(f.path); if (a) { const d = mk("span", "ag"); d.style.background = col(a[0].agent); d.title = a.map((x) => x.agent).join(", ") + " is working here"; b.append(d); }
+  b.append(mk("span", "nm", label || f.path.split("/").pop())); b.onclick = () => openFile(f.path); return b;
+}
+function renderTree() {
+  const host = $("tree"); host.replaceChildren(); const term = q.value.trim().toLowerCase();
+  if (term) {
+    const hit = FILES.filter((f) => f.path.toLowerCase().includes(term)); for (const f of hit.slice(0, 200)) host.append(rowFor(f, f.path));
+    if (!hit.length) host.append(mk("div", "more", "No file matches.")); else if (hit.length > 200) host.append(mk("div", "more", `${hit.length - 200} more, keep typing`)); return;
+  }
+  const walk = (node, path, into) => {
+    for (const [name, sub] of [...node.dirs].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const p = path ? path + "/" + name : name, open = openDirs.has(p), b = mk("button", "row dir"); b.type = "button"; b.setAttribute("role", "treeitem"); b.setAttribute("aria-expanded", open);
+      b.append(mk("span", "", open ? "▾" : "▸"), mk("span", "nm", name + "/")); b.onclick = () => { open ? openDirs.delete(p) : openDirs.add(p); renderTree(); }; into.append(b);
+      if (open) { const w = mk("div", "sub"); walk(sub, p, w); into.append(w); }
+    }
+    for (const f of node.files.sort((a, b) => a.path.localeCompare(b.path))) into.append(rowFor(f));
+  };
+  walk(buildTree(FILES), "", host);
+}
+q.oninput = () => renderTree();
+addEventListener("keydown", (e) => { if (e.key === "/" && document.activeElement !== q && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); } if (e.key === "Escape") { if (!$("dm").hidden) closeDiagram(); else if (document.activeElement === q) { q.value = ""; renderTree(); q.blur(); } } });
+
+/* ---------- code view with light highlighting ---------- */
+const KW = { py: "def class return if elif else for while import from as with try except finally raise yield lambda pass break continue and or not in is None True False async await global nonlocal assert del",
+  js: "function const let var return if else for while import export from default class extends new this try catch finally throw async await switch case break continue typeof instanceof null undefined true false of in yield static interface type enum",
+  sql: "select from where insert into values update set delete create table if not exists primary key references foreign integer text real blob null default and or join left on group by order limit alter add column index unique",
+  sh: "if then else fi for do done case esac function echo export local return in while" };
+const RX = {};
+function rxFor(l) {
+  if (RX[l] !== undefined) return RX[l];
+  const kw = KW[l]; if (!kw) return (RX[l] = null);
+  const cm = { py: "#[^\\n]*", sh: "#[^\\n]*", sql: "--[^\\n]*", js: "\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/" }[l];
+  const st = { py: "\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'", js: "`(?:\\\\.|[^`\\\\])*`|\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'" }[l] || "\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'";
+  return (RX[l] = new RegExp(`(${cm})|(${st})|\\b(${kw.split(" ").join("|")})\\b|(\\b\\d+(?:\\.\\d+)?\\b)`, l === "sql" ? "gi" : "g"));
+}
+function highlight(text, lang) {
+  const l = lang === "python" ? "py" : lang === "javascript" || lang === "typescript" ? "js" : lang === "sql" ? "sql" : lang === "shell" ? "sh" : "", frag = document.createDocumentFragment(), rx = rxFor(l);
+  if (!rx || text.length > 150000) { frag.append(document.createTextNode(text)); return frag; }
+  rx.lastIndex = 0; let last = 0, m;
+  while ((m = rx.exec(text))) {
+    if (m.index > last) frag.append(document.createTextNode(text.slice(last, m.index)));
+    const cls = m[1] != null ? "c" : m[2] != null ? "s" : m[3] != null ? "k" : "n"; frag.append(mk("span", cls, m[0])); last = rx.lastIndex; if (m[0] === "") rx.lastIndex++;
+  }
+  frag.append(document.createTextNode(text.slice(last))); return frag;
+}
+let lineHL = null;
+function gotoLine(n) {
+  const box = $("code"); if (!n) return; box.scrollTop = Math.max(0, (n - 1) * 20 - 80);
+  if (lineHL) lineHL.remove(); lineHL = mk("div", "hl"); lineHL.style.top = 10 + (n - 1) * 20 + "px"; box.append(lineHL); setTimeout(() => lineHL && lineHL.remove(), 2600);
+}
+async function openFile(path, line) {
+  current = path; history.replaceState(null, "", "#" + encodeURIComponent(path) + (line ? ":" + line : "")); renderTree(); showTab("code"); G.draw && G.draw();
+  $("cpath").textContent = path; $("cmeta").textContent = "loading…";
+  try {
+    const d = await api("code/file", { path }); if (current !== path) return;
+    $("cmeta").textContent = `${fmtSize(d.size)} · ${d.text.split("\n").length} lines${d.lang ? " · " + d.lang : ""}${d.truncated ? " · shown truncated" : ""}`;
+    const box = $("code"), n = d.text.split("\n").length, gut = mk("pre", "gut", Array.from({ length: n }, (_, i) => i + 1).join("\n")), src = mk("pre", "src"); src.append(highlight(d.text, d.lang));
+    box.replaceChildren(gut, src); box.scrollTop = 0; box.dataset.text = d.text;
+    $("cpy").hidden = $("cpp").hidden = false; $("cpy").onclick = () => copy(d.text, "code copied"); $("cpp").onclick = () => copy(path, "path copied");
+    const a = actFor(path), bn = $("banner"); if (a) { bn.hidden = false; bn.textContent = a.map((x) => `${x.agent} is working on this file${x.summary ? ": " + x.summary : ""}`).join("   ·   "); } else bn.hidden = true;
+    fileInfo(d.info); gotoLine(line);
+  } catch (e) { $("cmeta").textContent = ""; $("code").replaceChildren(Object.assign(mk("div", "empty-state"), { textContent: e.message })); $("banner").hidden = true; }
+}
+function chipRow(items, onclick) { const w = mk("div", "chips"); for (const it of items) { const c = mk("button", "chip", it.label); c.type = "button"; c.title = it.title || it.label; c.onclick = () => onclick(it); w.append(c); } return w; }
+function fileInfo(i) {
+  const b = $("finfob"); b.replaceChildren(); const sect = (t, el) => { b.append(mk("div", "kv", t)); b.append(el); };
+  const open = (it) => openFile(it.path, it.line);
+  if (i.imports && i.imports.length) sect("imports", chipRow(i.imports.map((p) => ({ label: p.split("/").pop(), title: p, path: p })), open));
+  if (i.imported_by && i.imported_by.length) sect("used by", chipRow(i.imported_by.map((p) => ({ label: p.split("/").pop(), title: p, path: p })), open));
+  if (i.routes && i.routes.length) sect("routes", chipRow(i.routes.map((r) => ({ label: r.method + " " + r.path, path: r.file, line: r.line })), open));
+  if (i.classes && i.classes.length) sect("classes", chipRow(i.classes.map((c) => ({ label: c.name, path: current, line: c.line })), open));
+  if (i.functions && i.functions.length) sect("functions", chipRow(i.functions.slice(0, 40).map((f) => ({ label: f.name + "()", path: current, line: f.line })), open));
+  if (i.tables && i.tables.length) sect("tables defined", chipRow(i.tables.map((t) => ({ label: t, path: current })), () => makeDiagram("er")));
+  if (!b.childNodes.length) b.append(mk("p", "empty", "No imports, routes or definitions found in this file."));
+}
+
+/* ---------- team memory ---------- */
+function teamMemory() {
+  const h = $("tmem"); h.replaceChildren(); const s = STATUS || {};
+  const add = (title, list, fn) => { if (!list.length) return; h.append(mk("div", "kv", title)); for (const x of list.slice(0, 8)) h.append(fn(x)); };
+  add("decisions", s.decisions || [], (d) => { const r = mk("div", "mi"); r.append(mk("b", "", d.topic + ": "), document.createTextNode(d.text), mk("span", "m", d.agent_id)); return r; });
+  add("contracts", s.contracts || [], (c) => { const r = mk("div", "mi"); r.append(mk("b", "", c.name), mk("span", "m", (c.spec || "").slice(0, 120) + " · " + c.agent_id)); let fs = []; try { fs = JSON.parse(c.files || "[]"); } catch (e) {} const known = fs.map((f) => FILES.find((x) => x.path === f || x.path.endsWith("/" + f) || f.endsWith("/" + x.path))).filter(Boolean); if (known.length) r.append(chipRow(known.slice(0, 4).map((f) => ({ label: f.path.split("/").pop(), title: f.path, path: f.path })), (it) => openFile(it.path))); return r; });
+  const live = [...ACT.m].slice(0, 8); add("working on now", live, ([f, a]) => { const r = mk("div", "mi"); r.style.cursor = "pointer"; const b = mk("b", "", a[0].agent); b.style.color = col(a[0].agent); r.append(b, document.createTextNode(" " + f.split("/").pop()), mk("span", "m", a[0].summary)); const hit = FILES.find((x) => x.path === f || x.path.endsWith("/" + f) || f.endsWith("/" + x.path)); if (hit) r.onclick = () => openFile(hit.path); return r; });
+  if (!h.childNodes.length) h.append(mk("p", "empty", "Nothing recorded yet. Decisions, contracts and who is editing what appear here."));
+}
+
+/* ---------- diagrams ---------- */
+const C = { bg: "#1d1d1c", line: "#e8e8c6", mut: "#9a9a84", ink: "#252525", neon: "#5ee6d8", rose: "#ff7a66", amber: "#f0b24a" };
+const se = (t, a, p) => { const e = document.createElementNS(NS, t); for (const k in a || {}) e.setAttribute(k, a[k]); if (p) p.append(e); return e; };
+const stxt = (t, a, p) => { const e = se("text", { "font-family": "Geist Mono, ui-monospace, Menlo, monospace", "font-size": 12, fill: C.line, ...a }, p); e.textContent = t; return e; };
+let DG = null, zoom = 1;
+function graphSVG(d) {
+  const CW = 7.3, LH = 15, nodes = d.nodes.map((n) => ({ ...n, w: Math.max(120, Math.ceil(Math.max(n.label.length * 1.2, ...n.lines.map((l) => l.length)) * CW) + 28), h: 32 + Math.max(1, n.lines.length) * LH })), by = new Map(nodes.map((n) => [n.id, n]));
+  const edges = d.edges.filter((e) => by.has(e.from) && by.has(e.to)), connected = new Set(); edges.forEach((e) => { connected.add(e.from); connected.add(e.to); });
+  const con = nodes.filter((n) => connected.has(n.id)), iso = nodes.filter((n) => !connected.has(n.id)), out = new Map(con.map((n) => [n.id, []])); edges.forEach((e) => out.get(e.from).push(e));
+  const state = new Map(), fwd = []; const dfs = (u) => { state.set(u, 1); for (const e of out.get(u)) { if (state.get(e.to) === 1) continue; fwd.push(e); if (!state.get(e.to)) dfs(e.to); } state.set(u, 2); }; con.forEach((n) => { if (!state.get(n.id)) dfs(n.id); });
+  con.forEach((n) => (n.layer = 0)); for (let k = 0; k < con.length; k++) { let ch = false; for (const e of fwd) { const a = by.get(e.from), b = by.get(e.to); if (b.layer < a.layer + 1) { b.layer = a.layer + 1; ch = true; } } if (!ch) break; }
+  const L = []; con.forEach((n) => (L[n.layer] = L[n.layer] || []).push(n));
+  for (let pass = 0; pass < 3; pass++) for (let i = 1; i < L.length; i++) { const pos = new Map(L[i - 1].map((n, j) => [n.id, j])); L[i].forEach((n) => { const ps = edges.filter((e) => e.to === n.id && pos.has(e.from)).map((e) => pos.get(e.from)); n._b = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : 1e9; }); L[i].sort((a, b) => a._b - b._b); }
+  let x = 24, maxH = 0; const GAPY = 26, GAPX = 90;
+  const BUDGET = 720;   // a tall layer wraps into side-by-side columns so the picture stays readable
+  L.forEach((layer) => { if (!layer) return; let y = 24, cx = x, cw = 0; layer.forEach((n) => { if (y + n.h > BUDGET && y > 24) { cx += cw + 40; cw = 0; y = 24; } n.x = cx; n.y = y; cw = Math.max(cw, n.w); y += n.h + GAPY; maxH = Math.max(maxH, y); }); x = cx + cw + GAPX; });
+  let W = Math.max(x - GAPX + 24, 400), H = maxH;
+  if (iso.length) { const cols = Math.max(2, Math.min(6, Math.floor((W - 24) / 170))); let cx = 24, cy = H + (con.length ? 24 : 0), rowH = 0, c = 0; for (const n of iso) { if (c === cols) { c = 0; cx = 24; cy += rowH + GAPY; rowH = 0; } n.x = cx; n.y = cy; cx += n.w + 24; rowH = Math.max(rowH, n.h); c++; W = Math.max(W, cx); } H = cy + rowH + 24; }
+  const svg = se("svg", { xmlns: NS, viewBox: `0 0 ${W} ${H}`, width: W, height: H, "data-w": W, "data-h": H }); se("rect", { width: W, height: H, fill: "#161615" }, svg);
+  const defs = se("defs", {}, svg), mkr = se("marker", { id: "ar", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" }, defs); se("path", { d: "M0 0L10 5L0 10z", fill: C.line }, mkr);
+  for (const e of edges) {
+    const a = by.get(e.from), b = by.get(e.to), x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, back = x2 <= x1, dx = back ? 70 : Math.max(40, (x2 - x1) / 2);
+    se("path", { d: `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`, fill: "none", stroke: C.line, "stroke-opacity": ".55", "stroke-width": 1.4, "stroke-dasharray": e.dashed ? "5 4" : "", "marker-end": "url(#ar)" }, svg);
+    if (e.label) stxt(e.label, { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 4, "text-anchor": "middle", fill: C.mut, "font-size": 10 }, svg);
+  }
+  for (const n of nodes) {
+    const g = se("g", { class: "nd", transform: `translate(${n.x} ${n.y})` }, svg); if (n.path) { g.dataset.path = n.path; se("title", {}, g).textContent = n.path; }
+    se("rect", { class: "box", width: n.w, height: n.h, fill: C.bg, stroke: C.line, "stroke-width": 1.5 }, g); se("rect", { width: n.w, height: 24, fill: C.line }, g);
+    stxt(n.label, { x: 10, y: 16, fill: C.ink, "font-weight": 700 }, g); n.lines.forEach((l, i) => stxt(l, { x: 10, y: 24 + 16 + i * LH - 2, fill: /^(PK|FK) /.test(l) ? C.amber : C.mut, "font-size": 11 }, g));
+  }
+  return svg;
+}
+function seqSVG(d) {
+  const P = d.participants, M = d.messages, CW = 170, TOP = 70, RH = 34, W = Math.max(P.length * CW + 40, 420), H = TOP + M.length * RH + 50, xs = new Map(P.map((p, i) => [p.id, 40 + CW / 2 + i * CW]));
+  const svg = se("svg", { xmlns: NS, viewBox: `0 0 ${W} ${H}`, width: W, height: H, "data-w": W, "data-h": H }); se("rect", { width: W, height: H, fill: "#161615" }, svg);
+  const defs = se("defs", {}, svg), mkr = se("marker", { id: "ar", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" }, defs); se("path", { d: "M0 0L10 5L0 10z", fill: C.neon }, mkr);
+  for (const p of P) { const x = xs.get(p.id), g = se("g", { class: "nd" }, svg); if (p.path) { g.dataset.path = p.path; se("title", {}, g).textContent = p.path; } se("line", { x1: x, x2: x, y1: 50, y2: H - 20, stroke: C.line, "stroke-opacity": ".35", "stroke-dasharray": "4 5" }, svg);
+    se("rect", { class: "box", x: x - 64, y: 14, width: 128, height: 36, fill: C.line, stroke: C.line }, g); stxt(p.label.length > 17 ? p.label.slice(0, 16) + "…" : p.label, { x, y: 37, "text-anchor": "middle", fill: C.ink, "font-weight": 700 }, g); }
+  M.forEach((m, i) => { const y = TOP + i * RH, x1 = xs.get(m.from), x2 = xs.get(m.to);
+    if (x1 === x2) { se("path", { d: `M${x1} ${y - 8} h34 v16 h-30`, fill: "none", stroke: C.neon, "stroke-width": 1.5, "marker-end": "url(#ar)" }, svg); stxt(m.label, { x: x1 + 40, y: y + 4, "font-size": 11 }, svg); }
+    else { se("line", { x1, x2: x2 + (x2 > x1 ? -2 : 2), y1: y, y2: y, stroke: C.neon, "stroke-width": 1.5, "marker-end": "url(#ar)" }, svg); stxt(m.label, { x: (x1 + x2) / 2, y: y - 6, "text-anchor": "middle", "font-size": 11 }, svg); } });
+  return svg;
+}
+function agentSeq() {
+  const ev = ((STATUS && STATUS.events) || []).filter((e) => e.kind === "message" && e.agent && e.to).sort((a, b) => a.ts - b.ts).slice(-30);
+  const ids = [...new Set(ev.flatMap((e) => [e.agent, e.to]))].slice(0, 10), pid = new Map(ids.map((a, i) => [a, "A" + i])), msgs = ev.filter((e) => pid.has(e.agent) && pid.has(e.to));
+  const clean = (s) => String(s || "message").replace(/[^\w .,?!\-]/g, "").slice(0, 34) || "message";
+  const mer = ["sequenceDiagram", ...ids.map((a) => `  participant ${pid.get(a)} as ${a.replace(/[^\w-]/g, "")}`), ...msgs.map((e) => `  ${pid.get(e.agent)}->>${pid.get(e.to)}: ${clean(e.text)}`)].join("\n");
+  return { kind: "agents", participants: ids.map((a) => ({ id: pid.get(a), label: a })), messages: msgs.map((e) => ({ from: pid.get(e.agent), to: pid.get(e.to), label: clean(e.text) })), mermaid: msgs.length ? mer : "", note: msgs.length ? "The latest agent-to-agent messages, oldest first." : "No agent messages yet. When agents use ask_teammate_agent they show up here." };
+}
+const TITLES = { flow: "Flow diagram", er: "ER diagram", classes: "Class diagram", sequence: "Sequence diagram" };
+let seqMode = "calls", seqEntry = "";
+async function makeDiagram(kind) {
+  $("dm").hidden = false; document.body.style.overflow = "hidden"; $("dt").textContent = TITLES[kind]; DG = { kind, mermaid: "" };
+  $("dmode").hidden = kind !== "sequence"; $("dentry").hidden = true; $("dnote").textContent = ""; $("dbody").replaceChildren(mk("div", "dmsg", "Reading the code…")); $("dx").focus();
+  document.querySelectorAll("#dmode .tbtn").forEach((b) => b.classList.toggle("on", b.dataset.m === seqMode));
+  try {
+    let d; if (kind === "sequence") { if (seqMode === "agents") d = agentSeq(); else { if (!SUMMARY) SUMMARY = await api("code/summary"); const sel = $("dentry"); if (SUMMARY.entries.length) { sel.hidden = false; if (!sel.options.length) for (const en of SUMMARY.entries) sel.append(new Option(en.label, en.id)); if (seqEntry) sel.value = seqEntry; } d = await api("code/diagram", { kind: "calls", entry: seqEntry }); if (d.entry) { sel.value = d.entry; } } }
+    else d = await api("code/diagram", { kind });
+    DG = { kind, ...d }; drawDiagram();
+  } catch (e) { if (kind === "sequence" && seqMode === "calls") { seqMode = "agents"; return makeDiagram(kind); } $("dbody").replaceChildren(mk("div", "dmsg", e.message)); }
+}
+function drawDiagram() {
+  const d = DG, body = $("dbody"); $("dnote").textContent = d.note || ""; const empty = !(d.nodes && d.nodes.length) && !(d.participants && d.participants.length);
+  for (const id of ["dmer", "dmmd", "dsvg", "dz-", "dz+", "dzf"]) $(id).disabled = empty;
+  if (empty) { body.replaceChildren(mk("div", "dmsg", d.note || "Nothing to draw.")); return; }
+  const svg = d.participants ? seqSVG(d) : graphSVG(d); body.replaceChildren(svg); fit();
+  svg.querySelectorAll(".nd").forEach((g) => { if (g.dataset.path) g.onclick = () => { closeDiagram(); openFile(g.dataset.path); }; });
+}
+function fit() { const s = $("dbody").firstChild; if (!s || !s.dataset || !s.dataset.w) return; const w = +s.dataset.w, h = +s.dataset.h, b = $("dbody"); zoom = Math.min(1.4, (b.clientWidth - 28) / w, (b.clientHeight - 28) / h); zoom = Math.max(.25, zoom); setZoom(zoom); }
+function setZoom(z) { zoom = Math.min(3, Math.max(.2, z)); const s = $("dbody").firstChild; if (s && s.dataset && s.dataset.w) { s.setAttribute("width", s.dataset.w * zoom); s.setAttribute("height", s.dataset.h * zoom); } }
+function closeDiagram() { $("dm").hidden = true; document.body.style.overflow = ""; }
+const dl = (name, text, type) => { const a = mk("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); };
+$("dx").onclick = closeDiagram; $("dm").onclick = (e) => { if (e.target.id === "dm") closeDiagram(); };
+$("dz+").onclick = () => setZoom(zoom * 1.25); $("dz-").onclick = () => setZoom(zoom / 1.25); $("dzf").onclick = fit;
+$("dmer").onclick = () => DG && DG.mermaid && copy(DG.mermaid, "mermaid copied"); $("dmmd").onclick = () => DG && DG.mermaid && dl((DG.kind || "diagram") + ".mmd", DG.mermaid + "\n", "text/plain");
+$("dsvg").onclick = () => { const s = $("dbody").firstChild; if (!s || !s.dataset) return; const c = s.cloneNode(true); c.setAttribute("width", s.dataset.w); c.setAttribute("height", s.dataset.h); c.querySelectorAll("title").forEach((t) => t.remove()); dl((DG.kind || "diagram") + ".svg", '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(c), "image/svg+xml"); };
+$("dentry").onchange = (e) => { seqEntry = e.target.value; makeDiagram("sequence"); };
+document.querySelectorAll("#dmode .tbtn").forEach((b) => (b.onclick = () => { seqMode = b.dataset.m; makeDiagram("sequence"); }));
+document.querySelectorAll(".tools [data-d]").forEach((b) => (b.onclick = () => makeDiagram(b.dataset.d)));
+$("pack").href = "api/code/design.md" + (token ? "?token=" + encodeURIComponent(token) : "");
+$("pack").onclick = (e) => { if (!FILES.length) { e.preventDefault(); toast("Set up a repo first"); } };
+
+/* ---------- graph: every file a node, imports / doc links / tables as edges (Obsidian-style) ---------- */
+const G = { nodes: [], edges: [], by: new Map(), adj: new Map(), k: 1, x: 0, y: 0, hover: null, drag: null, pan: null, alpha: 1, loaded: false, on: { import: true, link: true, table: true, uses: true }, orph: true, labels: false, depth: 0, raf: 0, vis: [] };
+const gc = $("gc"), gx = gc.getContext("2d"), gcol = (n) => n.kind === "table" ? "#f0b24a" : n.dir ? `hsl(${hue(n.dir.split("/")[0])} 55% 64%)` : "#e8e8c6";
+function showTab(t) { $("tg").classList.toggle("on", t === "graph"); $("tc").classList.toggle("on", t === "code"); $("gview").classList.toggle("on", t === "graph"); $("cview").classList.toggle("on", t === "code"); if (t === "graph") { if (!G.loaded) loadGraph(); else { resizeG(); kick(); } } }
+$("tg").onclick = () => showTab("graph"); $("tc").onclick = () => showTab("code");
+function resizeG() { const r = gc.getBoundingClientRect(), d = devicePixelRatio || 1; if (!r.width) return; gc.width = r.width * d; gc.height = r.height * d; G.w = r.width; G.h = r.height; G.d = d; }
+addEventListener("resize", () => { if ($("gview").classList.contains("on")) { resizeG(); draw(); } });
+async function loadGraph() {
+  G.loaded = true; resizeG(); const box = $("gview");
+  try {
+    const d = await api("code/graph"); G.nodes = d.nodes.map((n, i) => { const a = (hue(n.dir || n.id) / 360) * 6.283 + (i % 7) * .1, r = 90 + (i % 13) * 14; return { ...n, x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0, r: (n.kind === "table" ? 6 : 4.5) + Math.sqrt(n.deg) * 2.1 }; });
+    G.by = new Map(G.nodes.map((n) => [n.id, n])); G.edges = d.edges.map((e) => ({ ...e, a: G.by.get(e.from), b: G.by.get(e.to) })); G.adj = new Map(G.nodes.map((n) => [n.id, []]));
+    for (const e of G.edges) { G.adj.get(e.from).push(e.to); G.adj.get(e.to).push(e.from); }
+    $("gstat").textContent = `${G.nodes.length} nodes · ${G.edges.length} links${d.truncated ? " · most connected shown" : ""}`;
+    const dirs = [...new Set(G.nodes.filter((n) => n.kind === "file").map((n) => n.dir.split("/")[0]))].sort().slice(0, 7);
+    $("glegend").replaceChildren(...dirs.map((x) => { const s = mk("span"); const i = mk("i"); i.style.background = x ? `hsl(${hue(x)} 55% 64%)` : "#e8e8c6"; s.append(i, x || "root"); return s; }), (() => { const s = mk("span"); const i = mk("i"); i.style.background = "#f0b24a"; s.append(i, "table"); return s; })());
+    refilter(); for (let i = 0; i < 120; i++) tick(.9); fitG(); kick();
+  } catch (e) { box.append(Object.assign(mk("div", "gmsg"), { textContent: e.status === 404 || e.status === 403 ? "Connect a project to see its map." : e.message })); }
+}
+function refilter() {
+  let keep = new Set(G.nodes.map((n) => n.id));
+  if (G.depth && current && G.by.has(current)) { const d = new Map([[current, 0]]), qq = [current]; while (qq.length) { const u = qq.shift(); if (d.get(u) >= G.depth) continue; for (const v of G.adj.get(u)) if (!d.has(v) && edgeOn(u, v)) { d.set(v, d.get(u) + 1); qq.push(v); } } keep = new Set(d.keys()); }
+  const hasEdge = new Set(); G.edges.forEach((e) => { if (G.on[e.kind] && keep.has(e.from) && keep.has(e.to)) { hasEdge.add(e.from); hasEdge.add(e.to); } });
+  G.vis = G.nodes.filter((n) => keep.has(n.id) && (G.orph || hasEdge.has(n.id))); G.visSet = new Set(G.vis.map((n) => n.id)); G.ve = G.edges.filter((e) => G.on[e.kind] && G.visSet.has(e.from) && G.visSet.has(e.to));
+}
+const edgeOn = (u, v) => G.edges.some((e) => G.on[e.kind] && ((e.from === u && e.to === v) || (e.from === v && e.to === u)));
+function tick(a) {
+  const V = G.vis, n = V.length; if (!n) return; const cent = {};
+  for (const m of V) if (m.kind === "file") { const k = m.dir; (cent[k] = cent[k] || { x: 0, y: 0, c: 0 }); cent[k].x += m.x; cent[k].y += m.y; cent[k].c++; }
+  for (let i = 0; i < n; i++) { const p = V[i]; for (let j = i + 1; j < n; j++) { const q = V[j], dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy + .01; if (d2 > 90000) continue; const f = (1400 * a) / d2, d = Math.sqrt(d2); p.vx += (dx / d) * f; p.vy += (dy / d) * f; q.vx -= (dx / d) * f; q.vy -= (dy / d) * f; } }
+  for (const e of G.ve) { const p = e.a, q = e.b, dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1, rest = e.kind === "import" ? 60 : 80, f = (d - rest) * .018 * a; p.vx += (dx / d) * f; p.vy += (dy / d) * f; q.vx -= (dx / d) * f; q.vy -= (dy / d) * f; }
+  for (const m of V) { m.vx -= m.x * .009 * a; m.vy -= m.y * .009 * a; const c = m.kind === "file" && cent[m.dir]; if (c && c.c > 1) { m.vx += (c.x / c.c - m.x) * .004 * a; m.vy += (c.y / c.c - m.y) * .004 * a; } if (m === G.drag) continue; m.x += (m.vx *= .82); m.y += (m.vy *= .82); }
+}
+function kick(a) { G.alpha = Math.max(G.alpha, a || .6); if (!G.raf) G.raf = requestAnimationFrame(loop); }
+function loop() { G.raf = 0; if (!$("gview").classList.contains("on")) return; if (G.alpha > .03 || G.drag) { tick(G.alpha); G.alpha *= .985; } draw(); if (G.alpha > .03 || G.drag || G.pulse) G.raf = requestAnimationFrame(loop); }
+function fitG() { const V = G.vis; if (!V.length || !G.w) return; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const n of V) { x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x); y0 = Math.min(y0, n.y); y1 = Math.max(y1, n.y); } const k = Math.min(2, Math.max(.2, Math.min((G.w - 80) / Math.max(1, x1 - x0), (G.h - 100) / Math.max(1, y1 - y0)))); G.k = k; G.x = G.w / 2 - ((x0 + x1) / 2) * k; G.y = G.h / 2 - ((y0 + y1) / 2) * k; }
+function draw() {
+  if (!G.w) return; const d = G.d, t = performance.now(); gx.setTransform(d, 0, 0, d, 0, 0); gx.clearRect(0, 0, G.w, G.h); gx.save(); gx.translate(G.x, G.y); gx.scale(G.k, G.k);
+  const focus = G.hover || (current && G.by.get(current)), nb = new Set(); if (focus) { nb.add(focus.id); (G.adj.get(focus.id) || []).forEach((i) => nb.add(i)); }
+  const term = q.value.trim().toLowerCase(), match = (n) => !term || n.id.toLowerCase().includes(term);
+  for (const e of G.ve) { const hot = focus && (e.from === focus.id || e.to === focus.id); gx.strokeStyle = e.kind === "link" ? "#9ad47a" : e.kind === "table" || e.kind === "uses" ? "#f0b24a" : "#e8e8c6"; gx.globalAlpha = hot ? .95 : focus ? .06 : .26; gx.lineWidth = (hot ? 1.8 : 1) / G.k; gx.setLineDash(e.kind === "uses" ? [3 / G.k, 3 / G.k] : []); gx.beginPath(); gx.moveTo(e.a.x, e.a.y); gx.lineTo(e.b.x, e.b.y); gx.stroke(); }
+  gx.setLineDash([]); G.pulse = false;
+  for (const n of G.vis) {
+    const dim = (focus && !nb.has(n.id)) || !match(n); gx.globalAlpha = dim ? .14 : 1; gx.fillStyle = gcol(n);
+    if (n.kind === "table") gx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2); else { gx.beginPath(); gx.arc(n.x, n.y, n.r, 0, 6.283); gx.fill(); }
+    const a = n.kind === "file" && actFor(n.id); if (a && !dim) { G.pulse = true; gx.strokeStyle = col(a[0].agent); gx.lineWidth = 2 / G.k; gx.globalAlpha = .55 + .45 * Math.sin(t / 300); gx.beginPath(); gx.arc(n.x, n.y, n.r + 4 + 2 * Math.sin(t / 300), 0, 6.283); gx.stroke(); gx.globalAlpha = 1; }
+    if (n.id === current) { gx.strokeStyle = "#fff"; gx.lineWidth = 2 / G.k; gx.beginPath(); gx.arc(n.x, n.y, n.r + 3, 0, 6.283); gx.stroke(); }
+    if (!dim && (G.labels || G.k > 1.25 || n.deg >= 5 || nb.has(n.id) && focus || (term && match(n)))) { gx.globalAlpha = dim ? .2 : .92; gx.fillStyle = "#e8e8c6"; gx.font = `${11 / G.k}px "Geist Mono", monospace`; gx.textAlign = "center"; gx.fillText(n.label, n.x, n.y + n.r + 12 / G.k); }
+  }
+  gx.restore(); gx.globalAlpha = 1;
+}
+const toWorld = (e) => { const r = gc.getBoundingClientRect(); return [(e.clientX - r.left - G.x) / G.k, (e.clientY - r.top - G.y) / G.k]; };
+function hit(e) { const [wx, wy] = toWorld(e); let best = null, bd = 1e9; for (const n of G.vis) { const d = Math.hypot(n.x - wx, n.y - wy); if (d < Math.max(n.r + 4, 9 / G.k) && d < bd) { best = n; bd = d; } } return best; }
+const gtip = $("gtip");
+gc.addEventListener("pointerdown", (e) => { gc.setPointerCapture(e.pointerId); const n = hit(e); G.moved = 0; if (n) { G.drag = n; gc.classList.add("drag"); kick(.4); } else { G.pan = { x: e.clientX, y: e.clientY, gx: G.x, gy: G.y }; gc.classList.add("drag"); } });
+gc.addEventListener("pointermove", (e) => {
+  if (G.drag) { const [wx, wy] = toWorld(e); G.drag.x = wx; G.drag.y = wy; G.drag.vx = G.drag.vy = 0; G.moved++; kick(.35); }
+  else if (G.pan) { G.x = G.pan.gx + e.clientX - G.pan.x; G.y = G.pan.gy + e.clientY - G.pan.y; G.moved++; draw(); }
+  else { const n = hit(e); if (n !== G.hover) { G.hover = n; gc.classList.toggle("hand", !!n); draw(); } if (n) { const r = $("gview").getBoundingClientRect(), a = n.kind === "file" && actFor(n.id); gtip.textContent = n.kind === "table" ? `table ${n.label} (defined in ${n.file})` : `${n.id}${a ? "  ·  " + a.map((x) => x.agent).join(", ") + " working" : ""}  ·  ${n.deg} links`; gtip.style.left = Math.min(e.clientX - r.left + 14, r.width - 290) + "px"; gtip.style.top = e.clientY - r.top + 14 + "px"; gtip.style.opacity = 1; } else gtip.style.opacity = 0; }
+});
+gc.addEventListener("pointerup", () => { const n = G.drag; gc.classList.remove("drag"); if (n && G.moved < 4) { n.kind === "table" ? makeDiagram("er") : openFile(n.id); } G.drag = null; G.pan = null; });
+gc.addEventListener("pointerleave", () => { if (!G.drag && !G.pan) { G.hover = null; gtip.style.opacity = 0; draw(); } });
+gc.addEventListener("wheel", (e) => { e.preventDefault(); const r = gc.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, k2 = Math.min(5, Math.max(.15, G.k * Math.exp(-e.deltaY * .0015))); G.x = mx - ((mx - G.x) / G.k) * k2; G.y = my - ((my - G.y) / G.k) * k2; G.k = k2; draw(); }, { passive: false });
+$("gz+").onclick = () => { G.k = Math.min(5, G.k * 1.3); draw(); }; $("gz-").onclick = () => { G.k = Math.max(.15, G.k / 1.3); draw(); }; $("gzf").onclick = () => { fitG(); draw(); };
+document.querySelectorAll(".gctl [data-e]").forEach((b) => (b.onclick = () => { const k = b.dataset.e; G.on[k] = !G.on[k]; if (k === "table") G.on.uses = G.on.table; b.classList.toggle("on", G.on[k]); refilter(); kick(.7); }));
+$("gorph").onclick = () => { G.orph = !G.orph; $("gorph").classList.toggle("on", G.orph); refilter(); kick(.7); }; $("glab").onclick = () => { G.labels = !G.labels; $("glab").classList.toggle("on", G.labels); draw(); };
+$("gdepth").onchange = (e) => { G.depth = +e.target.value; refilter(); kick(.8); };
+G.draw = () => { if ($("gview").classList.contains("on")) draw(); };
+const _ri = renderTree; renderTree = function () { _ri(); if (G.loaded && $("gview").classList.contains("on")) draw(); };
+
+/* ---------- load ---------- */
+function setup(msg) {
+  $("gview").classList.remove("on"); $("cview").classList.add("on"); $("tg").hidden = $("tc").hidden = true;
+  const w = mk("div", "empty-state"); w.append(mk("h3", "", "Point TeamBus at your code"), mk("p", "", msg || "The Memory view reads a project folder on the machine that runs the hub (read-only)."));
+  const pre = mk("pre", "", "# laptop hub\nteambus local install --repo /path/to/project\n\n# any hub\nTEAMBUS_REPO=/path/to/project python server.py");
+  w.append(pre, mk("p", "m", "Secrets (.env, keys, tokens, databases) and folders like node_modules are never listed or read. Invite viewers cannot see code.")); $("tree").replaceChildren(); $("code").replaceChildren(w); $("cpath").textContent = "No project connected";
+  document.querySelectorAll(".tools [data-d='flow'],.tools [data-d='er'],.tools [data-d='classes']").forEach((b) => (b.disabled = true));
+}
+async function refreshStatus() {
+  try { const r = await fetch("api/status" + (!token && invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: hdr }); if (r.ok) { STATUS = await r.json(); ACT.m = activity(); teamMemory(); if (FILES.length) renderTree(); $("upd").textContent = "updated " + new Date().toLocaleTimeString(); } } catch (e) {}
+}
+(async function init() {
+  await refreshStatus(); setInterval(refreshStatus, 6000);
+  try {
+    const t = await api("code/tree"); FILES = t.files; $("cpath").textContent = t.root + "/"; $("cmeta").textContent = FILES.length + " files" + (t.truncated ? " (list truncated)" : "");
+    for (const f of FILES) { const p = f.path.split("/"); if (p.length > 1) openDirs.add(p[0]); } renderTree(); teamMemory();
+    if (TITLES[Q.get("diagram")]) { if (Q.get("mode") === "agents") seqMode = "agents"; makeDiagram(Q.get("diagram")); }
+    const h = decodeURIComponent(location.hash.slice(1)); if (h) { const [p, l] = h.split(/:(?=\d+$)/); openFile(p, +l || 0); }
+    else { current = null; $("cmeta").textContent = FILES.length + " files · pick one to read it"; showTab("graph"); }
+  } catch (e) { if (e.status === 404 || e.status === 403) setup(e.status === 403 ? "This link is read-only for the team view and cannot show code. Open Memory with a team token." : e.message.startsWith("no repo") ? "" : e.message); else { $("err").textContent = e.message; $("err").style.display = "block"; } }
+})();
+</script></body></html>
