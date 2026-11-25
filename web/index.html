@@ -1,100 +1,65 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus</title>
+<link rel="stylesheet" href="assets/pixel.css">
 <style>
-@font-face{font-family:"Instrument Serif";src:url("assets/InstrumentSerif-Regular.woff2") format("woff2");font-display:swap}
-@font-face{font-family:"Caveat";src:url("assets/Caveat-SemiBold.woff2") format("woff2");font-weight:600;font-display:swap}
-@font-face{font-family:"Geist";src:url("assets/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
-@font-face{font-family:"Geist Mono";src:url("assets/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
-/* Dark stage floating on a red aura (shared with brain.html). Shape rule: panels 14px, controls 8px. */
-:root{color-scheme:dark;--stage:#161616;--panel:#1d1d1d;--line:rgba(239,227,211,.12);--chalk:#efe3d3;--mut:#9a9088;--red:#cc3a37;--pink:#ff7a6b;--ok:#8fd3a8;--gold:#e8b44a;
-  --serif:"Instrument Serif","Times New Roman",serif;--hand:"Caveat","Segoe Print",cursive;--sans:"Geist",ui-sans-serif,system-ui,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;
-  --bg:var(--stage);--fg:var(--chalk);--accent:var(--red);--chip:rgba(239,227,211,.06);--bar:rgba(22,22,22,.78)}
-*{box-sizing:border-box}
-body{margin:0;background:#b83c4c;color:var(--chalk);font:14px/1.5 var(--sans);padding:14px;-webkit-font-smoothing:antialiased}
-.aura{position:fixed;inset:-20%;z-index:0;pointer-events:none;background:radial-gradient(34% 40% at 14% 22%,#8d5cb4,transparent 70%),radial-gradient(38% 46% at 86% 14%,#f2442b,transparent 70%),radial-gradient(34% 36% at 74% 88%,#f4a6b2,transparent 70%),radial-gradient(40% 50% at 18% 90%,#e0405a,transparent 70%)}
-.stage{position:relative;z-index:1;background:var(--stage);border-radius:22px;min-height:calc(100vh - 28px);box-shadow:0 40px 90px -30px rgba(40,0,10,.6);overflow:clip}
-header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:0 max(16px,calc((100% - 1200px)/2));height:60px;background:var(--bar);border-bottom:1px solid var(--line);-webkit-backdrop-filter:blur(16px) saturate(140%);backdrop-filter:blur(16px) saturate(140%)}
-h1{font:400 30px/1 var(--serif);margin:0;letter-spacing:-.01em}
-h1 i{color:var(--pink)}
-header .m{font:12px var(--mono)}
-#conv-link,#brain-link{color:var(--pink);font:12px var(--mono);text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:5px 10px}#conv-link{margin-left:auto}#conv-link:hover,#brain-link:hover{border-color:var(--pink)}
-#upd{color:var(--mut);font:12px var(--mono);font-variant-numeric:tabular-nums}
-.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:7px;box-shadow:0 0 8px var(--ok);animation:b 2s infinite}@keyframes b{50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.live{animation:none}}
-main{display:grid;gap:8px;padding:12px 16px 24px;max-width:1400px;margin:auto;grid-template-columns:1fr;grid-template-rows:auto}
-.cmd-grid{display:grid;gap:8px;grid-template-columns:280px 1fr 280px;grid-template-rows:auto;min-height:0}
-@media(max-width:960px){.cmd-grid{grid-template-columns:1fr;}}
-.cmd-grid>.left{grid-row:1;overflow-y:auto;max-height:calc(100vh - 180px)}
-.cmd-grid>.center{grid-row:1}
-.cmd-grid>.right{grid-row:1;overflow-y:auto;max-height:calc(100vh - 180px)}
-@media(max-width:960px){.cmd-grid>.left,.cmd-grid>.right{max-height:none}}
-.bottom-grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}
-section.hide{display:none}
-section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px 8px;min-width:0}
+.hero{margin-top:4px}.hero canvas{aspect-ratio:224/104}
+.dock .it b{min-width:1ch}
+main{display:flex;flex-direction:column;gap:18px;margin-top:6px}
+.cmd-grid{display:grid;grid-template-columns:minmax(0,270px) minmax(0,1fr) minmax(0,300px);gap:18px;align-items:start}
+.cmd-grid>div{display:flex;flex-direction:column;gap:18px;min-width:0}
+.cmd-grid>.right{max-height:calc(100vh - 120px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+@media(max-width:1020px){.cmd-grid{grid-template-columns:1fr}.cmd-grid>.right{max-height:none}}
+.bottom-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}
 section.wide{grid-column:1/-1}
-section.compact{padding:10px 12px 6px}
-section.compact h2{margin-bottom:4px}
-section.compact li{padding:6px 0}
-section.compact pre{max-height:5em;margin:3px 0 0;padding:6px 8px}
-h2{font:400 12px var(--mono);color:var(--mut);margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em}
-h2 b{font:600 20px var(--hand);color:var(--pink);text-transform:none;letter-spacing:0}
-ul{list-style:none;margin:0;padding:0}
-li{padding:10px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}li:first-child{border-top:0}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);opacity:.55;margin-right:9px}.dot.on{background:var(--ok);opacity:1}
-.m{color:var(--mut)}
-.tag{display:inline-block;background:var(--chip);color:var(--mut);font:500 11px/1 var(--mono);padding:4px 7px;border-radius:6px;margin-left:7px;vertical-align:1px}
-.ok{color:var(--ok);font-weight:600}.bad{color:var(--pink);font-weight:600}.warn{color:var(--pink);font-weight:600}
-pre{margin:6px 0 0;padding:9px 11px;white-space:pre-wrap;background:var(--chip);color:var(--mut);font:12px/1.5 var(--mono);max-height:8.5em;overflow:hidden;border-radius:8px}
-.empty{color:var(--mut)}
-#err{display:none;margin:16px auto 0;width:min(1200px,calc(100% - 32px));padding:11px 14px;border-radius:10px;font-weight:500;color:var(--pink);border:1px solid var(--red);background:var(--panel)}
-a:focus-visible,button:focus-visible{outline:2px solid var(--pink);outline-offset:2px}
-@media (max-width:520px){header>.m{display:none}main{padding-inline:12px}body{padding:8px}.stage{min-height:calc(100vh - 16px)}}
+.agent{--c:hsl(var(--h) 62% 70%);--cs:hsl(var(--h) 62% 70% / .16)}
+.agent-link{color:hsl(var(--h,0) 62% 74%);text-decoration:none;font-weight:600}.agent-link:hover{text-decoration:underline}
 li.done{opacity:.55;text-decoration:line-through}
-/* visual views: every agent gets a stable hue from its owner (or its own name), used for nodes, cards, chips and timeline marks */
-.agent{--c:hsl(var(--h) 70% 62%);--cs:hsl(var(--h) 70% 62% / .16)}
-.stats{display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 10px}.stat{padding:7px 11px;border-radius:10px;background:var(--chip);color:var(--chalk);font-size:13px}.stat b{font-variant-numeric:tabular-nums;margin-right:4px}.stat.hot{color:var(--red);background:transparent;border:1px solid var(--red)}
-svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--chalk);font:11px var(--sans)}svg.viz .mut{fill:var(--mut)}
-.node circle.core{fill:var(--cs);stroke:var(--c);stroke-width:2}.node.working circle.ring{fill:none;stroke:var(--ok);stroke-width:3}.node.offline circle.core{stroke-dasharray:3 3;opacity:.6}.node text.ini{fill:var(--c);font-weight:700;font-size:13px;text-anchor:middle}
-.edge{fill:none;stroke:var(--chalk);opacity:.4}.edge.block{stroke:var(--red);stroke-dasharray:5 4;opacity:.95}.edge.same{stroke:var(--red);stroke-width:2.5;opacity:.95}
-.legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mut);font-size:12px;padding:6px 0 10px}.legend i{display:inline-block;width:18px;border-top:2px solid var(--mut);vertical-align:middle;margin-right:6px}.legend i.b{border-top:2px dashed var(--red)}.legend i.s{border-top:3px solid var(--red)}
-.board{display:grid;gap:10px;grid-template-columns:repeat(4,minmax(0,1fr));padding-bottom:12px}@media (max-width:900px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:520px){.board{grid-template-columns:1fr}}
-.col{background:var(--chip);border-radius:10px;padding:8px;min-width:0}.col h3{margin:2px 4px 8px;font:500 12px var(--mono);color:var(--mut);display:flex;justify-content:space-between}
-.card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:8px 10px;margin-bottom:8px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--pink);margin-top:4px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mut);font-size:12px;padding:8px 0 10px}.legend i{display:inline-block;width:18px;border-top:2px solid var(--mut);vertical-align:middle;margin-right:6px}.legend i.b{border-top:2px dashed var(--rose)}.legend i.s{border-top:3px solid var(--rose)}
+svg.viz{width:100%;height:auto;display:block}svg.viz text{fill:var(--cream);font:11px var(--sans)}svg.viz .mut{fill:var(--mut)}
+.node rect.core{fill:var(--cs);stroke:var(--c);stroke-width:2}.node rect.ring{fill:none;stroke:var(--leaf);stroke-width:3;stroke-dasharray:6 4}.node.offline rect.core{stroke-dasharray:3 3;opacity:.55}.node .spr{fill:var(--c)}
+.node.working rect.ring{animation:blink 1.6s steps(2) infinite}
+.edge{fill:none;stroke:var(--cream);opacity:.35}.edge.block{stroke:var(--rose);stroke-dasharray:5 4;opacity:.95}.edge.same{stroke:var(--rose);stroke-width:2.5;opacity:.95}
+.board{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr));padding-bottom:12px}@media(max-width:900px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.board{grid-template-columns:1fr}}
+.col{background:var(--chip);border-radius:10px;padding:10px;min-width:0}.col h3{display:flex;justify-content:space-between;color:var(--cream-2);margin:2px 4px 10px}
+.card{background:var(--ink);border:1px solid var(--line-2);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:9px 11px;margin-bottom:9px;overflow-wrap:anywhere}.card.done{opacity:.6}.card .who{font-size:12px;color:var(--c,var(--mut));font-weight:600}.card .why{font-size:12px;color:var(--rose);margin-top:4px}
 .files{display:flex;flex-direction:column;gap:10px;padding-bottom:12px}.dir{font:12px var(--mono);color:var(--mut)}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
-.fchip{font:12px var(--mono);padding:4px 8px;border-radius:6px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--red);color:var(--pink);font-weight:700}
-.agent-link{color:hsl(var(--h,0) 70% 62%);text-decoration:none;font-weight:600}.agent-link:hover{text-decoration:underline}
-.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding-bottom:12px}.shot{margin:0;min-width:0}.shot img,.thumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;background:var(--chip);border:1px solid var(--line);cursor:zoom-in}
+.fchip{font:12px var(--mono);padding:4px 8px;border-radius:4px;background:var(--cs);color:var(--c);border:1px solid transparent}.fchip.clash{border-color:var(--rose);color:var(--rose);font-weight:700}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding-bottom:12px}.shot{margin:0;min-width:0}.shot img,.thumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;background:var(--chip);border:1px solid var(--line);cursor:zoom-in;image-rendering:auto}
 .shot figcaption{font-size:12px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}.shot figcaption b{color:var(--c);font-weight:600}.thumbs{display:flex;gap:6px;margin-top:6px}.thumbs .thumb{width:64px;aspect-ratio:1}
-#lightbox{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--panel)}#lightbox p{color:var(--chalk);max-width:min(96vw,900px);text-align:center;margin:0}#lightbox button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--chalk);cursor:pointer}
+#lightbox{position:fixed;inset:0;z-index:20;background:rgba(10,10,9,.82);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px}#lightbox[hidden]{display:none}#lightbox img{max-width:min(96vw,1100px);max-height:78vh;border-radius:8px;background:var(--ink-2);border:1px solid var(--line)}#lightbox p{max-width:min(96vw,900px);text-align:center;margin:0}
 .sr{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
-.convs{display:flex;flex-direction:column;gap:6px;padding-bottom:6px}.msg{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--line)}.msg:last-child{border-bottom:0}.msg .av{width:28px;height:28px;border-radius:50%;background:var(--cs);border:2px solid var(--c);display:flex;align-items:center;justify-content:center;font:700 10px var(--sans);color:var(--c);flex-shrink:0;box-shadow:0 0 8px var(--cs)}.msg .body{flex:1;min-width:0}.msg .head{font-size:11px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}.msg .who{font-weight:700;color:var(--c)}.msg .to{color:var(--mut)}.msg .when{color:var(--mut);font-size:10px;margin-left:auto}.msg .text{margin:2px 0 0;font-size:12px;color:var(--chalk);overflow-wrap:anywhere;line-height:1.4}.msg .reply{margin:4px 0 0;padding:5px 8px;background:var(--chip);border-radius:6px;border-left:2px solid var(--c);font-size:11px;color:var(--mut);line-height:1.3}
-svg.viz .node circle.core{filter:drop-shadow(0 0 6px var(--c))}svg.viz .node.working circle.ring{filter:drop-shadow(0 0 10px var(--ok));animation:pulse 2s infinite}
-@keyframes pulse{50%{opacity:.6}}
-.feed-item{padding:5px 0;border-bottom:1px solid var(--line);font-size:12px;display:flex;gap:6px;align-items:baseline}.feed-item:last-child{border-bottom:0}.feed-item .kind{font:500 10px var(--mono);color:var(--mut);background:var(--chip);padding:2px 5px;border-radius:4px;white-space:nowrap}.feed-item .who{color:var(--c);font-weight:600;white-space:nowrap}.feed-item .what{color:var(--chalk);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.feed-item .ts{color:var(--mut);font-size:10px;white-space:nowrap}
-.stat-big{text-align:center;padding:8px 0}.stat-big .num{font:700 28px var(--sans);color:var(--pink);text-shadow:0 0 14px rgba(204,58,55,.4)}.stat-big .lbl{font:500 11px var(--mono);color:var(--mut);margin-top:2px}
-.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:6px;padding:4px 0 8px}
+.convs{display:flex;flex-direction:column;gap:2px;padding-bottom:6px}.msg{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px dashed var(--line-2)}.msg:last-child{border-bottom:0}
+.msg .av{width:30px;height:30px;flex:none;background:var(--cs);border:2px solid var(--c);display:flex;align-items:center;justify-content:center;font:700 10px var(--px);color:var(--c)}
+.msg .body{min-width:0;font-size:13px}.msg .head{display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}.msg .who{color:var(--c);font-weight:600}.msg .arrow,.msg .ts{color:var(--mut);font-size:11px}
+.feed-item{padding:6px 0;border-bottom:1px dashed var(--line-2);font-size:12px;display:flex;gap:6px;align-items:baseline}.feed-item:last-child{border-bottom:0}
+.feed-item .kind{font:500 10px var(--mono);color:var(--cream-2);border:1px solid var(--line-2);padding:2px 5px;border-radius:3px;white-space:nowrap}.feed-item .who{color:var(--c);font-weight:600;white-space:nowrap}.feed-item .what{flex:1;overflow-wrap:anywhere}.feed-item .ts{color:var(--mut);white-space:nowrap}
+.sec-h{display:flex;justify-content:space-between;align-items:center}
 </style></head><body>
-<div class="aura"></div>
 <div class="stage">
-<header><h1>Team<i>Bus</i></h1><span class="m">read-only team view</span><a href="conversations" id="conv-link">conversations</a><a href="brain" id="brain-link">brain view</a><span id="upd"></span></header>
+<header id="nav"></header>
+<div class="status"><span id="upd"></span></div>
 <div id="err"></div>
+<h1 class="title">TeamBus<small>one hub for every agent. no collisions, no guessing.</small></h1>
+<div class="frame hero"><canvas id="scene" aria-label="Pixel art: a rainy neon block of flats"></canvas>
+ <div class="note" id="heronote">Connecting to the hub…</div>
+ <div class="acts"><a class="btn" id="brain-link" href="brain">open the brain</a><a class="btn pix" id="conv-link" href="conversations">read the talk</a></div></div>
+<div class="dock" id="stats" role="list" aria-label="At a glance"></div>
 <main>
- <section class="wide"><h2>At a glance</h2><div class="stat-row" id="stats"></div></section>
  <div class="cmd-grid">
   <div class="left">
-   <section class="compact" id="sec-conv"><h2>Messages</h2><div id="convbox"></div></section>
-   <section class="compact" id="sec-questions"><h2>Open questions</h2><ul id="questions"></ul></section>
-   <section class="compact"><h2>Team</h2><ul id="agents"></ul></section>
+   <section id="sec-conv"><h2>Messages</h2><div id="convbox"></div></section>
+   <section id="sec-questions"><h2>Open questions</h2><ul id="questions"></ul></section>
+   <section id="sec-team"><h2>Team</h2><ul id="agents"></ul></section>
   </div>
   <div class="center">
    <section><h2>Team map</h2><div id="map"></div><div class="legend"><span><i></i>messages</span><span><i class="b"></i>blocked</span><span><i class="s"></i>same file</span></div><p class="sr" id="mapsr"></p></section>
    <section class="wide" id="sec-board"><h2>Board</h2><div class="board" id="board"></div></section>
   </div>
   <div class="right">
-   <section class="compact" id="sec-feed"><h2>Live feed</h2><div id="feedbox"></div></section>
-   <section class="compact" id="sec-builds"><h2>Builds</h2><ul id="builds"></ul></section>
-   <section class="compact" id="sec-intents"><h2>Working on</h2><ul id="intents"></ul></section>
-   <section class="compact" id="sec-files"><h2>Files in play</h2><div class="files" id="files"></div></section>
+   <section id="sec-feed"><h2>Live feed</h2><div id="feedbox"></div></section>
+   <section id="sec-builds"><h2>Builds</h2><ul id="builds"></ul></section>
+   <section id="sec-intents"><h2>Working on</h2><ul id="intents"></ul></section>
+   <section id="sec-files"><h2>Files in play</h2><div class="files" id="files"></div></section>
   </div>
  </div>
  <div class="bottom-grid">
@@ -107,15 +72,14 @@ svg.viz .node circle.core{filter:drop-shadow(0 0 6px var(--c))}svg.viz .node.wor
  </div>
 </main>
 </div>
-<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" hidden><img id="lbimg" alt=""><p id="lbcap"></p><button type="button" id="lbclose">Close</button></div>
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" hidden><img id="lbimg" alt=""><p id="lbcap"></p><button type="button" class="btn pix" id="lbclose">Close</button></div>
+<script src="assets/pixel.js"></script>
 <script>
 const _q = new URLSearchParams(location.search), token = _q.get("token") || "", invite = _q.get("invite") || "", authKey = token || invite;
 const $ = (id) => document.getElementById(id);
 const tq = token ? "token=" + encodeURIComponent(token) : invite ? "invite=" + encodeURIComponent(invite) : "";
-const brainLink = document.getElementById("brain-link");
-if (brainLink) brainLink.href = "brain?" + tq;
-const convLink = document.getElementById("conv-link");
-if (convLink) convLink.href = "conversations?" + tq;
+px.nav("team"); px.foot("read-only team view"); px.scene($("scene"));
+for (const [id, p] of [["brain-link", "brain"], ["conv-link", "conversations"]]) $(id).href = p + (tq ? "?" + tq : "");
 const ago = (t, now) => { const s = Math.max(0, now - t); return s < 90 ? Math.round(s) + "s ago" : s < 5400 ? Math.round(s / 60) + "m ago" : s < 129600 ? Math.round(s / 3600) + "h ago" : Math.round(s / 86400) + "d ago"; };
 function fill(id, rows, render) {  // textContent only: nothing from the hub is ever parsed as HTML
   const ul = $(id); ul.replaceChildren();
@@ -152,9 +116,11 @@ function visuals(d) {
   // at a glance
   const cnt = (s) => tasks.filter((t) => t.status === s).length, working = agents.filter((a) => a.state === "working").length, unread = (d.questions || []).filter((q) => !q.read).length;
   const st = $("stats"); st.replaceChildren();
-  const bigStat = (num, lbl, glow) => { const s = dom("div", "stat-big"); const n2 = dom("div", "num", String(num)); if (glow) n2.style.color = glow; s.append(n2, dom("div", "lbl", lbl)); st.append(s); };
-  bigStat(agents.length, working + " working", working ? "var(--ok)" : null); bigStat(cnt("open") + cnt("claimed"), "tasks active"); bigStat(cnt("blocked"), "blocked", cnt("blocked") ? "var(--pink)" : null); bigStat(cnt("done"), "done today", cnt("done") ? "var(--ok)" : null);
-  bigStat(clashes.length, "file conflicts", clashes.length ? "var(--pink)" : null); bigStat(unread, "unread msgs", unread > 2 ? "var(--pink)" : null); const lastC = ev.filter((e) => e.kind === "commit").pop(); bigStat(lastC ? ago(lastC.ts, n).replace(" ago", "") : "—", "last commit");
+  const bigStat = (num, lbl, tone, icon) => { const s = dom("div", "it" + (tone ? " " + tone : "")); s.setAttribute("role", "listitem"); const t = dom("div"); t.append(dom("b", "", String(num)), dom("small", "", lbl)); s.append(px.icon(icon, 3), t); st.append(s); };
+  bigStat(agents.length, working + " working", working ? "good" : "", "invader"); bigStat(cnt("open") + cnt("claimed"), "tasks active", "", "flag"); bigStat(cnt("blocked"), "blocked", cnt("blocked") ? "hot" : "", "cross");
+  bigStat(cnt("done"), "done today", cnt("done") ? "good" : "", "check"); bigStat(clashes.length, "file conflicts", clashes.length ? "hot" : "", "bolt"); bigStat(unread, "unread msgs", unread > 2 ? "hot" : "", "chat");
+  const lastC = ev.filter((e) => e.kind === "commit").pop(); bigStat(lastC ? ago(lastC.ts, n).replace(" ago", "") : "—", "last commit", "", "rocket");
+  $("heronote").textContent = agents.length ? `${agents.length} agent${agents.length > 1 ? "s" : ""} on the bus, ${working} working. ${clashes.length ? clashes.length + " file conflict" + (clashes.length > 1 ? "s" : "") + " to sort out." : "No file conflicts."} ${unread ? unread + " unread message" + (unread > 1 ? "s" : "") + "." : "Inbox is quiet."}` : "No agents have joined yet. Join one with teambus-join, or ask the orchestrator to create_agent.";
   // team map
   const map = $("map"); map.replaceChildren();
   if (!agents.length) map.append(dom("p", "empty", "No agents have joined yet."));
@@ -164,7 +130,7 @@ function visuals(d) {
     const svg = el("svg", { class: "viz", viewBox: `0 0 ${W} ${Ht}`, role: "img", "aria-label": "Team map" });
     const glow = el("filter", { id: "glow", x: "-50%", y: "-50%", width: "200%", height: "200%" }); glow.append(el("feGaussianBlur", { stdDeviation: "3", result: "blur" }), el("feMerge", {}, el("feMergeNode", { in: "blur" }), el("feMergeNode", { in: "SourceGraphic" })));
     const gridPat = el("pattern", { id: "grid", width: 40, height: 40, patternUnits: "userSpaceOnUse" }); gridPat.append(el("path", { d: "M 40 0 L 0 0 0 40", fill: "none", stroke: "var(--chalk)", "stroke-opacity": ".06", "stroke-width": .5 }));
-    const bgGrad = el("radialGradient", { id: "mapbg", cx: "50%", cy: "50%", r: "50%" }); bgGrad.append(el("stop", { offset: "0%", "stop-color": "rgba(204,58,55,.06)" }), el("stop", { offset: "100%", "stop-color": "transparent" }));
+    const bgGrad = el("radialGradient", { id: "mapbg", cx: "50%", cy: "50%", r: "50%" }); bgGrad.append(el("stop", { offset: "0%", "stop-color": "rgba(94,230,216,.05)" }), el("stop", { offset: "100%", "stop-color": "transparent" }));
     svg.append(el("defs", {}, el("marker", { id: "arr", viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" }, el("path", { d: "M0 0 L8 4 L0 8 z", class: "mut" })), glow, gridPat, bgGrad));
     svg.append(el("rect", { width: W, height: Ht, fill: "url(#mapbg)" }), el("rect", { width: W, height: Ht, fill: "url(#grid)" }));
     const edges = [], sr = [], msgs = {};
@@ -174,7 +140,7 @@ function visuals(d) {
     for (const p of clashPairs) { const [a, b] = p.split("|"); if (pos[a] && pos[b]) { edges.push({ a, b, cls: "edge same", w: 2.5, curve: 0 }); sr.push(`${a} and ${b} are editing the same file`); } }
     for (const e of edges) {
       const [x1, y1] = pos[e.a], [x2, y2] = pos[e.b], mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, q = [mx - (dy / L) * e.curve, my + (dx / L) * e.curve];
-      const sh = (x, y, tx, ty) => { const l = Math.hypot(tx - x, ty - y) || 1; return [x + ((tx - x) / l) * 30, y + ((ty - y) / l) * 30]; };      // stop at the node's edge
+      const sh = (x, y, tx, ty) => { const l = Math.hypot(tx - x, ty - y) || 1; return [x + ((tx - x) / l) * 36, y + ((ty - y) / l) * 36]; };      // stop at the node's edge
       const [sx, sy] = sh(x1, y1, q[0], q[1]), [ex, ey] = sh(x2, y2, q[0], q[1]);
       const pathD = `M${sx} ${sy} Q${q[0]} ${q[1]} ${ex} ${ey}`;
       const p = el("path", { class: e.cls, d: pathD, "stroke-width": e.w }); if (e.arrow) p.setAttribute("marker-end", "url(#arr)"); svg.append(p);
@@ -183,9 +149,9 @@ function visuals(d) {
     for (const a of agents) {
       const [x, y] = pos[a.agent_id], g = el("g", { class: "node agent " + (a.state === "working" ? "working" : (a.state === "offline" || a.state === "never connected") ? "offline" : ""), transform: `translate(${x} ${y})` });
       g.style.setProperty("--h", hue(group(a))); const ini = a.agent_id.split("-").map((s) => s[0] || "").join("").slice(0, 2).toUpperCase();
-      const ring = el("circle", { class: "ring", r: 31 }); const core = el("circle", { class: "core", r: 26, filter: "url(#glow)" });
-      g.append(el("title", {}, document.createTextNode(`${a.agent_id}${a.role ? " (" + a.role + ")" : ""}: ${a.state || "unknown"}`)), ring, core, el("text", { class: "ini", y: 5 }, document.createTextNode(ini)),
-        el("text", { y: 46, "text-anchor": "middle" }, document.createTextNode(a.agent_id.length > 18 ? a.agent_id.slice(0, 17) + "…" : a.agent_id)), el("text", { y: 59, "text-anchor": "middle", class: "mut" }, document.createTextNode((a.role || "") + (a.state ? " · " + a.state : ""))));
+      const ring = el("rect", { class: "ring", x: -32, y: -32, width: 64, height: 64 }); const core = el("rect", { class: "core", x: -27, y: -27, width: 54, height: 54 }); const spr = el("path", { class: "spr", d: px.spriteData(a.agent_id).d, transform: "translate(-21 -21) scale(6)" });
+      g.append(el("title", {}, document.createTextNode(`${a.agent_id}${a.role ? " (" + a.role + ")" : ""}: ${a.state || "unknown"}`)), ring, core, spr,
+        el("text", { y: 50, "text-anchor": "middle" }, document.createTextNode(a.agent_id.length > 18 ? a.agent_id.slice(0, 17) + "…" : a.agent_id)), el("text", { y: 63, "text-anchor": "middle", class: "mut" }, document.createTextNode((a.role || "") + (a.state ? " · " + a.state : ""))));
       svg.append(g);
     }
     map.append(svg); $("mapsr").textContent = sr.join(". ") || "No messages, blocks or shared files right now.";

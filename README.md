@@ -136,7 +136,7 @@ The real-session evidence (actual `claude -p` runs, with the bugs they exposed) 
 - Agent free-text reaches other agents' context (prompt-injection surface among teammates).
 
 ## Licence
-MIT, see `LICENSE`. Vendored libraries and fonts in `web/assets/` keep their own licences (`web/assets/THIRD-PARTY.txt`); review GSAP's before redistributing commercially.
+MIT, see `LICENSE`. Fonts in `web/assets/` keep their own licences (SIL OFL, see `web/assets/THIRD-PARTY.txt`, which also credits the design inspiration).
 
 ## When the MCP tools do not load
 Hooks work without them, and so does the shell: `teambus send <agent> "text" [--reply-to N]`, `teambus inbox`, `teambus outbox` use the same hub. Run `/mcp` in Claude Code to reconnect (a sleeping free-tier hub, or a token the server rejected, are the usual causes; `teambus doctor` says which). Anything that looks like a credential is removed from messages, build commands and logs before it is stored, and the sender is told.

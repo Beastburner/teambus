@@ -657,7 +657,7 @@ async def proxy(request: Request):
     return StreamingResponse(r.aiter_raw(), r.status_code, {k: v for k, v in r.headers.items() if k.lower() not in HOP}, background=BackgroundTask(r.aclose))
 
 PAGE = (HERE / "web" / "sandbox.html").read_text()   # landing page; the __X__ placeholders are filled from the live limits per request
-for _ext, _t in ((".woff2", "font/woff2"), (".js", "text/javascript"), (".jpg", "image/jpeg")): mimetypes.add_type(_t, _ext)   # slim container images ship no MIME table
+for _ext, _t in ((".woff2", "font/woff2"), (".js", "text/javascript"), (".css", "text/css"), (".jpg", "image/jpeg")): mimetypes.add_type(_t, _ext)   # slim container images ship no MIME table
 ASSETS = {p.name: p for p in (HERE / "web" / "assets").glob("*") if p.is_file()}   # fonts + preview images; a fixed whitelist, so no path traversal
 async def home(request):
     html = PAGE.replace("__MINS__", str(min(TTL, MAX_AGE) // 60)).replace("__MAXH__", f"{MAX_AGE / 3600:g}").replace("__IDLE__", str(IDLE // 60)).replace("__PER_IP__", str(PER_IP)).replace("__MAX_DB_MB__", f"{MAX_DB / 1e6:g}").replace("__MAX_ACTIVE__", str(MAX_ACTIVE_PER_IP)).replace("__MAX_AGENTS__", str(MAX_AGENTS)).replace("__INSTALL__", json.dumps(INSTALL_CMD)).replace("__NOTICE__", json.dumps(NOTICE))

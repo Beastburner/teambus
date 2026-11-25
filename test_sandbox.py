@@ -121,8 +121,8 @@ def test_landing_page_is_served_with_live_limits(mgr):
 
 def test_assets_served_from_a_fixed_whitelist(mgr):
     m = mgr()
-    for name, ctype in (("Geist-Variable.woff2", "font/woff2"), ("InstrumentSerif-Regular.woff2", "font/woff2"), ("Caveat-Bold.woff2", "font"), ("shot-contracts.jpg", "image/jpeg"), ("gsap.min.js", "javascript"), ("three.module.min.js", "javascript")):
-        r = urllib.request.urlopen(m.url + "/assets/" + name); assert r.status == 200 and ctype in r.headers["content-type"] and len(r.read()) > 10000
+    for name, ctype in (("PixelifySans-Variable.woff2", "font/woff2"), ("SpaceGrotesk-Variable.woff2", "font/woff2"), ("GeistMono-Variable.woff2", "font/woff2"), ("pixel.css", "text/css"), ("pixel.js", "javascript")):
+        r = urllib.request.urlopen(m.url + "/assets/" + name); assert r.status == 200 and ctype in r.headers["content-type"] and len(r.read()) > 2000
     for bad in ("..%2Fsandbox.py", "%2e%2e/server.py", "nope.txt", "..%2F..%2Fetc%2Fpasswd"): assert req(m.url + "/assets/" + bad)[0] == 404
 
 def _post(url, headers=None):

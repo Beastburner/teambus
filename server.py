@@ -152,7 +152,7 @@ class Auth:
             email = _verify_invite(invite_tok)
             if email: who = {"viewer": True, "invite_email": email}
         if scope["path"] == "/invite" and scope["method"] == "GET": return await s.app(scope, receive, send)
-        if not who and re.fullmatch(r"/assets/[A-Za-z0-9._-]+\.woff2", scope["path"]) and scope["method"] == "GET": return await s.app(scope, receive, send)
+        if not who and re.fullmatch(ASSET_RE, scope["path"][len("/assets/"):] if scope["path"].startswith("/assets/") else "-") and scope["method"] == "GET": return await s.app(scope, receive, send)
         if not who: return await JSONResponse({"error": "unauthorized"}, 401)(scope, receive, send)
         if who.get("viewer") and not (scope["method"] == "GET" and (scope["path"] in ("/", "/brain", "/invite", "/agent", "/conversations", "/api/status", "/api/conversations", "/api/thread") or re.fullmatch(r"/api/attachment/\d+", scope["path"]) or scope["path"] == "/api/agent_detail")):
             return await JSONResponse({"error": "viewer token is read-only"}, 403)(scope, receive, send)
@@ -701,13 +701,17 @@ async def _health(request): return JSONResponse({"ok": True})
 @mcp.custom_route("/", methods=["GET"])
 async def _index(request): return HTMLResponse(open(WEB).read()) if os.path.exists(WEB) else JSONResponse({"error": "no web view installed"}, 404)
 
+# Public static files the pages need before any token can be sent (a CSS url() or a <link> carries none): fonts, plus exactly the two theme files. Nothing else in the folder is ever served.
+ASSET_RE = re.compile(r"(?:[A-Za-z0-9._-]+\.woff2|pixel\.css|pixel\.js)")
+ASSET_TYPES = {".woff2": "font/woff2", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
+
 @mcp.custom_route("/assets/{name}", methods=["GET"])
 async def _asset(request):
-    """The page's own fonts (public, OFL). Fixed folder, woff2 only, no path tricks: a CSS url() cannot carry the viewer token."""
+    """The page's own fonts and theme files (public). Fixed folder, an allowlist of names, no path tricks: a CSS url() cannot carry the viewer token."""
     n = request.path_params["name"]; f = os.path.join(os.path.dirname(WEB), "assets", n)
-    if not re.fullmatch(r"[A-Za-z0-9._-]+\.woff2", n) or not os.path.isfile(f): return JSONResponse({"error": "not found"}, 404)
+    if not ASSET_RE.fullmatch(n) or not os.path.isfile(f): return JSONResponse({"error": "not found"}, 404)
     from starlette.responses import Response
-    return Response(open(f, "rb").read(), media_type="font/woff2", headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
+    return Response(open(f, "rb").read(), media_type=ASSET_TYPES[os.path.splitext(n)[1]], headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 @mcp.custom_route("/brain", methods=["GET"])
 async def _brain(request):

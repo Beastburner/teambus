@@ -15,7 +15,7 @@ pytest -q test_teambus.py test_sandbox.py      # about 40 s; both suites start r
 - Test what you change against the real thing: the tests start a real hub or sandbox, and there are no mocks of the server. Add a test with every behaviour change.
 - The dashboard has a browser test: `pip install playwright && playwright install chromium`, start a hub, then `python test_webview.py URL VIEWER_TOKEN ALICE_TOKEN BOB_TOKEN`.
 - Anything that renders text from the hub uses `textContent`, never `innerHTML`.
-- Keep the vendored libraries in `web/assets/` as they are and update `THIRD-PARTY.txt` if you add one.
+- The web pages share `web/assets/pixel.css` and `pixel.js` (the pixel theme, icons and sprites, all drawn in code). Reuse them instead of adding per-page styles or libraries, and update `THIRD-PARTY.txt` if you add a font or asset.
 - Do not commit tokens, databases, `.claude/` settings or session recordings (`.gitignore` covers them).
 
 ## Pull requests

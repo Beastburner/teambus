@@ -36,7 +36,7 @@ jobs:
           for i in $(seq 1 40); do curl -fs localhost:10000/healthz && break; sleep 1; done
           curl -fs localhost:10000/healthz
           curl -fs -o /dev/null -w "landing page %{http_code}\n" localhost:10000/
-          curl -fs -o /dev/null -w "font %{content_type}\n" localhost:10000/assets/InstrumentSerif-Regular.woff2
+          curl -fs -o /dev/null -w "font %{content_type}\n" localhost:10000/assets/PixelifySans-Variable.woff2
           curl -fs -X POST -o /dev/null -w "create sandbox %{http_code}\n" localhost:10000/new
           docker rm -f sbx
       - name: The default image on Render (RENDER set, no auth) starts the sandbox, and elsewhere the hub still refuses without auth

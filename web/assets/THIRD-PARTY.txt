@@ -1,12 +1,11 @@
-Vendored front-end libraries and fonts used by the sandbox landing page (web/sandbox.html).
+Front-end assets used by the TeamBus web pages (web/*.html). No JavaScript libraries are vendored; pixel.css and pixel.js are this project's own (MIT).
 
-three.js r170 (three.module.min.js)
-  MIT License, Copyright 2010-2024 three.js authors. https://github.com/mrdoob/three.js
+Fonts, all SIL Open Font License 1.1 (the full licence text sits next to each font):
+  Pixelify Sans   PixelifySans-Variable.woff2   PixelifySans-OFL-LICENSE.txt   https://github.com/eifetx/Pixelify-Sans
+  Space Grotesk   SpaceGrotesk-Variable.woff2   SpaceGrotesk-OFL-LICENSE.txt   https://github.com/floriankarsten/space-grotesk
+  Geist Mono      GeistMono-Variable.woff2      Geist-OFL-LICENSE.txt          https://github.com/vercel/geist-font
 
-GSAP 3.13.0 (gsap.min.js, ScrollTrigger.min.js)
-  Copyright 2025 GreenSock. Subject to the GSAP Standard License: https://gsap.com/standard-license
-  Review those terms before redistributing this folder commercially.
-
-Geist and Geist Mono (Geist-Variable.woff2, GeistMono-Variable.woff2): SIL OFL 1.1, see Geist-OFL-LICENSE.txt
-Instrument Serif (InstrumentSerif-Regular.woff2, InstrumentSerif-Italic.woff2): SIL OFL 1.1, see InstrumentSerif-OFL-LICENSE.txt
-Caveat (Caveat-SemiBold.woff2, Caveat-Bold.woff2): SIL OFL 1.1, see Caveat-OFL-LICENSE.txt
+Design credit: the pixel theme (charcoal stage on slate, cream ink, outlined pill navigation, notched pixel buttons, rainy neon pixel-city hero)
+is inspired by the "Creative Portfolio Website Design" pixel-art gallery on Behance, found through Pinterest:
+  https://www.behance.net/gallery/226623781/Creative-Portfolio-Website-Design/
+No artwork from that project is copied or bundled. Every icon, sprite and the hero scene are drawn in code (web/assets/pixel.js).

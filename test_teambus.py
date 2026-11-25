@@ -1344,6 +1344,19 @@ def test_assets_missing_woff2_is_404(web):   # asset requests are anonymous in p
     c, _ = web; assert c.get("/assets/Nope.woff2").status_code == 404 and c.get("/assets/Nope.woff2", headers=AGENT).status_code == 404
 
 
+@pytest.mark.parametrize("name,ctype", [("pixel.css", "text/css"), ("pixel.js", "text/javascript")])
+def test_assets_serves_the_two_theme_files_without_a_token(web, name, ctype):
+    c, d = web; (d / "assets" / name).write_bytes(b"/* theme */")
+    r = c.get(f"/assets/{name}")                           # the pages load them before any token can be sent
+    assert r.status_code == 200 and r.content == b"/* theme */" and r.headers["content-type"].startswith(ctype) and r.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize("name", ["other.css", "other.js", "pixel.css.map", "Pixel.css", "pixel.json", "logo.svg"])
+def test_assets_serves_no_other_css_or_js_even_if_present(web, name):
+    c, d = web; (d / "assets" / name).write_bytes(b"secret")
+    assert c.get(f"/assets/{name}", headers=AGENT).status_code == 404 and c.get(f"/assets/{name}").status_code in (401, 404)
+
+
 @pytest.mark.parametrize("name", ["notes.txt", "gsap.min.js", "font.woff", "font.woff2.txt", "SomeFont.WOFF2x"])
 def test_assets_rejects_non_woff2_files_even_if_they_exist(web, name):
     c, d = web; (d / "assets" / name).write_bytes(b"secret"); r = c.get(f"/assets/{name}", headers=AGENT); assert r.status_code == 404 and b"secret" not in r.content
