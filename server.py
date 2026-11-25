@@ -10,6 +10,8 @@ from starlette.responses import HTMLResponse, JSONResponse
 E = os.environ.get
 DB, TOKENS, VIEWER, NOAUTH = E("TEAMBUS_DB", "teambus.db"), E("TEAMBUS_TOKENS", "tokens.json"), E("TEAMBUS_TOKEN"), E("TEAMBUS_NOAUTH") == "1"
 VIEWER_SHA256 = {h.strip().lower() for h in E("TEAMBUS_TOKEN_SHA256", "").split(",") if h.strip()}   # read-only tokens known only by their SHA-256 (a resumed sandbox)
+# One orchestrator token set in the environment (a deploy secret), so a hosted hub needs no shell to start: that agent may create_agent, and every other agent is made through it.
+ADMIN, ADMIN_AGENT = E("TEAMBUS_ADMIN_TOKEN"), E("TEAMBUS_ADMIN_AGENT", "orchestrator")
 INTENT_TTL, CONTRACT_TTL = float(E("TEAMBUS_INTENT_TTL", 4 * 3600)), float(E("TEAMBUS_CONTRACT_TTL", 3 * 86400))
 ACTIVE, OFFLINE = float(E("TEAMBUS_ACTIVE_SECS", 900)), float(E("TEAMBUS_OFFLINE_SECS", 86400))
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
@@ -83,6 +85,7 @@ def sha256(t): return hashlib.sha256(t.encode()).hexdigest()
 def ident(tok):
     """token -> identity. tokens.json is keyed by the raw token, or by "sha256:<hex digest>" when the token itself is not stored (a stolen file is then useless)."""
     if tok:
+        if ADMIN and hmac.compare_digest(tok.encode(), ADMIN.encode()): return {"agent_id": ADMIN_AGENT, "role": "orchestrator", "can_create": True}
         t = tokens(); v = t.get(tok) or t.get("sha256:" + sha256(tok))
         if v: return v
         if VIEWER and tok == VIEWER or VIEWER_SHA256 and sha256(tok) in VIEWER_SHA256: return {"viewer": True}
@@ -619,11 +622,56 @@ def conversations(limit: int = 30, agent_id: str = "", ctx: Context | None = Non
     roots = rows("SELECT m.*, (SELECT COUNT(*) FROM messages r WHERE r.reply_to=m.id) AS replies FROM messages m WHERE m.reply_to IS NULL ORDER BY m.ts DESC LIMIT ?", max(1, min(int(limit), 100)))
     return {"conversations": roots}
 
-for fn in (whoami, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions, list_attachments, view_attachment, agent_detail, conversations, invite_viewer, revoke_invite, list_invites): mcp.tool()(fn)
+def list_agents(ctx: Context | None = None):
+    """Everyone on this team: agent_id, role, owner, and whether each is working, idle, quiet or offline (and how long ago they were seen)."""
+    return {"agents": presence()}
+
+def team_status(ctx: Context | None = None):
+    """The whole picture the web dashboard shows: agents, open intents and contracts, recent builds, open questions, tasks, decisions and a timeline of the last 3 hours."""
+    return status(ctx)
+
+for fn in (whoami, list_agents, team_status, digest, post_intent, resolve_intent, resolve_contract, asked, team_feed, ask_teammate_agent, outbox, thread, publish_contract, report_build, check_conflicts, create_agent, remove_agent, list_spawns, spawn_update, add_task, claim_task, update_task, list_tasks, record_decision, list_decisions, list_attachments, view_attachment, agent_detail, conversations, invite_viewer, revoke_invite, list_invites): mcp.tool()(fn)
+
+# ---- MCP resources (read-only team state a client can attach or browse) and prompts (the protocol and two common workflows) ----
+def _protocol():
+    """The team protocol: the same text a project's CLAUDE.md carries (CLAUDE.snippet.md), so there is one source of truth."""
+    try: return open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "CLAUDE.snippet.md")).read()
+    except OSError: return "TeamBus: ask teammates with ask_teammate_agent instead of guessing, publish_contract before changing a shared interface, answer your inbox, and call resolve_intent when a piece of work is done."
+
+def _json(x): return json.dumps(x, indent=1, default=str)
+
+@mcp.resource("teambus://agents", name="agents", description="Everyone on the team with role and presence.", mime_type="application/json")
+def res_agents() -> str: return _json({"agents": presence()})
+
+@mcp.resource("teambus://tasks", name="tasks", description="The shared task board: unfinished tasks and what finished in the last day.", mime_type="application/json")
+def res_tasks() -> str: return _json(list_tasks())
+
+@mcp.resource("teambus://decisions", name="decisions", description="The team's current decisions (conventions, library choices, rules).", mime_type="application/json")
+def res_decisions() -> str: return _json(list_decisions(limit=50))
+
+@mcp.resource("teambus://contracts", name="contracts", description="Open contracts: shared interfaces teammates published, with the files that consume them.", mime_type="application/json")
+def res_contracts() -> str: return _json({"contracts": rows("SELECT id, ts, agent_id, name, spec, files, source_files FROM contracts WHERE status='open' AND ts>? ORDER BY ts DESC LIMIT 50", time.time() - CONTRACT_TTL)})
+
+@mcp.resource("teambus://protocol", name="protocol", description="How agents on this team coordinate (the CLAUDE.md snippet).", mime_type="text/markdown")
+def res_protocol() -> str: return _protocol()
+
+@mcp.prompt(name="teambus_protocol", description="The rules for working with teammates' agents on this hub.")
+def prompt_protocol() -> str: return _protocol()
+
+@mcp.prompt(name="create_teammate", description="Create a new agent on this team for a piece of work and brief it.")
+def prompt_create_teammate(name: str, role: str, task: str) -> str:
+    return (f"Create a teammate agent for this work: {task}\n\n1. Call create_agent(name={name!r}, role={role!r}, brief=<what it should do, which files it owns, what it must not touch>"
+            ", spawn=true if a `teambus worker` is running for you, else false).\n2. Give the returned `join` command to the person who will start that agent's Claude session, in the project folder it will work in. "
+            "Never post the token in a message or a file.\n3. Call list_agents to confirm it appears, and ask_teammate_agent to check in once it has joined.")
+
+@mcp.prompt(name="handoff", description="Hand a piece of work to a teammate's agent with the context it needs.")
+def prompt_handoff(to_agent: str, summary: str) -> str:
+    return (f"Hand this to {to_agent}: {summary}\n\nSend it with ask_teammate_agent(to_agent={to_agent!r}, question=...) including: what is done, what is left, the files involved, "
+            "and any contract you published (publish_contract first if an interface changed). Then call resolve_intent for the work you are leaving.")
 
 # ---- REST mirror so hooks/CLI (plain scripts) call the same functions, plus the web view ----
 API = dict(whoami=whoami, post_intent=post_intent, resolve=resolve_intent, resolve_contract=resolve_contract, asked=asked, feed=team_feed, ask=ask_teammate_agent, inbox=check_inbox, outbox=outbox, thread=thread,
-           contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions, attach=attach_image, attachments=list_attachments, agent_detail=agent_detail, conversations=conversations, invite=invite_viewer, revoke=revoke_invite, invites=list_invites)
+           agents=list_agents, contract=publish_contract, build=report_build, conflicts=check_conflicts, digest=digest, create_agent=create_agent, remove_agent=remove_agent, spawns=list_spawns, spawn_update=spawn_update, add_task=add_task, claim_task=claim_task, update_task=update_task, tasks=list_tasks, record_decision=record_decision, decisions=list_decisions, attach=attach_image, attachments=list_attachments, agent_detail=agent_detail, conversations=conversations, invite=invite_viewer, revoke=revoke_invite, invites=list_invites)
 
 def _route(name):
     async def h(request):
@@ -707,5 +755,6 @@ def add_agent(agent_id, role, owner="", can_create=False):
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["add-agent"]: sys.exit(add_agent(*[x for x in sys.argv[2:] if x != "--can-create"][:3], can_create="--can-create" in sys.argv[2:]))
-    if not (NOAUTH or VIEWER or os.path.exists(TOKENS)): sys.exit(f"refusing to start without auth: create {TOKENS} (token -> agent map) and/or set TEAMBUS_TOKEN, or TEAMBUS_NOAUTH=1 for local dev")
+    if not (NOAUTH or VIEWER or ADMIN or os.path.exists(TOKENS)): sys.exit(f"refusing to start without auth: create {TOKENS} (token -> agent map) and/or set TEAMBUS_TOKEN or TEAMBUS_ADMIN_TOKEN, or TEAMBUS_NOAUTH=1 for local dev")
+    if ADMIN and (len(ADMIN) < 24 or not AGENT_ID_RE.fullmatch(ADMIN_AGENT)): sys.exit("refusing to start: TEAMBUS_ADMIN_TOKEN must be at least 24 characters and TEAMBUS_ADMIN_AGENT a valid agent name (lowercase letters, digits, dashes)")
     uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port, log_level="warning")

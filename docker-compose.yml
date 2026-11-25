@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     environment:
       TEAMBUS_TOKEN: ${TEAMBUS_TOKEN:-}          # shared read-only token for the web view; empty = web view needs an agent token
+      TEAMBUS_ADMIN_TOKEN: ${TEAMBUS_ADMIN_TOKEN:-}   # optional: an orchestrator token (>= 24 chars) that may create_agent, so no shell is needed to add teammates
+      TEAMBUS_MAX_CREATED: ${TEAMBUS_MAX_CREATED:-20}
+      TEAMBUS_PUBLIC_URL: https://${TEAMBUS_DOMAIN}
       TEAMBUS_INTENT_TTL: ${TEAMBUS_INTENT_TTL:-14400}
     volumes:
       - teambus-data:/data                       # SQLite DB + tokens.json live here

@@ -48,10 +48,30 @@ Web view: `https://teambus.example.com/?token=<TEAMBUS_TOKEN or any agent token>
 - Messages and summaries are rendered with `textContent` in the web view (checked with an `<img onerror>` payload), but agents' free-text is still untrusted input to *other* agents' contexts: a hostile teammate could try prompt injection via `ask_teammate_agent`. Only give tokens to people you'd give repo access to.
 - No rate limiting. If the hub is internet-facing, add a Caddy `rate_limit` or restrict by IP/VPN.
 
+## On your laptop: one hub for every Claude session (permanent, no server needed)
+```bash
+teambus local install            # hub on 127.0.0.1:8765, data in ~/.teambus/local, starts at login (systemd user service) and restarts if it dies
+cd ~/my-project && teambus local join          # hooks + MCP for this folder; a default agent for plain `claude`
+teambus session reviewer --role reviewer       # a SECOND Claude in the same folder, as its own agent (any number)
+teambus local status             # who is on the hub and what they are doing
+```
+- Plain `claude` in a joined folder is that folder's default agent (`<folder>-main`). `teambus session NAME [-- claude args]` starts `claude` with `TEAMBUS_SESSION_TOKEN` set for that one process: its hooks, its MCP tools and its inbox cursor are the session agent's, and nothing in the folder changes. Different folders share the same hub, so their agents see each other.
+- Everything is also callable by Claude itself: the `orchestrator` agent (admin token in `~/.teambus/local/local.json`) has `create_agent`, `list_agents`, `team_status`, and so on. Without systemd, `teambus local install` runs the hub as a background process; run `teambus local start` after a reboot.
+- It never stops an agent: hooks default to **passive** (advice only, nothing is denied and no stop is held), every hook call has a 3 s timeout and swallows errors, and a down hub just means no coordination. `teambus off` pauses all hook traffic; `teambus mode full` opts into conflict blocks.
+
+## Let Claude create the agents (orchestrator token, no shell)
+Set `TEAMBUS_ADMIN_TOKEN` (24+ characters, a secret like any token) on the hub. It is the token of one agent, `orchestrator` (rename it with `TEAMBUS_ADMIN_AGENT`), which may call `create_agent`; with it a fresh hub needs no `add-agent` step and no shell. Point your Claude at the hub with it:
+```bash
+claude mcp add --transport http teambus https://teambus.example.com/mcp --header "Authorization: Bearer <TEAMBUS_ADMIN_TOKEN>"
+```
+Then ask Claude: "create agents `alice-frontend` (frontend) and `bob-backend` (backend)". Each call returns that agent's token and its `teambus-join` line; run the line in the folder where that agent's Claude session will work. `create_agent(..., spawn=true)` also asks a running `teambus worker` to start the session. Limits: `TEAMBUS_MAX_CREATED` (default 5 per creating agent; `render-hub.yaml` and `docker-compose.yml` set 20) and `TEAMBUS_MAX_AGENTS` (default 50); agents it creates cannot create more. Remove one with `remove_agent`.
+Besides the 30-odd tools the hub serves MCP **resources** (`teambus://agents`, `tasks`, `decisions`, `contracts`, `protocol`) and **prompts** (`teambus_protocol`, `create_teammate`, `handoff`). Set `TEAMBUS_PUBLIC_URL` to the hub's public address so the join lines carry it.
+This hub keeps its data (`TEAMBUS_DB`, `TEAMBUS_TOKENS`) on disk: restarting it keeps every agent, token and message. The **public sandbox does not**: it expires sandboxes after `SANDBOX_TTL`, and a free Render instance wipes them when it sleeps. For a permanent team use this hub (`render-hub.yaml` on a paid instance with its disk, or `docker-compose.yml` on a VPS), never `render.yaml`.
+
 ## Render (persistent hub, no VPS)
 `render-hub.yaml` is a Blueprint for a real hub (the `render.yaml` next to it is the public sandbox, which sleeps and wipes state). It needs a paid instance because the persistent disk (`/data`: SQLite DB + `tokens.json`) is what keeps conversations and tokens across restarts and deploys.
 1. Render -> New -> Blueprint -> pick this repo and `render-hub.yaml`.
-2. After the first deploy, open the service's **Shell** and create each agent: `python server.py add-agent alice-frontend frontend` (prints its token).
+2. After the first deploy, copy `TEAMBUS_ADMIN_TOKEN` from the Environment tab, connect your Claude with it (section above) and have it create each agent. Or, without it, open the service's **Shell**: `python server.py add-agent alice-frontend frontend` (prints its token).
 3. The generated `TEAMBUS_TOKEN` (Environment tab) is the shared read-only token for the web views: `https://<service>.onrender.com/?token=...` (team view) and `/brain?token=...` (brain and terrain).
 4. Each teammate runs the printed `teambus-join --hub https://<service>.onrender.com --agent-id ... --token ...`, then `teambus connect all` for Codex and Antigravity.
 Not tested here: an actual Render deploy.

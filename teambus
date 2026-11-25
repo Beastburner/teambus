@@ -10,6 +10,8 @@
   teambus worker [--spawn]                                     keep THIS agent alive without a human: wake its Claude session (headless) when mail arrives; with --spawn also start agents its orchestrator creates
   teambus keepalive [install|stop|status]                      run the worker in the background for this folder and restart it at login (asked once by teambus-join)
   teambus attach FILE --alt TEXT [--task N]                     share a screenshot/mockup with the team; teambus fetch ID saves one to look at
+  teambus local install|start|stop|status|join                  the laptop hub shared by every Claude session on this machine (join = connect this folder)
+  teambus session [NAME] [--role R] [-- claude args]           start claude here as its OWN agent (several Claudes in one folder)
   teambus git-hook                                             install the post-commit hook only"""
 import argparse, hashlib, json, os, re, shlex, shutil, ssl, subprocess, sys, time, urllib.error, urllib.request, uuid
 from pathlib import Path
@@ -79,7 +81,7 @@ def init(a):
     md = root / "CLAUDE.md"
     if "## TeamBus" not in (md.read_text() if md.exists() else ""): md.open("a").write(("\n" if md.exists() else "") + SNIPPET.read_text()); done.append("CLAUDE.md snippet")
     gi = root / ".claude" / ".gitignore"                                                   # the token lives in settings.local.json: keep it (and the per-machine state) out of git even if this folder is not a repo yet
-    want = ["settings.local.json", "settings.local.json.bak", "teambus-state.json"]; have = gi.read_text().splitlines() if gi.exists() else []
+    want = ["settings.local.json", "settings.local.json.bak", "teambus-state.json", "teambus-state.*.json"]; have = gi.read_text().splitlines() if gi.exists() else []
     if any(w not in have for w in want): gi.write_text("\n".join(have + [w for w in want if w not in have]) + "\n"); done.append(".claude/.gitignore keeps the token file and local state out of git")
     if in_git: done.append(git_hook(root)); done.append(git_exclude(root, [] if git_tracked(root, ".mcp.json") else [".mcp.json"]))
     print("teambus init:\n  " + "\n  ".join(done or ["nothing to do (already set up)"]) + "\nNext: `teambus doctor`")
@@ -490,6 +492,117 @@ def connect(a):
             f.write_text(json.dumps(d, indent=2)); f.chmod(0o600); done.append(f"antigravity: teambus added to {f} (restart Antigravity; token stored in that private file)")
     print("teambus connect:\n  " + "\n  ".join(done or ["nothing to do"]))
 
+# ---- the laptop hub: one persistent hub on this machine that every Claude session (in any folder) shares ----
+LOCAL = Path.home() / ".teambus" / "local"
+
+def local_cfg():
+    try: return json.loads((LOCAL / "local.json").read_text())
+    except (OSError, ValueError): return {}
+
+def _admin(lc): return {"url": lc["url"] + "/api", "token": lc["admin_token"]}
+
+def _hub_up(url, wait=0):
+    end = time.time() + wait
+    while True:
+        try: urllib.request.urlopen(url + "/healthz", timeout=2); return True
+        except Exception:
+            if time.time() >= end: return False
+            time.sleep(0.3)
+
+def _hub_python():
+    """A python that can run server.py (needs the `mcp` package): this one if it can, else a private venv under ~/.teambus/local/venv."""
+    if subprocess.run([sys.executable, "-c", "import mcp, uvicorn"], capture_output=True).returncode == 0: return sys.executable
+    vpy = LOCAL / "venv" / "bin" / "python"
+    if not vpy.exists():
+        print("creating a private Python environment for the hub (one time) ...")
+        uv = shutil.which("uv")
+        ok = (subprocess.run([uv, "venv", "-q", str(LOCAL / "venv")]).returncode == 0 and subprocess.run([uv, "pip", "install", "-q", "--python", str(vpy), "-r", str(HERE / "requirements.txt")]).returncode == 0) if uv else \
+             (subprocess.run([sys.executable, "-m", "venv", str(LOCAL / "venv")]).returncode == 0 and subprocess.run([str(vpy), "-m", "pip", "install", "-q", "-r", str(HERE / "requirements.txt")]).returncode == 0)
+        if not ok: sys.exit("could not create a Python environment with the hub's dependencies. Install them yourself: pip install -r " + str(HERE / "requirements.txt"))
+    return str(vpy)
+
+def _systemd_user(): return not os.environ.get("TEAMBUS_NO_SYSTEMD") and shutil.which("systemctl") and subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True).returncode == 0
+UNIT = Path.home() / ".config" / "systemd" / "user" / "teambus-hub.service"
+
+def local(a):
+    """teambus local install | start | stop | status | join
+    install: create the laptop hub (data in ~/.teambus/local, listening on 127.0.0.1 only), start it now and at every login. join: connect THIS folder to it (hooks, MCP, a default agent for plain `claude`).
+    Many Claude sessions, in any folders, share this one hub; extra sessions in the same folder: `teambus session NAME`."""
+    act = a.action; LOCAL.mkdir(parents=True, exist_ok=True); os.chmod(LOCAL, 0o700); lc = local_cfg()
+    if act == "install":
+        port = a.port or lc.get("port") or 8765
+        lc = {"port": port, "url": f"http://127.0.0.1:{port}", "admin_token": lc.get("admin_token") or secrets_token()}
+        (LOCAL / "local.json").write_text(json.dumps(lc, indent=1)); os.chmod(LOCAL / "local.json", 0o600)
+        env = {"HOST": "127.0.0.1", "PORT": str(port), "TEAMBUS_DB": str(LOCAL / "hub.db"), "TEAMBUS_TOKENS": str(LOCAL / "tokens.json"), "TEAMBUS_ADMIN_TOKEN": lc["admin_token"], "TEAMBUS_ADMIN_AGENT": "orchestrator",
+               "TEAMBUS_PUBLIC_URL": lc["url"], "TEAMBUS_MAX_CREATED": "500", "TEAMBUS_MAX_AGENTS": "1000", "TEAMBUS_INTENT_TTL": "14400"}
+        ef = LOCAL / "hub.env"; ef.write_text("".join(f"{k}={v}\n" for k, v in env.items())); os.chmod(ef, 0o600)
+        py = _hub_python(); cmd = [py, str(HERE / "server.py")]
+        if _systemd_user():
+            UNIT.parent.mkdir(parents=True, exist_ok=True)
+            UNIT.write_text(f"[Unit]\nDescription=TeamBus hub (this laptop)\n\n[Service]\nWorkingDirectory={HERE}\nEnvironmentFile={ef}\nExecStart={' '.join(shlex.quote(x) for x in cmd)}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n")
+            subprocess.run(["systemctl", "--user", "daemon-reload"]); subprocess.run(["systemctl", "--user", "enable", "--now", "teambus-hub.service"]); subprocess.run(["systemctl", "--user", "restart", "teambus-hub.service"])
+            how = "systemd user service teambus-hub (starts at login, restarts if it dies)"
+        else:
+            with open(LOCAL / "hub.log", "a") as lf: p = subprocess.Popen(cmd, cwd=HERE, env={**os.environ, **env}, start_new_session=True, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
+            (LOCAL / "hub.pid").write_text(str(p.pid)); how = f"a background process (pid {p.pid}); no systemd here, so run `teambus local start` after a reboot"
+        if not _hub_up(lc["url"], 60): sys.exit(f"the hub did not come up; see {LOCAL / 'hub.log'} (or: journalctl --user -u teambus-hub)")
+        print(f"TeamBus hub is running at {lc['url']} as {how}.\nData: {LOCAL}.\nNext, in each project folder: teambus local join   (then plain `claude` works; `teambus session NAME` adds another agent in the same folder)")
+    elif act == "start":
+        if not lc: sys.exit("not installed: run `teambus local install`")
+        if _systemd_user() and UNIT.exists(): subprocess.run(["systemctl", "--user", "start", "teambus-hub.service"])
+        else: a.action = "install"; return local(a)
+        print("running" if _hub_up(lc["url"], 60) else "did not come up")
+    elif act == "stop":
+        if _systemd_user() and UNIT.exists(): subprocess.run(["systemctl", "--user", "stop", "teambus-hub.service"])
+        try: os.kill(int((LOCAL / "hub.pid").read_text()), 15)
+        except (OSError, ValueError): pass
+        print("stopped (data is kept; `teambus local start` brings it back)")
+    elif act == "status":
+        if not lc: print("not installed: run `teambus local install`"); return
+        up = _hub_up(lc["url"]); print(f"hub {lc['url']}: {'UP' if up else 'DOWN (teambus local start)'}")
+        if up:
+            for p in call(_admin(lc), "agents", {}).get("agents", []): print(f"  {p['agent_id']:<28} {p['role']:<14} {p['state']}" + (f" ({int(p['last_seen_ago'])}s ago)" if p.get("last_seen_ago") is not None else ""))
+    elif act == "join":
+        if not lc or not _hub_up(lc["url"]): sys.exit("the laptop hub is not running: `teambus local install` (or `teambus local start`)")
+        root = Path(a.dir).resolve(); name = re.sub(r"[^a-z0-9-]+", "-", root.name.lower()).strip("-")[:20] or "project"; aid = a.agent_id or f"{name}-main"
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", aid): sys.exit(f"{aid!r} is not a valid agent name (lowercase letters, digits, dashes); pass --agent-id")
+        tok = _ensure_agent(lc, aid, a.role)
+        init(argparse.Namespace(dir=str(root), hub=lc["url"], agent_id=aid, role=a.role, token=tok))
+        mp = root / ".mcp.json"; mj = jload(mp); ent = mj.get("mcpServers", {}).get("teambus")
+        if ent and "${TEAMBUS_TOKEN_" in json.dumps(ent):   # the MCP header also honours a per-session token, falling back to this folder's agent
+            ent["headers"] = {"Authorization": "Bearer ${TEAMBUS_SESSION_TOKEN:-" + tok + "}"}; mp.write_text(json.dumps(mj, indent=2) + "\n"); print("  .mcp.json: MCP honours TEAMBUS_SESSION_TOKEN (teambus session), else this folder's agent")
+        else: print("  note: .mcp.json is tracked by git or missing, so `teambus session` agents get their own hooks but the MCP tools stay the folder's agent")
+        print(f"Joined as {aid}. Start `claude` here as usual, or `teambus session NAME` for another agent in this folder.")
+
+def secrets_token():
+    import secrets; return secrets.token_urlsafe(32)
+
+def _ensure_agent(lc, name, role):
+    """The token of agent `name` on the laptop hub: the saved one if it is still valid, else a fresh one made through the orchestrator (a lost token is replaced, never reused)."""
+    sf = LOCAL / "agents.json"; saved = jload(sf); c = _admin(lc)
+    if name in saved:
+        try:
+            if call({"url": c["url"], "token": saved[name]["token"]}, "whoami", {}).get("agent_id") == name: return saved[name]["token"]
+        except Exception: pass
+    r = call(c, "create_agent", {"name": name, "role": role})
+    if "error" in r and "already exists" in r["error"]:
+        call(c, "remove_agent", {"name": name}); r = call(c, "create_agent", {"name": name, "role": role})
+    if "token" not in r: sys.exit(f"could not create agent {name}: {r.get('error', r)}")
+    saved[name] = {"token": r["token"], "role": role}; sf.write_text(json.dumps(saved, indent=1)); os.chmod(sf, 0o600); return r["token"]
+
+def session(a):
+    """teambus session [NAME] [--role R] [-- claude args]: start `claude` here as its OWN agent on the laptop hub, next to any other Claude session in this folder.
+    The identity travels in environment variables of this one process (TEAMBUS_SESSION_*), so nothing in the folder changes and a plain `claude` is unaffected."""
+    lc = local_cfg()
+    if not lc or not _hub_up(lc["url"]): sys.exit("the laptop hub is not running: `teambus local install` (or `teambus local start`)")
+    root = Path(a.dir).resolve(); base = re.sub(r"[^a-z0-9-]+", "-", root.name.lower()).strip("-")[:16] or "project"
+    name = a.name or f"{base}-{os.urandom(2).hex()}"
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name): sys.exit(f"{name!r} is not a valid agent name (2 to 31 characters: lowercase letters, digits, dashes; a letter first)")
+    tok = _ensure_agent(lc, name, a.role); claude = a.claude or shutil.which("claude") or sys.exit("the claude CLI was not found")
+    env = {**os.environ, "TEAMBUS_SESSION_TOKEN": tok, "TEAMBUS_SESSION_AGENT": name, "TEAMBUS_SESSION_ROLE": a.role, "AGENT_ID": name}
+    print(f"teambus: this Claude is agent '{name}' ({a.role}) on {lc['url']}", file=sys.stderr)
+    os.chdir(root); os.execvpe(claude, [claude, *a.claude_args], env)
+
 def main():
     ap = argparse.ArgumentParser(prog="teambus", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter); sub = ap.add_subparsers(dest="cmd", required=True)
     for n, f in (("init", init), ("doctor", doctor), ("status", status), ("resolve", resolve), ("send", send), ("inbox", inbox), ("outbox", outbox), ("listen", listen), ("worker", worker), ("add-agent", add_agent), ("keepalive", keepalive), ("attach", attach), ("fetch", fetch), ("connect", connect), ("on", mode), ("off", mode), ("mode", mode), ("invite", invite), ("revoke", revoke_invite_cmd), ("invites", invites), ("git-hook", lambda a: print(git_hook(Path(a.dir).resolve())))):
@@ -524,6 +637,8 @@ def main():
             p.add_argument("--max-nudges", type=int, default=3); p.add_argument("--once", action="store_true", help="exit after the first nudge")
             p.add_argument("--tmux", metavar="PANE", help="wake the idle session by typing one fixed line into this tmux pane (target like 0:1.0), only if it is running claude")
             p.add_argument("--exec", metavar="CMD", help="run this shell command to wake the session (gets TEAMBUS_COUNT, TEAMBUS_FROM, TEAMBUS_AGENT)")
+    pl = sub.add_parser("local", help="the laptop hub: install | start | stop | status | join"); pl.add_argument("action", choices=["install", "start", "stop", "status", "join"]); pl.add_argument("--dir", default="."); pl.add_argument("--port", type=int); pl.add_argument("--agent-id"); pl.add_argument("--role", default="dev"); pl.set_defaults(f=local)
+    ps = sub.add_parser("session", help="start claude here as its own agent: teambus session [NAME] [--role R] [-- claude args]"); ps.add_argument("name", nargs="?"); ps.add_argument("--dir", default="."); ps.add_argument("--role", default="dev"); ps.add_argument("--claude"); ps.add_argument("claude_args", nargs=argparse.REMAINDER); ps.set_defaults(f=session)
     # Tokens are random URL-safe strings, so about 1 in 64 starts with "-", which argparse would take for an option ("expected one argument"). Bind each value flag to its value first.
     argv, out, i = sys.argv[1:], [], 0
     while i < len(argv):

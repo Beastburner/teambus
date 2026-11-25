@@ -10,13 +10,14 @@ except ImportError:   # tests that need a running hub / the mcp package are skip
 os.environ["TEAMBUS_MODE"] = "full"   # the hooks default to "passive" (never block); the lifecycle tests below exercise the strict behaviour. Mode tests set their own env explicitly.
 
 HERE = os.path.dirname(os.path.abspath(__file__)); HOOK = f"{HERE}/hooks/hook.py"; URL = "http://127.0.0.1:8799"
+ADMIN_TOK = "admin-token-for-tests-0123456789"
 TOK = {"ta": {"agent_id": "alice", "role": "frontend", "owner": "alice"}, "tg": {"agent_id": "alice-tests", "role": "tests", "owner": "alice"}, "tb": {"agent_id": "bob", "role": "backend"}, "td": {"agent_id": "dave", "role": "ops"}, "te": {"agent_id": "erin", "role": "qa"}, "tf": {"agent_id": "frank", "role": "docs"}, "tl": {"agent_id": "lena-lead", "role": "lead", "can_create": True}}
 
 @pytest.fixture(scope="module")
 def hub(tmp_path_factory):
     pytest.importorskip("mcp")
     t = tmp_path_factory.mktemp("hub"); (t / "tokens.json").write_text(json.dumps(TOK))
-    env = {**os.environ, "TEAMBUS_DB": str(t / "h.db"), "TEAMBUS_TOKENS": str(t / "tokens.json"), "TEAMBUS_TOKEN": "viewer", "PORT": "8799", "HOST": "127.0.0.1", "TEAMBUS_INTENT_TTL": "3"}
+    env = {**os.environ, "TEAMBUS_DB": str(t / "h.db"), "TEAMBUS_TOKENS": str(t / "tokens.json"), "TEAMBUS_TOKEN": "viewer", "TEAMBUS_ADMIN_TOKEN": ADMIN_TOK, "PORT": "8799", "HOST": "127.0.0.1", "TEAMBUS_INTENT_TTL": "3"}
     p = subprocess.Popen([sys.executable, f"{HERE}/server.py"], env=env, stderr=subprocess.DEVNULL)
     for _ in range(60):
         try: urllib.request.urlopen(URL + "/healthz"); break
@@ -1465,3 +1466,70 @@ def test_connect_refuses_without_a_hub(tmp_path):
 
 def test_connect_rejects_an_unknown_target(tmp_path):
     proj, home, env = _joined(tmp_path); assert _connect(proj, env, "vscode").returncode != 0
+
+
+# ---- permanent-hub bootstrap (TEAMBUS_ADMIN_TOKEN) and the full MCP surface (tools, resources, prompts) ----
+def _mcp(tok, fn):
+    async def go():
+        async with streamablehttp_client(f"{URL}/mcp", headers={"Authorization": f"Bearer {tok}"}) as (r, w, _):
+            async with ClientSession(r, w) as s:
+                await s.initialize(); return await fn(s)
+    return asyncio.run(go())
+
+def test_admin_token_is_an_orchestrator_that_can_create_agents_and_others_cannot_use_it(hub):
+    me_ = api(ADMIN_TOK, "whoami"); assert me_["agent_id"] == "orchestrator" and me_["role"] == "orchestrator"
+    assert api(ADMIN_TOK[:-1], "whoami")["http"] == 401 and api(ADMIN_TOK + "x", "whoami")["http"] == 401          # near misses are not the token
+    r = api(ADMIN_TOK, "create_agent", name="made-by-admin", role="builder", brief="Build the thing")
+    assert r["agent_id"] == "made-by-admin" and "token" in r and r["created_by"] == "orchestrator"
+    assert api(r["token"], "whoami")["agent_id"] == "made-by-admin" and api(r["token"], "create_agent", name="grandchild-x", role="x")["error"].startswith("you may not create agents")
+    assert "Build the thing" in json.dumps(api(r["token"], "inbox"))                                              # the brief arrived as its first message
+    assert api(ADMIN_TOK, "remove_agent", name="made-by-admin") == {"removed": "made-by-admin"} and api(r["token"], "whoami")["http"] == 401
+    assert api("viewer", "create_agent", name="viewer-try", role="x")["http"] == 403                              # the read-only token still cannot
+
+def test_a_weak_admin_token_or_bad_admin_name_stops_the_hub_from_starting(tmp_path):
+    for extra in ({"TEAMBUS_ADMIN_TOKEN": "short"}, {"TEAMBUS_ADMIN_TOKEN": ADMIN_TOK, "TEAMBUS_ADMIN_AGENT": "Bad Name"}):
+        r = subprocess.run([sys.executable, f"{HERE}/server.py"], env={**os.environ, "TEAMBUS_DB": str(tmp_path / "w.db"), "TEAMBUS_TOKENS": str(tmp_path / "none.json"), "PORT": "8798", "HOST": "127.0.0.1", **extra}, capture_output=True, text=True, timeout=60)
+        assert r.returncode != 0 and "TEAMBUS_ADMIN_TOKEN must be at least 24" in (r.stdout + r.stderr), r.stderr
+
+def test_the_admin_token_alone_is_enough_auth_to_start_a_hub(tmp_path):
+    p = subprocess.Popen([sys.executable, f"{HERE}/server.py"], env={**os.environ, "TEAMBUS_DB": str(tmp_path / "w.db"), "TEAMBUS_TOKENS": str(tmp_path / "tokens.json"), "TEAMBUS_TOKEN": "", "TEAMBUS_ADMIN_TOKEN": ADMIN_TOK, "PORT": "8797", "HOST": "127.0.0.1"}, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(60):
+            try: urllib.request.urlopen("http://127.0.0.1:8797/healthz"); break
+            except Exception: time.sleep(.2)
+        rq = urllib.request.Request("http://127.0.0.1:8797/api/create_agent", json.dumps({"name": "first-agent", "role": "dev"}).encode(), {"Content-Type": "application/json", "Authorization": f"Bearer {ADMIN_TOK}"})
+        out = json.load(urllib.request.urlopen(rq)); assert out["agent_id"] == "first-agent" and (tmp_path / "tokens.json").exists()     # tokens.json is created by the first create_agent
+        assert json.loads((tmp_path / "tokens.json").read_text())[out["token"]]["created_by"] == "orchestrator"
+    finally: p.terminate()
+
+def test_mcp_exposes_tools_resources_and_prompts(hub):
+    async def look(s):
+        tools = {t.name for t in (await s.list_tools()).tools}; res = {str(r.uri) for r in (await s.list_resources()).resources}; prompts = {p.name for p in (await s.list_prompts()).prompts}
+        agents = json.loads((await s.read_resource("teambus://agents")).contents[0].text); tasks = json.loads((await s.read_resource("teambus://tasks")).contents[0].text)
+        proto = (await s.read_resource("teambus://protocol")).contents[0].text; pp = (await s.get_prompt("teambus_protocol")).messages[0].content.text
+        mk = (await s.get_prompt("create_teammate", {"name": "scout-9", "role": "scout", "task": "map the repo"})).messages[0].content.text
+        ho = (await s.get_prompt("handoff", {"to_agent": "bob", "summary": "finish the API"})).messages[0].content.text
+        la = (await s.call_tool("list_agents", {})).content[0].text; ts = (await s.call_tool("team_status", {})).content[0].text; sp = json.loads((await s.call_tool("list_spawns", {})).content[0].text)
+        return tools, res, prompts, agents, tasks, proto, pp, mk, ho, la, ts, sp
+    tools, res, prompts, agents, tasks, proto, pp, mk, ho, la, ts, sp = _mcp(ADMIN_TOK, look)
+    assert {"list_agents", "team_status", "digest", "list_spawns", "spawn_update", "create_agent", "remove_agent", "check_inbox", "wait_for_messages", "ask_teammate_agent"} <= tools
+    assert {"teambus://agents", "teambus://tasks", "teambus://decisions", "teambus://contracts", "teambus://protocol"} <= res and {"teambus_protocol", "create_teammate", "handoff"} <= prompts
+    assert {a["agent_id"] for a in agents["agents"]} >= {"alice", "bob"} and "tasks" in tasks
+    snippet = open(f"{HERE}/CLAUDE.snippet.md").read(); assert proto == snippet and pp == snippet                  # one source of truth for the protocol
+    assert "scout-9" in mk and "create_agent" in mk and "bob" in ho and "finish the API" in ho
+    assert "alice" in la and "agents" in ts and sp == {"spawns": []}
+
+def test_viewer_token_cannot_use_mcp_resources(hub):
+    with pytest.raises(BaseException): _mcp("viewer", lambda s: s.read_resource("teambus://tasks"))
+
+def test_a_session_token_makes_one_claude_a_different_agent_in_the_same_folder(hub, tmp_path):
+    """`teambus session NAME` exports TEAMBUS_SESSION_*: the hook then acts as that agent, keeps its own cursor file, and the folder's own identity is untouched."""
+    proj = tmp_path / "p"; (proj / ".claude").mkdir(parents=True); (proj / ".claude" / "settings.local.json").write_text(json.dumps({"env": {"TEAMBUS_URL": URL, "TEAMBUS_TOKEN": "ta", "AGENT_ID": "alice"}}))
+    def fire(extra):
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "Write", "tool_input": {"file_path": str(proj / "sess.py"), "content": "def x(): pass\n"}, "tool_response": {}}
+        subprocess.run([sys.executable, HOOK, "post"], input=json.dumps(payload), capture_output=True, text=True, env={**os.environ, "CLAUDE_PROJECT_DIR": str(proj), **extra})
+    fire({}); fire({"TEAMBUS_SESSION_TOKEN": "tb", "TEAMBUS_SESSION_AGENT": "bob"})
+    subprocess.run([sys.executable, HOOK, "start"], input=json.dumps({"hook_event_name": "SessionStart"}), capture_output=True, text=True, env={**os.environ, "CLAUDE_PROJECT_DIR": str(proj), "TEAMBUS_SESSION_TOKEN": "tb", "TEAMBUS_SESSION_AGENT": "bob"})
+    who = {c["with"] for c in api("te", "conflicts", files=["sess.py"])["conflicts"]}
+    assert who == {"alice", "bob"}, who                                                    # two intents, one per identity, from one folder
+    assert (proj / ".claude" / "teambus-state.bob.json").exists() and not (proj / ".claude" / "teambus-state.alice.json").exists()

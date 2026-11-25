@@ -17,6 +17,10 @@ services:
       - {key: TEAMBUS_DB, value: /data/teambus.db}
       - {key: TEAMBUS_TOKENS, value: /data/tokens.json}
       - {key: TEAMBUS_TOKEN, generateValue: true}     # shared READ-ONLY token for the web views (/ and /brain); read it in the dashboard's Environment tab
+      - {key: TEAMBUS_ADMIN_TOKEN, generateValue: true}   # the orchestrator's token (agent "orchestrator", may create_agent): put it in your Claude's MCP config, then it creates every other agent. No shell needed
+      - {key: TEAMBUS_MAX_CREATED, value: "20"}       # most agents the orchestrator may create (default 5)
+      - {key: TEAMBUS_MAX_AGENTS, value: "50"}
+      - {key: TEAMBUS_PUBLIC_URL, sync: false}        # your https://<service>.onrender.com, so create_agent prints join lines with the right address
     disk:
       name: teambus-data
       mountPath: /data
