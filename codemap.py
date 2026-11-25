@@ -81,6 +81,24 @@ class Repo:
         if kind == "calls": return _calls(a, entry)
         raise CodeError("unknown diagram", 404)
 
+    def search(s, needle, limit=80):
+        """Literal, case-insensitive text search across the indexed files: [{path, line, text}] (3 hits per file, 80 total, 2 s budget)."""
+        needle = (needle or "").strip()
+        if len(needle) < 2 or len(needle) > 120: raise CodeError("type at least 2 characters")
+        low = needle.lower(); out = []; end = time.time() + 2.0
+        for p, z, _ in s.files():
+            if z > MAX_READ or time.time() > end or len(out) >= limit: break
+            try:
+                with open(os.path.join(s.root, p), "rb") as f: raw = f.read(MAX_READ)
+            except OSError: continue
+            if b"\0" in raw[:4096]: continue
+            n = 0
+            for i, line in enumerate(raw.decode("utf-8", "replace").split("\n"), 1):
+                if low in line.lower():
+                    out.append({"path": p, "line": i, "text": line.strip()[:200]}); n += 1
+                    if n >= 3 or len(out) >= limit: break
+        return {"query": needle, "results": out, "capped": len(out) >= limit}
+
     def graph(s):
         """Obsidian-style map: every file is a node; edges are imports, doc links / [[wikilinks]] and the tables files touch."""
         a = s.analysis(); edges = []

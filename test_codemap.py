@@ -91,3 +91,11 @@ def test_empty_repo_gives_notes_not_errors(tmp_path):
 
 def test_broken_python_is_skipped_not_fatal(tmp_path):
     (tmp_path / "bad.py").write_text("def (:\n"); (tmp_path / "ok.py").write_text("def a(): pass\n"); assert codemap.Repo(str(tmp_path)).analysis()["stats"]["files"] == 2
+
+
+def test_text_search_is_literal_case_insensitive_and_skips_secrets(repo, tmp_path):
+    r = repo.search("get_USER"); assert {h["path"] for h in r["results"]} == {"app/main.py", "app/db.py"} and all(h["line"] >= 1 and "get_user" in h["text"].lower() for h in r["results"])
+    assert repo.search("abc123")["results"] == []                                   # the .env value is never indexed
+    assert repo.search(".*")["results"] == [] and repo.search("def (")["results"] == []   # regex characters are plain text
+    with pytest.raises(codemap.CodeError): repo.search("a")
+    (tmp_path / "many.py").write_text("hit\n" * 50); assert len([h for h in repo.search("hit")["results"] if h["path"] == "many.py"]) == 3

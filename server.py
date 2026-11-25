@@ -761,6 +761,7 @@ def _code_file(r):
 def _code_summary(r):
     a = _repo().analysis(); return {"stats": a["stats"], "entries": codemap.entries(a), "tables": sorted(a["tables"]), "routes": a["routes"][:200]}
 def _code_graph(r): return _repo().graph()
+def _code_search(r): return _repo().search(r.query_params.get("q", ""))
 def _code_diagram(r): return _repo().diagram(r.query_params.get("kind", ""), r.query_params.get("entry", ""))
 
 mcp.custom_route("/api/code/tree", methods=["GET"])(_code(_code_tree))
@@ -768,6 +769,7 @@ mcp.custom_route("/api/code/file", methods=["GET"])(_code(_code_file))
 mcp.custom_route("/api/code/summary", methods=["GET"])(_code(_code_summary))
 mcp.custom_route("/api/code/diagram", methods=["GET"])(_code(_code_diagram))
 mcp.custom_route("/api/code/graph", methods=["GET"])(_code(_code_graph))
+mcp.custom_route("/api/code/search", methods=["GET"])(_code(_code_search))
 
 @mcp.custom_route("/api/code/design.md", methods=["GET"])
 async def _code_design(request):

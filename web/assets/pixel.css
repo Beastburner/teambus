@@ -70,3 +70,10 @@ canvas.scene{display:block;width:100%;image-rendering:pixelated;image-rendering:
 .foot{margin:28px 0 4px;padding-top:14px;border-top:1px dashed var(--line-2);font:11px var(--mono);color:var(--mut);display:flex;gap:6px 18px;flex-wrap:wrap;justify-content:space-between}
 .foot a{color:var(--cream-2)}
 @media (prefers-reduced-motion:reduce){.live{animation:none}}
+
+.zoomctl{display:inline-flex;gap:4px;align-items:center}.zoomctl button{font:500 11px var(--mono);color:var(--cream-2);background:transparent;border:1px solid var(--line-2);border-radius:5px;padding:2px 7px;cursor:pointer}.zoomctl button:hover{border-color:var(--cream);color:var(--cream)}
+#pxhelp{position:fixed;inset:0;z-index:90;background:rgba(10,10,9,.8);display:grid;place-items:center}
+.pxhelp-box{background:var(--ink);border:1px solid var(--cream);border-radius:14px;padding:20px 26px;min-width:min(380px,90vw);box-shadow:0 0 0 6px var(--slate)}
+.pxhelp-box h2{margin:0 0 14px -27px}.pxhelp-box div{padding:6px 0;border-top:1px dashed var(--line-2);color:var(--cream-2)}.pxhelp-box div:first-of-type{border:0}
+.pxhelp-box kbd{display:inline-block;min-width:26px;text-align:center;margin-right:10px;font:500 12px var(--mono);color:var(--ink);background:var(--cream);border-radius:5px;padding:1px 7px}
+@media (max-width:640px){.pill{gap:12px;padding:9px 14px}.title{margin:14px 0 10px}}

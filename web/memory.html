@@ -11,7 +11,9 @@
 .tbtn{font:500 12px var(--px);letter-spacing:.03em;color:var(--cream);background:transparent;border:1px solid var(--line);border-radius:999px;padding:8px 14px;cursor:pointer;display:inline-flex;gap:8px;align-items:center;text-decoration:none}
 .tbtn:hover{border-color:var(--cream)}.tbtn.on{background:var(--cream);color:var(--ink);border-color:var(--cream)}.tbtn:disabled{opacity:.4;cursor:not-allowed}
 .mem{display:grid;grid-template-columns:270px minmax(0,1fr) 300px;gap:14px;align-items:start}
-@media(max-width:1100px){.mem{grid-template-columns:1fr}.pane-tree{max-height:42vh}}
+@media(max-width:1100px){.mem{grid-template-columns:1fr}.pane-code{order:-1;height:72vh}.pane-tree{height:auto;max-height:300px;min-height:0}.side{order:2}.gctl{max-width:calc(100% - 56px)}}
+.search{display:flex;gap:6px;align-items:center}.search input{flex:1;padding-right:10px}.search kbd{position:static}.qm{font:500 11px var(--px);color:var(--cream);background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 10px;cursor:pointer;white-space:nowrap}.qm:hover{border-color:var(--cream)}
+.hitrow{display:block;width:100%;text-align:left;background:none;border:0;border-top:1px dashed var(--line-2);color:var(--cream-2);padding:7px 6px;cursor:pointer;font:11px/1.4 var(--mono)}.hitrow:hover{background:var(--chip)}.hitrow b{color:var(--cream);display:block;overflow-wrap:anywhere}.hitrow span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pane{background:var(--ink-2);border:1px solid var(--line-2);border-radius:14px;min-width:0;display:flex;flex-direction:column}
 .pane-tree{height:calc(100vh - 230px);min-height:360px}.pane-code{height:calc(100vh - 230px);min-height:360px}
 .side{display:flex;flex-direction:column;gap:14px;min-width:0}
@@ -81,13 +83,13 @@ svg .nd{cursor:pointer}svg .nd:hover rect.box{stroke:#5ee6d8}
 <div id="err"></div>
 <div class="mem">
  <div class="pane pane-tree">
-  <div class="search"><input id="q" type="search" placeholder="find a file…" autocomplete="off" aria-label="Find a file"><kbd>/</kbd></div>
+  <div class="search"><input id="q" type="search" placeholder="find a file…" autocomplete="off" aria-label="Search"><button class="qm" id="qm" type="button" title="Switch between file names and text inside files">names</button></div>
   <div class="tree" id="tree" role="tree"></div>
  </div>
  <div class="pane pane-code" id="cpane">
   <div class="vtabs"><button class="tbtn on" id="tg" type="button">graph</button><button class="tbtn" id="tc" type="button">code</button><span class="sp"></span><small id="gstat"></small></div>
   <div id="gview"><canvas id="gc" aria-label="Map of files and how they connect. Drag nodes, scroll to zoom, click a node to open it."></canvas>
-   <div class="gctl"><button class="tbtn sm on" data-e="import" type="button">imports</button><button class="tbtn sm on" data-e="link" type="button">doc links</button><button class="tbtn sm on" data-e="table" type="button">tables</button><button class="tbtn sm on" id="gorph" type="button">orphans</button><button class="tbtn sm" id="glab" type="button">labels</button>
+   <div class="gctl"><button class="tbtn sm on" data-e="import" type="button">imports</button><button class="tbtn sm on" data-e="link" type="button">doc links</button><button class="tbtn sm on" data-e="table" type="button">tables</button><button class="tbtn sm on" data-e="team" type="button" title="Files agents are editing together, and contracts">team</button><button class="tbtn sm on" id="gorph" type="button">orphans</button><button class="tbtn sm" id="glab" type="button">labels</button>
     <select id="gdepth" aria-label="Show"><option value="0">whole map</option><option value="1">selected + 1 hop</option><option value="2">selected + 2 hops</option></select></div>
    <div class="gzoom"><button id="gz+" type="button" aria-label="Zoom in">+</button><button id="gz-" type="button" aria-label="Zoom out">−</button><button id="gzf" type="button" aria-label="Fit">⟲</button></div>
    <div class="glegend" id="glegend"></div><div id="gtip"></div></div>
@@ -169,8 +171,17 @@ function renderTree() {
   };
   walk(buildTree(FILES), "", host);
 }
-q.oninput = () => renderTree();
-addEventListener("keydown", (e) => { if (e.key === "/" && document.activeElement !== q && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); } if (e.key === "Escape") { if (!$("dm").hidden) closeDiagram(); else if (document.activeElement === q) { q.value = ""; renderTree(); q.blur(); } } });
+let qmode = "names";
+q.oninput = () => { if (qmode === "names") renderTree(); else if (!q.value.trim()) renderTree(); };
+$("qm").onclick = () => { qmode = qmode === "names" ? "text" : "names"; $("qm").textContent = qmode === "names" ? "names" : "in code"; q.placeholder = qmode === "names" ? "find a file…" : "search inside files, Enter…"; q.focus(); renderTree(); };
+async function textSearch(term) {
+  const host = $("tree"); host.replaceChildren(mk("div", "more", "Searching…"));
+  try { const d = await api("code/search", { q: term }); host.replaceChildren(); if (!d.results.length) host.append(mk("div", "more", "No matches.")); for (const h of d.results) { const b = mk("button", "hitrow"); b.type = "button"; b.append(mk("b", "", h.path + ":" + h.line), mk("span", "", h.text)); b.onclick = () => openFile(h.path, h.line); host.append(b); } if (d.capped) host.append(mk("div", "more", "More matches exist, narrow the search.")); }
+  catch (e) { host.replaceChildren(mk("div", "more", e.message)); }
+}
+q.addEventListener("keydown", (e) => { if (e.key !== "Enter") return; const t = q.value.trim(); if (!t) return; if (qmode === "text") textSearch(t); else { const hit = FILES.find((f) => f.path.toLowerCase().includes(t.toLowerCase())); if (hit) openFile(hit.path); } });
+px.keys([["/", "search files"], ["Enter", "open the first match / run a text search"], ["g", "graph view"], ["c", "code view"], ["Esc", "close a diagram or clear search"]]);
+addEventListener("keydown", (e) => { if (!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $("dm").hidden) { if (e.key === "g") showTab("graph"); else if (e.key === "c") showTab("code"); } if (e.key === "/" && document.activeElement !== q && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); } if (e.key === "Escape") { if (!$("dm").hidden) closeDiagram(); else if (document.activeElement === q) { q.value = ""; renderTree(); q.blur(); } } });
 
 /* ---------- code view with light highlighting ---------- */
 const KW = { py: "def class return if elif else for while import from as with try except finally raise yield lambda pass break continue and or not in is None True False async await global nonlocal assert del",
@@ -320,8 +331,8 @@ $("pack").href = "api/code/design.md" + (token ? "?token=" + encodeURIComponent(
 $("pack").onclick = (e) => { if (!FILES.length) { e.preventDefault(); toast("Set up a repo first"); } };
 
 /* ---------- graph: every file a node, imports / doc links / tables as edges (Obsidian-style) ---------- */
-const G = { nodes: [], edges: [], by: new Map(), adj: new Map(), k: 1, x: 0, y: 0, hover: null, drag: null, pan: null, alpha: 1, loaded: false, on: { import: true, link: true, table: true, uses: true }, orph: true, labels: false, depth: 0, raf: 0, vis: [] };
-const gc = $("gc"), gx = gc.getContext("2d"), gcol = (n) => n.kind === "table" ? "#f0b24a" : n.dir ? `hsl(${hue(n.dir.split("/")[0])} 55% 64%)` : "#e8e8c6";
+const G = { nodes: [], edges: [], by: new Map(), adj: new Map(), k: 1, x: 0, y: 0, hover: null, drag: null, pan: null, alpha: 1, loaded: false, on: { import: true, link: true, table: true, uses: true, team: true }, orph: true, labels: false, depth: 0, raf: 0, vis: [] };
+const gc = $("gc"), gx = gc.getContext("2d"), gcol = (n) => n.kind === "table" ? "#f0b24a" : n.kind === "contract" ? "#ff7a66" : n.dir ? `hsl(${hue(n.dir.split("/")[0])} 55% 64%)` : "#e8e8c6";
 function showTab(t) { $("tg").classList.toggle("on", t === "graph"); $("tc").classList.toggle("on", t === "code"); $("gview").classList.toggle("on", t === "graph"); $("cview").classList.toggle("on", t === "code"); if (t === "graph") { if (!G.loaded) loadGraph(); else { resizeG(); kick(); } } }
 $("tg").onclick = () => showTab("graph"); $("tc").onclick = () => showTab("code");
 function resizeG() { const r = gc.getBoundingClientRect(), d = devicePixelRatio || 1; if (!r.width) return; gc.width = r.width * d; gc.height = r.height * d; G.w = r.width; G.h = r.height; G.d = d; }
@@ -330,13 +341,26 @@ async function loadGraph() {
   G.loaded = true; resizeG(); const box = $("gview");
   try {
     const d = await api("code/graph"); G.nodes = d.nodes.map((n, i) => { const a = (hue(n.dir || n.id) / 360) * 6.283 + (i % 7) * .1, r = 90 + (i % 13) * 14; return { ...n, x: Math.cos(a) * r, y: Math.sin(a) * r, vx: 0, vy: 0, r: (n.kind === "table" ? 6 : 4.5) + Math.sqrt(n.deg) * 2.1 }; });
-    G.by = new Map(G.nodes.map((n) => [n.id, n])); G.edges = d.edges.map((e) => ({ ...e, a: G.by.get(e.from), b: G.by.get(e.to) })); G.adj = new Map(G.nodes.map((n) => [n.id, []]));
-    for (const e of G.edges) { G.adj.get(e.from).push(e.to); G.adj.get(e.to).push(e.from); }
+    G.baseNodes = G.nodes.slice(); G.baseEdges = d.edges; applyTeam(true);
     $("gstat").textContent = `${G.nodes.length} nodes · ${G.edges.length} links${d.truncated ? " · most connected shown" : ""}`;
     const dirs = [...new Set(G.nodes.filter((n) => n.kind === "file").map((n) => n.dir.split("/")[0]))].sort().slice(0, 7);
     $("glegend").replaceChildren(...dirs.map((x) => { const s = mk("span"); const i = mk("i"); i.style.background = x ? `hsl(${hue(x)} 55% 64%)` : "#e8e8c6"; s.append(i, x || "root"); return s; }), (() => { const s = mk("span"); const i = mk("i"); i.style.background = "#f0b24a"; s.append(i, "table"); return s; })());
+    const linked = new Set(); G.edges.forEach((e) => { linked.add(e.from); linked.add(e.to); }); if (G.nodes.filter((n) => !linked.has(n.id)).length > G.nodes.length * .4) { G.orph = false; $("gorph").classList.remove("on"); }
     refilter(); for (let i = 0; i < 120; i++) tick(.9); fitG(); kick();
   } catch (e) { box.append(Object.assign(mk("div", "gmsg"), { textContent: e.status === 404 || e.status === 403 ? "Connect a project to see its map." : e.message })); }
+}
+const _res = new Map();
+function resolveFile(p) { if (_res.has(p)) return _res.get(p); const k = p.replace(/^(\.\.?\/)+/, ""); const hit = FILES.find((f) => f.path === k) || FILES.find((f) => k.endsWith("/" + f.path)) || FILES.find((f) => f.path.endsWith("/" + k)); _res.set(p, hit ? hit.path : null); return hit ? hit.path : null; }
+function applyTeam(first) {   // live links from what agents are doing: files in one intent, and contracts with their files
+  const add = [], seen = new Set(), nodes = G.baseNodes.slice(), ids = new Set(nodes.map((n) => n.id));
+  const put = (a, b, agent, label) => { const k = a + "|" + b; if (a === b || seen.has(k) || seen.has(b + "|" + a)) return; seen.add(k); add.push({ from: a, to: b, kind: "team", agent, label }); };
+  for (const i of (STATUS && STATUS.intents) || []) { let fs = []; try { fs = JSON.parse(i.files || "[]"); } catch (e) {} const r = [...new Set(fs.map(resolveFile).filter((x) => x && ids.has(x)))].slice(0, 6); for (let a = 0; a < r.length; a++) for (let b = a + 1; b < r.length; b++) put(r[a], r[b], i.agent_id, i.summary); }
+  for (const c of (STATUS && STATUS.contracts) || []) { let fs = []; try { fs = JSON.parse(c.files || "[]"); } catch (e) {} const r = [...new Set(fs.map(resolveFile).filter((x) => x && ids.has(x)))]; if (!r.length) continue; const id = "contract:" + c.name; if (!ids.has(id)) { ids.add(id); const old = G.by && G.by.get(id); nodes.push(old || { id, label: c.name, dir: "", lang: "", size: 0, deg: r.length, kind: "contract", spec: c.spec, x: (Math.random() - .5) * 60, y: (Math.random() - .5) * 60, vx: 0, vy: 0, r: 7 }); } r.forEach((f) => put(id, f, c.agent_id, c.name)); }
+  const sig = add.map((e) => e.from + e.to).join(); if (!first && sig === G.teamSig) return; G.teamSig = sig;
+  const keep = new Map((G.nodes || []).map((n) => [n.id, n])); G.nodes = nodes.map((n) => keep.get(n.id) || (n.x === undefined ? { ...n, x: (Math.random() - .5) * 200, y: (Math.random() - .5) * 200, vx: 0, vy: 0, r: (n.kind === "table" ? 6 : 4.5) + Math.sqrt(n.deg) * 2.1 } : n));
+  G.by = new Map(G.nodes.map((n) => [n.id, n])); G.edges = G.baseEdges.concat(add).filter((e) => G.by.has(e.from) && G.by.has(e.to)).map((e) => ({ ...e, a: G.by.get(e.from), b: G.by.get(e.to) })); G.adj = new Map(G.nodes.map((n) => [n.id, []]));
+  for (const e of G.edges) { G.adj.get(e.from).push(e.to); G.adj.get(e.to).push(e.from); } G.nodes.forEach((n) => { if (n.kind !== "file") return; n.deg = G.adj.get(n.id).length; });
+  if (!first) { refilter(); kick(.3); }
 }
 function refilter() {
   let keep = new Set(G.nodes.map((n) => n.id));
@@ -359,15 +383,18 @@ function draw() {
   if (!G.w) return; const d = G.d, t = performance.now(); gx.setTransform(d, 0, 0, d, 0, 0); gx.clearRect(0, 0, G.w, G.h); gx.save(); gx.translate(G.x, G.y); gx.scale(G.k, G.k);
   const focus = G.hover || (current && G.by.get(current)), nb = new Set(); if (focus) { nb.add(focus.id); (G.adj.get(focus.id) || []).forEach((i) => nb.add(i)); }
   const term = q.value.trim().toLowerCase(), match = (n) => !term || n.id.toLowerCase().includes(term);
-  for (const e of G.ve) { const hot = focus && (e.from === focus.id || e.to === focus.id); gx.strokeStyle = e.kind === "link" ? "#9ad47a" : e.kind === "table" || e.kind === "uses" ? "#f0b24a" : "#e8e8c6"; gx.globalAlpha = hot ? .95 : focus ? .06 : .26; gx.lineWidth = (hot ? 1.8 : 1) / G.k; gx.setLineDash(e.kind === "uses" ? [3 / G.k, 3 / G.k] : []); gx.beginPath(); gx.moveTo(e.a.x, e.a.y); gx.lineTo(e.b.x, e.b.y); gx.stroke(); }
-  gx.setLineDash([]); G.pulse = false;
+  for (const e of G.ve) { const hot = focus && (e.from === focus.id || e.to === focus.id); gx.strokeStyle = e.kind === "team" ? col(e.agent || "x") : e.kind === "link" ? "#9ad47a" : e.kind === "table" || e.kind === "uses" ? "#f0b24a" : "#e8e8c6"; gx.globalAlpha = hot ? .95 : focus ? .06 : .26; gx.lineWidth = (hot ? 1.8 : 1) / G.k; gx.setLineDash(e.kind === "uses" || e.kind === "team" ? [3 / G.k, 3 / G.k] : []); gx.beginPath(); gx.moveTo(e.a.x, e.a.y); gx.lineTo(e.b.x, e.b.y); gx.stroke(); }
+  gx.setLineDash([]); G.pulse = false; const lab = [];
   for (const n of G.vis) {
     const dim = (focus && !nb.has(n.id)) || !match(n); gx.globalAlpha = dim ? .14 : 1; gx.fillStyle = gcol(n);
-    if (n.kind === "table") gx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2); else { gx.beginPath(); gx.arc(n.x, n.y, n.r, 0, 6.283); gx.fill(); }
+    if (n.kind === "table") gx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2); else if (n.kind === "contract") { gx.beginPath(); gx.moveTo(n.x, n.y - n.r - 2); gx.lineTo(n.x + n.r + 2, n.y); gx.lineTo(n.x, n.y + n.r + 2); gx.lineTo(n.x - n.r - 2, n.y); gx.closePath(); gx.fill(); } else { gx.beginPath(); gx.arc(n.x, n.y, n.r, 0, 6.283); gx.fill(); }
     const a = n.kind === "file" && actFor(n.id); if (a && !dim) { G.pulse = true; gx.strokeStyle = col(a[0].agent); gx.lineWidth = 2 / G.k; gx.globalAlpha = .55 + .45 * Math.sin(t / 300); gx.beginPath(); gx.arc(n.x, n.y, n.r + 4 + 2 * Math.sin(t / 300), 0, 6.283); gx.stroke(); gx.globalAlpha = 1; }
     if (n.id === current) { gx.strokeStyle = "#fff"; gx.lineWidth = 2 / G.k; gx.beginPath(); gx.arc(n.x, n.y, n.r + 3, 0, 6.283); gx.stroke(); }
-    if (!dim && (G.labels || G.k > 1.25 || n.deg >= 5 || nb.has(n.id) && focus || (term && match(n)))) { gx.globalAlpha = dim ? .2 : .92; gx.fillStyle = "#e8e8c6"; gx.font = `${11 / G.k}px "Geist Mono", monospace`; gx.textAlign = "center"; gx.fillText(n.label, n.x, n.y + n.r + 12 / G.k); }
+    if (!dim) { const pr = n === focus || n.id === current ? 4 : term && match(n) ? 3 : nb.has(n.id) && focus ? 2 : n.kind === "contract" ? 2 : (G.labels || G.k > 1.25 || n.deg >= 5) ? 1 : 0; if (pr) lab.push({ n, pr }); }
   }
+  // labels, most important first, skipping any that would sit on top of one already placed
+  lab.sort((a, b) => b.pr - a.pr || b.n.deg - a.n.deg); const boxes = []; gx.font = `${11 / G.k}px "Geist Mono", monospace`; gx.textAlign = "center"; gx.fillStyle = "#e8e8c6"; gx.globalAlpha = .95;
+  for (const { n, pr } of lab) { const w = gx.measureText(n.label).width, h = 12 / G.k, x = n.x - w / 2, y = n.y + n.r + 3 / G.k; if (pr < 3 && boxes.some((b) => x < b[0] + b[2] && x + w > b[0] && y < b[1] + b[3] && y + h > b[1])) continue; boxes.push([x, y, w, h]); gx.fillText(n.label, n.x, n.y + n.r + 12 / G.k); }
   gx.restore(); gx.globalAlpha = 1;
 }
 const toWorld = (e) => { const r = gc.getBoundingClientRect(); return [(e.clientX - r.left - G.x) / G.k, (e.clientY - r.top - G.y) / G.k]; };
@@ -377,9 +404,9 @@ gc.addEventListener("pointerdown", (e) => { gc.setPointerCapture(e.pointerId); c
 gc.addEventListener("pointermove", (e) => {
   if (G.drag) { const [wx, wy] = toWorld(e); G.drag.x = wx; G.drag.y = wy; G.drag.vx = G.drag.vy = 0; G.moved++; kick(.35); }
   else if (G.pan) { G.x = G.pan.gx + e.clientX - G.pan.x; G.y = G.pan.gy + e.clientY - G.pan.y; G.moved++; draw(); }
-  else { const n = hit(e); if (n !== G.hover) { G.hover = n; gc.classList.toggle("hand", !!n); draw(); } if (n) { const r = $("gview").getBoundingClientRect(), a = n.kind === "file" && actFor(n.id); gtip.textContent = n.kind === "table" ? `table ${n.label} (defined in ${n.file})` : `${n.id}${a ? "  ·  " + a.map((x) => x.agent).join(", ") + " working" : ""}  ·  ${n.deg} links`; gtip.style.left = Math.min(e.clientX - r.left + 14, r.width - 290) + "px"; gtip.style.top = e.clientY - r.top + 14 + "px"; gtip.style.opacity = 1; } else gtip.style.opacity = 0; }
+  else { const n = hit(e); if (n !== G.hover) { G.hover = n; gc.classList.toggle("hand", !!n); draw(); } if (n) { const r = $("gview").getBoundingClientRect(), a = n.kind === "file" && actFor(n.id); gtip.textContent = n.kind === "contract" ? `contract ${n.label}: ${(n.spec || "").slice(0, 120)}` : n.kind === "table" ? `table ${n.label} (defined in ${n.file})` : `${n.id}${a ? "  ·  " + a.map((x) => x.agent).join(", ") + " working" : ""}  ·  ${n.deg} links`; gtip.style.left = Math.min(e.clientX - r.left + 14, r.width - 290) + "px"; gtip.style.top = e.clientY - r.top + 14 + "px"; gtip.style.opacity = 1; } else gtip.style.opacity = 0; }
 });
-gc.addEventListener("pointerup", () => { const n = G.drag; gc.classList.remove("drag"); if (n && G.moved < 4) { n.kind === "table" ? makeDiagram("er") : openFile(n.id); } G.drag = null; G.pan = null; });
+gc.addEventListener("pointerup", () => { const n = G.drag; gc.classList.remove("drag"); if (n && G.moved < 4) { n.kind === "table" ? makeDiagram("er") : n.kind === "contract" ? (() => { const f = (G.adj.get(n.id) || []).find((i) => !i.startsWith("contract:") && !i.startsWith("table:")); f && openFile(f); })() : openFile(n.id); } G.drag = null; G.pan = null; });
 gc.addEventListener("pointerleave", () => { if (!G.drag && !G.pan) { G.hover = null; gtip.style.opacity = 0; draw(); } });
 gc.addEventListener("wheel", (e) => { e.preventDefault(); const r = gc.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, k2 = Math.min(5, Math.max(.15, G.k * Math.exp(-e.deltaY * .0015))); G.x = mx - ((mx - G.x) / G.k) * k2; G.y = my - ((my - G.y) / G.k) * k2; G.k = k2; draw(); }, { passive: false });
 $("gz+").onclick = () => { G.k = Math.min(5, G.k * 1.3); draw(); }; $("gz-").onclick = () => { G.k = Math.max(.15, G.k / 1.3); draw(); }; $("gzf").onclick = () => { fitG(); draw(); };
@@ -398,7 +425,7 @@ function setup(msg) {
   document.querySelectorAll(".tools [data-d='flow'],.tools [data-d='er'],.tools [data-d='classes']").forEach((b) => (b.disabled = true));
 }
 async function refreshStatus() {
-  try { const r = await fetch("api/status" + (!token && invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: hdr }); if (r.ok) { STATUS = await r.json(); ACT.m = activity(); teamMemory(); if (FILES.length) renderTree(); $("upd").textContent = "updated " + new Date().toLocaleTimeString(); } } catch (e) {}
+  try { const r = await fetch("api/status" + (!token && invite ? "?invite=" + encodeURIComponent(invite) : ""), { headers: hdr }); if (r.ok) { STATUS = await r.json(); ACT.m = activity(); teamMemory(); if (FILES.length) renderTree(); if (G.loaded && G.baseEdges) applyTeam(); $("upd").textContent = "updated " + new Date().toLocaleTimeString(); } } catch (e) {}
 }
 (async function init() {
   await refreshStatus(); setInterval(refreshStatus, 6000);

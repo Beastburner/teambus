@@ -1357,6 +1357,7 @@ def test_code_api_serves_tree_file_graph_and_diagrams_to_the_viewer_token(codere
     f = c.get("/api/code/file?path=app/a.py", headers=VIEW).json(); assert "def f" in f["text"] and f["info"]["imports"] == ["app/b.py"]
     assert {(e["from"], e["to"]) for e in c.get("/api/code/graph", headers=VIEW).json()["edges"]} == {("app/a.py", "app/b.py")}
     assert c.get("/api/code/diagram?kind=flow", headers=VIEW).json()["mermaid"].startswith("flowchart")
+    assert c.get("/api/code/search?q=def%20g", headers=VIEW).json()["results"][0]["path"] == "app/b.py" and c.get("/api/code/search?q=SECRET", headers=VIEW).json()["results"] == []
     assert c.get("/api/code/design.md", headers=VIEW).text.startswith("# Design notes") and c.get("/memory", headers=VIEW).status_code == 200
 
 

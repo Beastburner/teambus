@@ -49,7 +49,25 @@
     const a = (t, h) => { const x = document.createElement("a"); x.textContent = t; x.href = h; x.target = "_blank"; x.rel = "noopener noreferrer"; return x; };
     const l = document.createElement("span"); l.append("TeamBus is open source · ", a("source", "https://github.com/Beastburner/teambus")); if (extra) l.append(" · " + extra);
     const r = document.createElement("span"); r.append("pixel theme inspired by ", a("Creative Portfolio Website Design", "https://www.behance.net/gallery/226623781/Creative-Portfolio-Website-Design/"), " on Behance · fonts Pixelify Sans, Space Grotesk, Geist Mono (OFL)");
-    f.append(l, r); const st = document.querySelector(".stage"); if (st) st.append(f);
+    const z = document.createElement("span"); z.className = "zoomctl"; z.append("text size ");
+    const zb = (t, d) => { const b = document.createElement("button"); b.type = "button"; b.textContent = t; b.setAttribute("aria-label", d > 0 ? "Larger text" : d < 0 ? "Smaller text" : "Reset text size"); b.onclick = () => setZoom(d === 0 ? 1 : zoomNow() + d * .1); return b; };
+    z.append(zb("A−", -1), zb("A", 0), zb("A+", 1)); f.append(l, z, r); const st = document.querySelector(".stage"); if (st) st.append(f);
+  }
+  const zoomNow = () => { try { return +localStorage.getItem("tb.zoom") || 1; } catch (e) { return 1; } };
+  function setZoom(v) { v = Math.min(1.5, Math.max(.8, Math.round(v * 10) / 10)); try { localStorage.setItem("tb.zoom", v); } catch (e) {} const st = document.querySelector(".stage"); if (st) st.style.zoom = v; }
+  addEventListener("DOMContentLoaded", () => setZoom(zoomNow()));
+  /* "?" opens a list of the page's keyboard shortcuts: px.keys([["/", "filter"], ...]) */
+  function keys(list) {
+    const all = [...list, ["?", "show this help"]];
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { const o = document.getElementById("pxhelp"); if (o) o.remove(); return; }
+      if (e.key !== "?" || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+      let o = document.getElementById("pxhelp"); if (o) { o.remove(); return; }
+      o = document.createElement("div"); o.id = "pxhelp"; o.setAttribute("role", "dialog"); o.setAttribute("aria-label", "Keyboard shortcuts"); o.onclick = (ev) => { if (ev.target === o) o.remove(); };
+      const box = document.createElement("div"); box.className = "pxhelp-box"; const h = document.createElement("h2"); h.textContent = "Keyboard shortcuts"; box.append(h);
+      for (const [k, d] of all) { const r = document.createElement("div"); const kb = document.createElement("kbd"); kb.textContent = k; r.append(kb, document.createTextNode(" " + d)); box.append(r); }
+      o.append(box); document.body.append(o);
+    });
   }
   /* The hero: a rainy neon block of flats, drawn at 224x104 and scaled up crisp. Seeded, so it looks the same every visit; only rain and a few windows move. */
   function scene(canvas) {
@@ -80,5 +98,5 @@
     draw(0); if (RM) return;
     (function loop(t) { if (document.hidden || t - last < 55) { requestAnimationFrame(loop); return; } last = t; draw(t); requestAnimationFrame(loop); })(0);
   }
-  window.px = { icon, sprite, spriteData, nav, foot, scene, hash };
+  window.px = { keys, setZoom, icon, sprite, spriteData, nav, foot, scene, hash };
 })();

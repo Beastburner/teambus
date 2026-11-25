@@ -2,7 +2,9 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark"><title>TeamBus</title>
 <link rel="stylesheet" href="assets/pixel.css">
 <style>
-.hero{margin-top:4px}.hero canvas{aspect-ratio:224/104}
+.hero{margin-top:4px}.hero canvas{aspect-ratio:auto;height:190px;object-fit:cover;object-position:50% 58%}body.nohero .hero{display:none}
+.title{font-size:clamp(34px,6.5vw,80px);margin:10px 0 14px}.title small{margin-top:8px}
+.stat-flash{animation:flash 1.2s steps(2) 3}@keyframes flash{50%{background:#fff7d6}}
 .dock .it b{min-width:1ch}
 main{display:flex;flex-direction:column;gap:18px;margin-top:6px}
 .cmd-grid{display:grid;grid-template-columns:minmax(0,270px) minmax(0,1fr) minmax(0,300px);gap:18px;align-items:start}
@@ -41,7 +43,7 @@ section>h2{cursor:pointer;user-select:none}section>h2::after{content:"−";margi
 </style></head><body>
 <div class="stage">
 <header id="nav"></header>
-<div class="status"><input id="flt" class="in" type="search" placeholder="filter by agent, task or text… ( / )" aria-label="Filter the dashboard" autocomplete="off"><button class="tbtn" id="pz" type="button" aria-pressed="false" title="Stop auto-refresh">pause</button><span id="upd"></span></div>
+<div class="status"><input id="flt" class="in" type="search" placeholder="filter by agent, task or text… ( / )" aria-label="Filter the dashboard" autocomplete="off"><button class="tbtn" id="bn" type="button" aria-pressed="false" title="Hide the pixel banner">banner</button><button class="tbtn" id="alr" type="button" aria-pressed="false" title="Desktop notification when a question, conflict or blocked task appears">alerts</button><button class="tbtn" id="pz" type="button" aria-pressed="false" title="Stop auto-refresh">pause</button><span id="upd"></span></div>
 <div id="err"></div>
 <h1 class="title">TeamBus<small>one hub for every agent. no collisions, no guessing.</small></h1>
 <div class="frame hero"><canvas id="scene" aria-label="Pixel art: a rainy neon block of flats"></canvas>
@@ -90,6 +92,16 @@ px.nav("team"); px.foot("read-only team view"); px.scene($("scene"));
     h.onclick = tg; h.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); tg(); } }; h.setAttribute("aria-expanded", !sec.classList.contains("fold")); });
   window.applyFilter = () => { const t = $("flt").value.trim().toLowerCase(); document.querySelectorAll("main li, main .card, main .feed-item, main .msg, main .fchip").forEach((e) => e.classList.toggle("fhide", !!t && !e.textContent.toLowerCase().includes(t))); };
   $("flt").oninput = () => applyFilter();
+  const bnOff = () => { try { return localStorage.getItem("tb.hero") === "off"; } catch (e) { return false; } };
+  const setBn = (off) => { document.body.classList.toggle("nohero", off); $("bn").setAttribute("aria-pressed", off); $("bn").textContent = off ? "show banner" : "banner"; try { localStorage.setItem("tb.hero", off ? "off" : "on"); } catch (e) {} };
+  setBn(bnOff()); $("bn").onclick = () => setBn(!document.body.classList.contains("nohero"));
+  // alerts: the tab title carries a count, and (if allowed) a desktop notification fires when something needs you
+  const wantNote = () => { try { return localStorage.getItem("tb.alerts") === "on" && "Notification" in window && Notification.permission === "granted"; } catch (e) { return false; } };
+  const paintAlr = () => { const on = wantNote(); $("alr").setAttribute("aria-pressed", on); $("alr").textContent = on ? "alerts on" : "alerts"; };
+  $("alr").onclick = async () => { if (!("Notification" in window)) return; if (wantNote()) { localStorage.setItem("tb.alerts", "off"); } else { const p = Notification.permission === "granted" ? "granted" : await Notification.requestPermission(); if (p === "granted") { localStorage.setItem("tb.alerts", "on"); new Notification("TeamBus alerts on", { body: "You will get a note when a question, file conflict or blocked task shows up." }); } } paintAlr(); }; paintAlr();
+  let prev = null; window.alertTick = (a) => { const n = a.unread + a.clashes + a.blocked; document.title = (n ? `(${n}) ` : "") + "TeamBus";
+    if (prev && wantNote()) { const msgs = []; if (a.unread > prev.unread) msgs.push(`${a.unread - prev.unread} new message(s)`); if (a.clashes > prev.clashes) msgs.push("a file conflict"); if (a.blocked > prev.blocked) msgs.push("a blocked task"); if (msgs.length && document.hidden) new Notification("TeamBus: " + msgs.join(", ")); } prev = a; };
+  px.keys([["/", "filter the dashboard"], ["Esc", "clear the filter"], ["click a section title", "fold or unfold it"]]);
   window.paused = false; $("pz").onclick = () => { paused = !paused; $("pz").setAttribute("aria-pressed", paused); $("pz").textContent = paused ? "resume" : "pause"; if (!paused) load(); };
   addEventListener("keydown", (e) => { if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $("flt").focus(); } else if (e.key === "Escape" && document.activeElement === $("flt")) { $("flt").value = ""; applyFilter(); $("flt").blur(); } });
 }
@@ -134,6 +146,7 @@ function visuals(d) {
   bigStat(agents.length, working + " working", working ? "good" : "", "invader"); bigStat(cnt("open") + cnt("claimed"), "tasks active", "", "flag"); bigStat(cnt("blocked"), "blocked", cnt("blocked") ? "hot" : "", "cross");
   bigStat(cnt("done"), "done today", cnt("done") ? "good" : "", "check"); bigStat(clashes.length, "file conflicts", clashes.length ? "hot" : "", "bolt"); bigStat(unread, "unread msgs", unread > 2 ? "hot" : "", "chat");
   const lastC = ev.filter((e) => e.kind === "commit").pop(); bigStat(lastC ? ago(lastC.ts, n).replace(" ago", "") : "—", "last commit", "", "rocket");
+  window.alertTick && alertTick({ unread, clashes: clashes.length, blocked: cnt("blocked") });
   $("heronote").textContent = agents.length ? `${agents.length} agent${agents.length > 1 ? "s" : ""} on the bus, ${working} working. ${clashes.length ? clashes.length + " file conflict" + (clashes.length > 1 ? "s" : "") + " to sort out." : "No file conflicts."} ${unread ? unread + " unread message" + (unread > 1 ? "s" : "") + "." : "Inbox is quiet."}` : "No agents have joined yet. Join one with teambus-join, or ask the orchestrator to create_agent.";
   // team map
   const map = $("map"); map.replaceChildren();
