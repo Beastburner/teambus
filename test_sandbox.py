@@ -44,7 +44,7 @@ def tok(sb, agent): return next(a["token"] for a in sb["agents"] if a["agent_id"
 
 def test_create_use_through_proxy_and_web_view(mgr):
     m = mgr(); st, sb = jreq(m.url + "/new", "POST"); assert st == 201 and len(sb["agents"]) == 3 and sb["hub_url"].startswith(m.url + "/s/")
-    assert "teambus-join --hub " + sb["hub_url"] in sb["agents"][0]["join"]
+    assert "claude mcp add teambus" in sb["agents"][0]["join"] and sb["hub_url"] + "/mcp" in sb["agents"][0]["join"] and sb["agents"][0]["token"] in sb["agents"][0]["join"]
     st, me = jreq(sb["hub_url"] + "/api/whoami", "POST", tok(sb, "bob-backend"), {}); assert (st, me["agent_id"]) == (200, "bob-backend")
     st, _ = jreq(sb["hub_url"] + "/api/post_intent", "POST", tok(sb, "bob-backend"), {"files": ["a.js"], "summary": "x", "symbols": []}); assert st == 200
     st, html = req(sb["hub_url"] + "/?token=" + sb["web_view"].split("token=")[1]); assert st == 200 and b"TeamBus" in html            # web view served under the prefix
@@ -198,7 +198,7 @@ AG2 = [{"agent_id": "dana-web", "role": "web"}, {"agent_id": "eli-api", "role": 
 def test_custom_agents_roles_and_label(mgr):
     m = mgr(); st, sb = call("POST", m.url + "/new", {"label": "demo run", "agents": AG2}); assert st == 201
     assert [(a["agent_id"], a["role"]) for a in sb["agents"]] == [("dana-web", "web"), ("eli-api", "api")] and sb["label"] == "demo run" and sb["manage_token"]
-    assert "--agent-id dana-web --role web --token " in sb["agents"][0]["join"] and sb["expires_at"] > time.time()
+    assert sb["agents"][0]["agent_id"] == "dana-web" and sb["agents"][0]["token"] in sb["agents"][0]["join"] and sb["expires_at"] > time.time()
     st, me = call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][1]["token"]); assert (st, me) == (200, {"agent_id": "eli-api", "role": "api"})
     st, status = call("GET", sb["hub_url"] + "/api/status", token=sb["web_view"].split("token=")[1]); assert sorted(a["agent_id"] for a in status["agents"]) == ["dana-web", "eli-api"]   # no alice/bob/carol left over
 
@@ -239,7 +239,7 @@ def test_manage_endpoints_require_that_sandboxes_own_token(mgr):
 def test_add_an_agent_to_a_running_sandbox(mgr):
     m = mgr(); sb = call("POST", m.url + "/new", {"agents": AG2})[1]
     st, ag = call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "frank-ops", "role": "ops"}, sb["manage_token"])
-    assert st == 201 and ag["agent_id"] == "frank-ops" and "--agent-id frank-ops --role ops" in ag["join"]
+    assert st == 201 and ag["agent_id"] == "frank-ops" and ag["token"] in ag["join"] and "/mcp" in ag["join"]
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, ag["token"])[1] == {"agent_id": "frank-ops", "role": "ops"}          # live, no restart
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, sb["agents"][0]["token"])[0] == 200                                    # existing tokens still work
     assert call("POST", m.url + "/manage/" + sb["id"] + "/agents", {"agent_id": "frank-ops", "role": "x"}, sb["manage_token"])[0] == 400   # duplicate name
@@ -491,7 +491,7 @@ def test_notice_is_shown_only_when_configured(mgr):
 def test_start_sh_on_render_defaults_to_the_sandbox_with_a_free_hosting_notice(tmp_path):
     def run(extra):
         port = free_port(); env = {**os.environ, "RENDER": "true", "PORT": str(port), "HOST": "127.0.0.1", "SANDBOX_DIR": str(tmp_path / f"s{port}"), **extra}
-        for k in ("TEAMBUS_TOKEN", "TEAMBUS_TOKENS", "TEAMBUS_NOAUTH", "SANDBOX_NOTICE"):
+        for k in ("TEAMBUS_TOKEN", "TEAMBUS_TOKENS", "TEAMBUS_NOAUTH", "TEAMBUS_MODE", "SANDBOX_NOTICE"):
             if k not in extra: env.pop(k, None)
         p = subprocess.Popen(["sh", str(HERE / "start.sh")], cwd=HERE, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -693,7 +693,7 @@ def test_reissue_gives_new_join_lines_and_kills_the_old_ones(mgr, google):
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, old)[0] == 200
     assert acall("POST", f"{m.url}/me/sandboxes/{sb['id']}/reissue", {}, cookie=ck, csrf=False)[0] == 400
     st, d, _ = acall("POST", f"{m.url}/me/sandboxes/{sb['id']}/reissue", {}, cookie=ck); assert st == 200
-    new = {a["agent_id"]: a["token"] for a in d["agents"]}; assert set(new) == {"alice-frontend", "bob-backend", "carol-fullstack"} and all("--token " + t in a["join"] for a in d["agents"] for t in [new[a["agent_id"]]])
+    new = {a["agent_id"]: a["token"] for a in d["agents"]}; assert set(new) == {"alice-frontend", "bob-backend", "carol-fullstack"} and all("Bearer " + t in a["join"] for a in d["agents"] for t in [new[a["agent_id"]]])
     assert wait_for(lambda: call("POST", sb["hub_url"] + "/api/whoami", {}, old)[0] == 401, 10)                           # old join lines are dead
     st, w = call("POST", sb["hub_url"] + "/api/whoami", {}, new["alice-frontend"])[:2]; assert st == 200 and w["agent_id"] == "alice-frontend"
     assert call("GET", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[0] == 401 and call("GET", m.url + "/manage/" + sb["id"], token=d["manage_token"])[0] == 200   # the manage token was rotated too
@@ -777,14 +777,14 @@ def mcp_create(sb, who, name, role, brief=""):
 def test_orchestrator_can_create_agents_others_cannot_and_the_owner_sees_them(mgr):
     m = mgr(SANDBOX_MAX_AGENTS=5); sb = call("POST", m.url + "/new", {"agents": [{"agent_id": "lead-ann", "role": "orchestrator"}, {"agent_id": "dev-bo", "role": "backend"}]})[1]
     assert "may not create agents" in call("POST", sb["hub_url"] + "/api/create_agent", {"name": "x-bot", "role": "r"}, tok(sb, "dev-bo"))[1]["error"]
-    out = mcp_create(sb, "lead-ann", "scout-one", "researcher", "look into the docs"); assert out["agent_id"] == "scout-one" and out["join"].count("--token") == 1      # through the real MCP tool
-    assert out["hub"] == sb["hub_url"] and f"--hub {sb['hub_url']} " in out["join"]                                                                                                       # the join line carries the real public address, usable from another computer
+    out = mcp_create(sb, "lead-ann", "scout-one", "researcher", "look into the docs"); assert out["agent_id"] == "scout-one" and out["join"].count(out["token"]) == 1      # through the real MCP tool
+    assert out["hub"] == sb["hub_url"] and f"{sb['hub_url']}/mcp" in out["join"]                                                                                                       # the join line carries the real public address, usable from another computer
     r = urllib.request.Request(sb["hub_url"] + "/api/create_agent", json.dumps({"name": "spoof-two", "role": "x"}).encode(), {"Content-Type": "application/json", "Authorization": "Bearer " + tok(sb, "lead-ann"), "X-TeamBus-Base": "https://evil.example"})
     assert json.load(urllib.request.urlopen(r))["hub"] == sb["hub_url"]                                                                                                                    # a client-sent header cannot change it
     assert call("POST", sb["hub_url"] + "/api/remove_agent", {"name": "spoof-two"}, tok(sb, "lead-ann"))[1] == {"removed": "spoof-two"}
     assert call("POST", sb["hub_url"] + "/api/whoami", {}, out["token"])[1]["agent_id"] == "scout-one"
     st, d = call("GET", m.url + "/manage/" + sb["id"], token=sb["manage_token"])[:2]; names = {a["agent_id"]: a for a in d["agents"]}
-    assert set(names) == {"lead-ann", "dev-bo", "scout-one"} and names["scout-one"]["token"] == out["token"] and "--agent-id scout-one" in names["scout-one"]["join"]    # the owner's list picks up what the agent made
+    assert set(names) == {"lead-ann", "dev-bo", "scout-one"} and names["scout-one"]["token"] == out["token"] and names["scout-one"]["token"] in names["scout-one"]["join"]    # the owner's list picks up what the agent made
     assert {a["agent_id"] for a in call("GET", m.url + "/status/" + sb["id"])[1]["agents"]} == {"lead-ann", "dev-bo", "scout-one"}
     assert mcp_create(sb, "lead-ann", "scout-two", "researcher")["agent_id"] == "scout-two" and mcp_create(sb, "lead-ann", "scout-three", "researcher")["agent_id"] == "scout-three"
     assert "team is full (5 agents)" in mcp_create(sb, "lead-ann", "scout-four", "researcher").get("error", "")                                                                          # the sandbox agent cap (5) holds
