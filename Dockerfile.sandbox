@@ -8,7 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py sandbox.py registry.py accounts.py CLAUDE.snippet.md ./
 COPY web ./web
-RUN useradd -r -u 10001 teambus && mkdir -p /tmp/sandboxes && chown teambus /tmp/sandboxes
+RUN useradd -r -u 10001 teambus && mkdir -p /tmp/sandboxes /permanent && chown teambus /tmp/sandboxes /permanent
 USER teambus
 EXPOSE 10000
 HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:%s/healthz'%os.environ['PORT'])"

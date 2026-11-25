@@ -117,7 +117,7 @@ def owner_of(a):
 
 MAX_GROUP = 12
 MAX_AGENTS_HUB, MAX_CREATED = int(E("TEAMBUS_MAX_AGENTS", 50)), int(E("TEAMBUS_MAX_CREATED", 5))     # total agents on this hub; most one agent may create
-AGENT_ID_RE, AGENT_ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict: ids and roles end up in shell commands and in other agents' context
+AGENT_ID_RE, AGENT_ROLE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict: ids and roles end up in shell commands and in other agents' context
 _tokfile = threading.Lock()
 
 def delivery_note(p):
@@ -241,6 +241,7 @@ def ask_teammate_agent(to_agent: str = "", question: str = "", reply_to: int | N
     to = (to_agent or "").strip() or (parent and parent["from_agent"]) or ""; k = known()
     if to == a: return {"error": "that is you; address a teammate"}
     if to.startswith("@"): return _ask_group(a, to, question, reply_to, k)
+    if to not in k and to and len(ci := [x for x in k if x.lower() == to.lower()]) == 1 and ci[0] != a: to = ci[0]      # "bob" reaches "Bob" when no other agent matches
     if to not in k:
         byrole = [x for x, r in k.items() if r == to and x != a]
         if len(byrole) > 1: return {"error": f"role {to!r} is held by {sorted(byrole)}; address one of them by agent_id"}
@@ -444,18 +445,18 @@ def _write_tokens(d):
 
 def create_agent(name: str, role: str, brief: str = "", spawn: bool = False, ctx: Context | None = None):
     """Create a new agent on this team and get its token (only agents the hub owner allowed may; in a sandbox that is the `orchestrator` role).
-    `name` is lowercase letters, digits and dashes (2 to 31 characters); `role` is letters, digits, dashes, underscores. `brief` is delivered to the new agent as its first message, from you. With `spawn=true` you also ask your own TeamBus worker (`teambus worker`, running on your machine, if your user started one) to set up a folder and START that agent's Claude session; without a worker the request stays pending.
+    `name` is letters (either case), digits and dashes (2 to 31 characters, no spaces; "Bob" and "bob" count as the same name); `role` is letters, digits, dashes, underscores. `brief` is delivered to the new agent as its first message, from you. With `spawn=true` you also ask your own TeamBus worker (`teambus worker`, running on your machine, if your user started one) to set up a folder and START that agent's Claude session; without a worker the request stays pending.
     Returns the new agent's token and the `claude mcp add` command to run in the project folder. Give the token only to that session; never
     post it in a message. Limits: you can create a few agents, not unlimited ones, and agents you create cannot create more."""
     w = who_of(ctx); a = w.get("agent_id") or ""
     if not a: return {"error": "no identity: connect through a token"}
     if not w.get("can_create"): return {"error": "you may not create agents. The hub owner must allow it for your agent (in a sandbox, give it the role `orchestrator`; on your own hub, set \"can_create\": true on its token)."}
     name, role = (name or "").strip(), (role or "").strip()
-    if not AGENT_ID_RE.fullmatch(name): return {"error": "name must be 2 to 31 characters: a lowercase letter first, then lowercase letters, digits or dashes"}
+    if not AGENT_ID_RE.fullmatch(name): return {"error": "name must be 2 to 31 characters: letters (either case), digits or dashes, starting with a letter or digit"}
     if not AGENT_ROLE_RE.fullmatch(role): return {"error": "role must be 1 to 24 characters: letters, digits, dashes or underscores"}
     with _tokfile:
         d = _tokens_raw(); ids = {v.get("agent_id") for v in d.values()} | set(known())
-        if name in ids: return {"error": f"an agent named {name!r} already exists; pick another name"}
+        if name.lower() in {i.lower() for i in ids if i}: return {"error": f"an agent named {name!r} already exists; pick another name"}
         if sum(1 for v in d.values() if v.get("created_by") == a) >= MAX_CREATED: return {"error": f"you have already created {MAX_CREATED} agents, the most one agent may create; remove one with remove_agent or ask your user"}
         if len(ids) >= MAX_AGENTS_HUB: return {"error": f"this team is full ({MAX_AGENTS_HUB} agents)"}
         tok = secrets.token_urlsafe(24); d[tok] = {"agent_id": name, "role": role, "created_by": a, **({"owner": w["owner"]} if w.get("owner") else {})}; _write_tokens(d)
@@ -756,5 +757,5 @@ def add_agent(agent_id, role, owner="", can_create=False):
 if __name__ == "__main__":
     if sys.argv[1:2] == ["add-agent"]: sys.exit(add_agent(*[x for x in sys.argv[2:] if x != "--can-create"][:3], can_create="--can-create" in sys.argv[2:]))
     if not (NOAUTH or VIEWER or ADMIN or os.path.exists(TOKENS)): sys.exit(f"refusing to start without auth: create {TOKENS} (token -> agent map) and/or set TEAMBUS_TOKEN or TEAMBUS_ADMIN_TOKEN, or TEAMBUS_NOAUTH=1 for local dev")
-    if ADMIN and (len(ADMIN) < 24 or not AGENT_ID_RE.fullmatch(ADMIN_AGENT)): sys.exit("refusing to start: TEAMBUS_ADMIN_TOKEN must be at least 24 characters and TEAMBUS_ADMIN_AGENT a valid agent name (lowercase letters, digits, dashes)")
+    if ADMIN and (len(ADMIN) < 24 or not AGENT_ID_RE.fullmatch(ADMIN_AGENT)): sys.exit("refusing to start: TEAMBUS_ADMIN_TOKEN must be at least 24 characters and TEAMBUS_ADMIN_AGENT a valid agent name (letters, digits, dashes)")
     uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port, log_level="warning")

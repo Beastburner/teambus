@@ -283,7 +283,7 @@ def add_agent(a):
     pass --empty for a bare folder, or --clone URL."""
     root = Path(a.dir).resolve(); c = cfg(root); hub = (a.hub or c["url"]).rstrip("/")
     if not hub: sys.exit("no hub known: pass --hub or run teambus-join in this folder first")
-    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", a.agent_id): sys.exit("agent id must be lowercase letters, digits and dashes (2-31 chars, starting with a letter)")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}", a.agent_id): sys.exit("agent id must be letters, digits and dashes (2-31 chars, starting with a letter or digit)")
     if a.agent_id == c["agent"]: sys.exit(f"'{a.agent_id}' is already the agent of {root}")
     dest = Path(a.dest).resolve() if a.dest else root.parent / a.agent_id
     if dest.exists(): sys.exit(f"{dest} already exists; not touching it (choose --dest)")
@@ -336,7 +336,7 @@ def worker(a):
         say(f"turn finished (exit {r.returncode}, ${cost:.2f}; ${spent + cost:.2f} of ${a.daily_budget:.2f} daily): {res}"); return True
     def spawn_one(sp):
         root_dir = Path(a.spawn_root).resolve() if a.spawn_root else root.parent; dest = (root_dir / sp["agent_id"]).resolve()
-        if dest.parent != root_dir or not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", sp["agent_id"]): return False, "unsafe agent name"
+        if dest.parent != root_dir or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}", sp["agent_id"]): return False, "unsafe agent name"
         if dest.exists(): return False, f"{dest} already exists; not touching it"
         repo = a.repo or subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"], capture_output=True, text=True).stdout.strip()
         if repo:
@@ -565,7 +565,7 @@ def local(a):
     elif act == "join":
         if not lc or not _hub_up(lc["url"]): sys.exit("the laptop hub is not running: `teambus local install` (or `teambus local start`)")
         root = Path(a.dir).resolve(); name = re.sub(r"[^a-z0-9-]+", "-", root.name.lower()).strip("-")[:20] or "project"; aid = a.agent_id or f"{name}-main"
-        if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", aid): sys.exit(f"{aid!r} is not a valid agent name (lowercase letters, digits, dashes); pass --agent-id")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}", aid): sys.exit(f"{aid!r} is not a valid agent name (letters, digits, dashes; 2 to 31 characters); pass --agent-id")
         tok = _ensure_agent(lc, aid, a.role)
         init(argparse.Namespace(dir=str(root), hub=lc["url"], agent_id=aid, role=a.role, token=tok))
         mp = root / ".mcp.json"; mj = jload(mp); ent = mj.get("mcpServers", {}).get("teambus")
@@ -597,7 +597,7 @@ def session(a):
     if not lc or not _hub_up(lc["url"]): sys.exit("the laptop hub is not running: `teambus local install` (or `teambus local start`)")
     root = Path(a.dir).resolve(); base = re.sub(r"[^a-z0-9-]+", "-", root.name.lower()).strip("-")[:16] or "project"
     name = a.name or f"{base}-{os.urandom(2).hex()}"
-    if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name): sys.exit(f"{name!r} is not a valid agent name (2 to 31 characters: lowercase letters, digits, dashes; a letter first)")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}", name): sys.exit(f"{name!r} is not a valid agent name (2 to 31 characters: letters, digits, dashes)")
     tok = _ensure_agent(lc, name, a.role); claude = a.claude or shutil.which("claude") or sys.exit("the claude CLI was not found")
     env = {**os.environ, "TEAMBUS_SESSION_TOKEN": tok, "TEAMBUS_SESSION_AGENT": name, "TEAMBUS_SESSION_ROLE": a.role, "AGENT_ID": name}
     print(f"teambus: this Claude is agent '{name}' ({a.role}) on {lc['url']}", file=sys.stderr)

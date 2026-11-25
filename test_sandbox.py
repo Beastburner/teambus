@@ -820,3 +820,52 @@ def test_images_go_through_the_sandbox_proxy_but_only_the_image_upload_may_be_la
     r = urllib.request.Request(sb["hub_url"] + "/api/attachment/%d" % r["id"], headers={"Authorization": "Bearer " + tok(sb, "bob-backend")})
     with urllib.request.urlopen(r) as x: assert x.read().startswith(b"\x89PNG") and x.headers["Content-Type"] == "image/png"                     # and it comes back out through the proxy
     assert call("GET", m.url + "/healthz")[0] == 200
+
+
+# ---- permanent sandboxes (operator key, no expiry, survive a restart) and agent names with capitals and digits ----
+KEY = "operator-key-0123456789"
+def preq(m, body, key=KEY): return req(m.url + "/new", "POST", body=body) if key is None else _with_key(m, body, key)
+def _with_key(m, body, key):
+    r = urllib.request.Request(m.url + "/new", json.dumps(body).encode(), {"Content-Type": "application/json", "X-Sandbox-Admin-Key": key}, method="POST")
+    try:
+        with urllib.request.urlopen(r, timeout=30) as x: return x.status, json.loads(x.read())
+    except urllib.error.HTTPError as e: return e.code, json.loads(e.read())
+
+def test_permanent_needs_the_operator_key(mgr, tmp_path):
+    m = mgr(SANDBOX_ADMIN_KEY=KEY, SANDBOX_PERM_DIR=tmp_path / "perm")
+    for key in (None, "wrong-key-0123456789"):
+        st, out = (jreq(m.url + "/new", "POST", body={"permanent": True}) if key is None else _with_key(m, {"permanent": True}, key)); assert st == 403 and "operator key" in out["error"], (key, out)
+    assert not (tmp_path / "perm").exists() or not list((tmp_path / "perm").iterdir())                      # nothing was created
+    off = mgr(); st, out = _with_key(off, {"permanent": True}, KEY); assert st == 403                          # no key configured: the feature is off, whatever is sent
+    short = mgr(SANDBOX_ADMIN_KEY="short", SANDBOX_PERM_DIR=tmp_path / "p2"); assert _with_key(short, {"permanent": True}, "short")[0] == 403    # a weak key is never accepted
+
+def test_a_permanent_sandbox_never_expires_or_idles_out_but_a_normal_one_does(mgr, tmp_path):
+    m = mgr(SANDBOX_ADMIN_KEY=KEY, SANDBOX_PERM_DIR=tmp_path / "perm", SANDBOX_IDLE=2, SANDBOX_TTL=60)
+    st, perm = _with_key(m, {"permanent": True, "label": "forever"}, KEY); assert st == 201 and perm["permanent"] and perm["expires_in_seconds"] > 365 * 86400 and perm["manage_token"]
+    _, normal = jreq(m.url + "/new", "POST"); assert normal["permanent"] is False
+    time.sleep(5)                                                                                              # IDLE=2 s, reaper every second
+    assert jreq(perm["hub_url"] + "/api/whoami", "POST", tok(perm, "alice-frontend"), {})[0] == 200
+    assert jreq(normal["hub_url"] + "/api/whoami", "POST", tok(normal, "alice-frontend"), {})[0] == 404       # the ordinary one idled out
+    st, ext = jreq(m.url + f"/manage/{perm['id']}/extend", "POST", perm["manage_token"], {"minutes": 5}); assert st == 200 and ext["permanent"]    # extending is a harmless no-op
+
+def test_a_permanent_sandbox_survives_a_restart_with_its_data_and_tokens_and_can_be_deleted(mgr, tmp_path):
+    perm_dir = tmp_path / "perm"; m1 = mgr(SANDBOX_ADMIN_KEY=KEY, SANDBOX_PERM_DIR=perm_dir)
+    st, sb = _with_key(m1, {"permanent": True, "agents": [{"agent_id": "Lead-1", "role": "orchestrator"}, {"agent_id": "9bot", "role": "dev"}]}, KEY); assert st == 201
+    t = tok(sb, "Lead-1"); assert jreq(sb["hub_url"] + "/api/post_intent", "POST", t, {"files": ["keep.py"], "summary": "kept", "symbols": []})[0] == 200
+    made = jreq(sb["hub_url"] + "/api/create_agent", "POST", t, {"name": "Made-Later2", "role": "x"})[1]; assert made["agent_id"] == "Made-Later2"      # the orchestrator adds one through the hub
+    m1.stop()                                                                                                   # graceful stop: SIGTERM
+    assert (perm_dir / sb["id"] / "meta.json").exists() and (perm_dir / sb["id"] / "hub.db").exists()          # the data was kept
+    m2 = mgr(SANDBOX_ADMIN_KEY=KEY, SANDBOX_PERM_DIR=perm_dir)
+    url2 = m2.url + "/s/" + sb["id"]
+    assert jreq(url2 + "/api/whoami", "POST", t, {})[1]["agent_id"] == "Lead-1"                               # same id, same token
+    assert jreq(url2 + "/api/whoami", "POST", made["token"], {})[1]["agent_id"] == "Made-Later2"              # an agent made after creation is still known
+    assert [c["with"] for c in jreq(url2 + "/api/conflicts", "POST", tok(sb, "9bot"), {"files": ["keep.py"]})[1]["conflicts"]] == ["Lead-1"]          # and so is its data
+    st, _ = jreq(m2.url + f"/manage/{sb['id']}", "DELETE", sb["manage_token"]); assert st == 200                # the manage token survived too (as a hash)
+    assert not (perm_dir / sb["id"]).exists() and jreq(url2 + "/api/whoami", "POST", t, {})[0] == 404          # deleting removes the data for good
+
+def test_agent_names_may_have_capitals_and_digits_but_not_clash_by_case(mgr):
+    m = mgr(); st, sb = jreq(m.url + "/new", "POST", body={"agents": [{"agent_id": "Alice-QA", "role": "qa"}, {"agent_id": "7bot", "role": "dev"}]}); assert st == 201, sb
+    assert {a["agent_id"] for a in sb["agents"]} == {"Alice-QA", "7bot"}
+    st, e = jreq(m.url + "/new", "POST", body={"agents": [{"agent_id": "Bob", "role": "a"}, {"agent_id": "bob", "role": "b"}]}); assert st == 400 and "case" in e["error"]
+    st, e = jreq(m.url + f"/manage/{sb['id']}/agents", "POST", sb["manage_token"], {"agent_id": "ALICE-qa", "role": "x"}); assert st == 400 and "already exists" in e["error"]
+    for bad in ("has space", "x", "-lead", "a_b", "a" * 32, "../x"): assert jreq(m.url + "/new", "POST", body={"agents": [{"agent_id": bad, "role": "a"}, {"agent_id": "okay-one", "role": "b"}]})[0] == 400, bad

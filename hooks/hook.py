@@ -58,7 +58,7 @@ def api(name, **kw):
 
 def ctx(event, text): print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
 
-STATE = os.path.join(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".claude", "teambus-state" + (("." + re.sub(r"[^a-z0-9-]", "", ME)) if os.environ.get("TEAMBUS_SESSION_TOKEN") else "") + ".json")   # per session agent: sessions in one folder keep their own cursor
+STATE = os.path.join(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".claude", "teambus-state" + (("." + re.sub(r"[^A-Za-z0-9-]", "", ME)) if os.environ.get("TEAMBUS_SESSION_TOKEN") else "") + ".json")   # per session agent: sessions in one folder keep their own cursor
 def state():
     try: return json.load(open(STATE))
     except Exception: return {}

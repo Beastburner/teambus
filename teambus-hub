@@ -84,7 +84,7 @@ case "$cmd" in
   person)
     [ $# -ge 2 ] || die "usage: person PERSON ROLE [ROLE...]   (creates PERSON-ROLE for each role)"; ensure_venv; load_env
     [ -f "$TOKENS" ] || echo '{}' > "$TOKENS"; who="$1"; shift
-    echo "$who" | grep -Eq '^[a-z][a-z0-9]{1,20}$' || die "PERSON must be lowercase letters and digits (it becomes the start of each agent name)"
+    echo "$who" | grep -Eq '^[A-Za-z0-9]{2,21}$' || die "PERSON must be letters and digits (it becomes the start of each agent name)"
     for r in "$@"; do
       echo "$r" | grep -Eq '^[A-Za-z0-9_]{1,20}$' || die "role '$r' must be letters, digits or underscores"
       grep -q "\"agent_id\": *\"$who-$r\"" "$TOKENS" && die "'$who-$r' already exists; use: ./teambus-hub invite $who-$r"

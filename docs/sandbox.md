@@ -19,7 +19,7 @@ A visitor can hold several sandboxes at once (default 3 active, 6 new per hour),
 API (the page uses exactly this):
 | Call | What it does |
 |---|---|
-| `POST /new` with optional `{"label": "checkout rewrite", "agents": [{"agent_id": "dana-web", "role": "web"}, ...]}` | creates a sandbox. 2 to `SANDBOX_MAX_AGENTS` agents; names are 2 to 31 characters of lowercase letters, digits and dashes starting with a letter; roles are 1 to 24 letters, digits, dashes or underscores. No body means alice-frontend, bob-backend and carol-fullstack. Returns the hub URL, the web view, every agent's token and join command, and a `manage_token`. |
+| `POST /new` with optional `{"label": "checkout rewrite", "agents": [{"agent_id": "dana-web", "role": "web"}, ...]}` | creates a sandbox. 2 to `SANDBOX_MAX_AGENTS` agents; names are 2 to 31 characters: letters (either case), digits and dashes, starting with a letter or digit, and not case-sensitive (`Bob` and `bob` clash); roles are 1 to 24 letters, digits, dashes or underscores. No body means alice-frontend, bob-backend and carol-fullstack. Returns the hub URL, the web view, every agent's token and join command, and a `manage_token`. |
 | `GET /manage/<id>` | the same description again (bearer `manage_token`) |
 | `POST /manage/<id>/agents` with `{"agent_id", "role"}` | adds an agent to a running sandbox; every existing token keeps working |
 | `DELETE /manage/<id>` | deletes the sandbox now and frees its slot |
@@ -36,6 +36,16 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 - With the default in-memory registry a restart forgets everything, and an old id is "unknown" (the message says a restart is the usual cause). Add Firestore for "lost: the server restarted" and for join history that outlives the sandbox.
 - `/healthz` shows `registry` (`memory` or `firestore`), `registry_errors` and `registry_last_error`. Registry problems never block creating or using a sandbox.
 
+## Permanent sandboxes
+A normal sandbox is throwaway. A **permanent** one is for a team that wants the sandbox's one-click hub but no expiry: it has no lifetime, no idle timeout and no maximum age, its data lives in `SANDBOX_PERM_DIR` (put that on a persistent disk or Docker volume), and the service starts it again after every restart or deploy, with the same URL and the same agent tokens.
+
+Turn it on by setting `SANDBOX_ADMIN_KEY` (16+ characters, a secret) on the service. Only a request carrying that key can create one, so the public page can never be used to hoard resources:
+```bash
+curl -X POST https://sandbox.example.com/new -H "X-Sandbox-Admin-Key: $SANDBOX_ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"permanent": true, "label": "our team", "agents": [{"agent_id": "Lead-1", "role": "orchestrator"}, {"agent_id": "QA-Bot", "role": "qa"}]}'
+```
+The answer has the hub URL, each agent's token and a `manage_token`. Give one agent the role `orchestrator` and Claude can create the rest itself with `create_agent`. `DELETE /manage/<id>` removes a permanent sandbox and its data for good; `extend` does nothing. A permanent sandbox counts against `SANDBOX_MAX`, may grow to `SANDBOX_PERM_MAX_DB_MB` (default 200), and is restarted if its process dies. `docker-compose.sandbox.yml` mounts the volume for you. On Render this needs a paid instance with a disk (`SANDBOX_PERM_DIR=/data/permanent`); the free instance has no disk, so nothing there can be permanent. For one team, a plain hub ([deploy.md](deploy.md)) is simpler and uses less memory than the sandbox service.
+
 ## Limits (all environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
@@ -51,6 +61,9 @@ Every sandbox is recorded in a registry (in memory by default; in Google Firesto
 | `SANDBOX_NEW_PER_IP_HOUR` | 6 | new sandboxes per client IP per hour (429) |
 | `SANDBOX_MAX_ACTIVE_PER_IP` | 3 | sandboxes one client can hold at once (429; delete one to free the slot) |
 | `SANDBOX_MAX_AGENTS` | 5 | most agents in one sandbox |
+| `SANDBOX_ADMIN_KEY` | empty | 16+ characters turns on permanent sandboxes (see above); empty = off |
+| `SANDBOX_PERM_DIR` | `<SANDBOX_DIR>/permanent` | where permanent sandboxes keep their data: use a persistent disk |
+| `SANDBOX_PERM_MAX_DB_MB` | 200 | data limit of a permanent sandbox |
 | `SANDBOX_NOTICE` | empty (a free-hosting warning on Render) | a line of text shown in the dialog, for example that the host sleeps and wipes sandboxes; set it to an empty string to hide it |
 | `SANDBOX_INSTALL_CMD` | the install one-liner | what the dialog shows under "First time on this machine?" |
 | `SANDBOX_MAX_ATTACH_BODY` | 2200000 | bytes allowed for the image upload request only (an image up to 1.5 MB as base64); every other request keeps `SANDBOX_MAX_BODY` |

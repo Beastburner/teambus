@@ -21,6 +21,9 @@ services:
       SANDBOX_RPM: ${SANDBOX_RPM:-600}
       SANDBOX_MAX_DB_MB: ${SANDBOX_MAX_DB_MB:-5}
       SANDBOX_WARM: ${SANDBOX_WARM:-1}            # one pre-started hub, so a visitor never waits for the import
+      SANDBOX_ADMIN_KEY: ${SANDBOX_ADMIN_KEY:-}   # 16+ characters turns on PERMANENT sandboxes (POST /new {"permanent": true} with header X-Sandbox-Admin-Key); empty = off
+      SANDBOX_PERM_DIR: /permanent                # their data: a real volume, so they survive restarts and deploys
+    volumes: [permanent-sandboxes:/permanent]
     tmpfs: ["/sandboxes:size=256m,uid=10001"]  # all sandbox data is RAM-backed and disappears on restart
     mem_limit: ${SANDBOX_MEM:-2g}              # ~one small Python process per sandbox: size SANDBOX_MAX to this
     pids_limit: 400
@@ -42,3 +45,4 @@ services:
 volumes:
   caddy-data:
   caddy-config:
+  permanent-sandboxes:

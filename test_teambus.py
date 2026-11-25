@@ -644,7 +644,7 @@ def test_only_allowed_agents_can_create_agents_and_the_new_one_works_at_once(hub
     ent = next(v for v in json.load(open(hub / "tokens.json")).values() if v["agent_id"] == "newbie-one"); assert ent["created_by"] == "lena-lead" and "can_create" not in ent
 
 def test_agent_creation_is_validated_and_capped(hub):
-    for bad in ("Bad Name", "x", "UPPER", "has_underscore", "a" * 40, "", "../etc", "ok name"): assert "name must be" in api("tl", "create_agent", name=bad, role="x")["error"], bad
+    for bad in ("Bad Name", "x", "-dash-first", "has_underscore", "a" * 40, "", "../etc", "ok name"): assert "name must be" in api("tl", "create_agent", name=bad, role="x")["error"], bad
     for bad in ("", "bad role", "r" * 30, "a;b"): assert "role must be" in api("tl", "create_agent", name="valid-name", role=bad)["error"], bad
     assert "already exists" in api("tl", "create_agent", name="bob", role="x")["error"] and "already exists" in api("tl", "create_agent", name="newbie-one", role="x")["error"]
     made = sum(1 for v in json.load(open(hub / "tokens.json")).values() if v.get("created_by") == "lena-lead")
@@ -1533,3 +1533,12 @@ def test_a_session_token_makes_one_claude_a_different_agent_in_the_same_folder(h
     who = {c["with"] for c in api("te", "conflicts", files=["sess.py"])["conflicts"]}
     assert who == {"alice", "bob"}, who                                                    # two intents, one per identity, from one folder
     assert (proj / ".claude" / "teambus-state.bob.json").exists() and not (proj / ".claude" / "teambus-state.alice.json").exists()
+
+
+def test_agent_names_allow_capitals_and_digits_and_resolve_without_regard_to_case(hub):
+    _clear_lenas(hub)
+    for name in ("QA-Lead", "7th-agent", "Mixed2Case"): assert api("tl", "create_agent", name=name, role="r")["agent_id"] == name, name
+    assert "already exists" in api("tl", "create_agent", name="qa-lead", role="r")["error"] and "already exists" in api("tl", "create_agent", name="BOB", role="r")["error"]    # case-insensitive clash
+    r = api("tb", "ask", to_agent="qa-lead", question="hello"); assert r["to"] == "QA-Lead", r                    # "qa-lead" reaches "QA-Lead"
+    assert api("tb", "ask", to_agent="nobody-here", question="x")["error"].startswith("unknown recipient")
+    _clear_lenas(hub)

@@ -19,7 +19,7 @@ On the hub (once), for each person and the roles of their agents:
 ```
 Send each person their own lines privately: a line contains a token. They run each line inside the project folder where that agent works, on their own machine (see [team-setup.md](team-setup.md) for the install step). Different agents of one person can work in different folders, or in the same repo on different branches.
 
-Naming convention: `<person>-<role>`. The person is the owner, so `teambus status` and the dashboard group agents by who they work for. Use lowercase letters and digits for the person.
+Naming convention: `<person>-<role>`. The person is the owner, so `teambus status` and the dashboard group agents by who they work for. Use letters and digits for the person.
 
 ## Working together
 - **Conflicts:** an agent about to edit a file another agent is editing is stopped and told who to ask. This works across people and machines, because it goes through the hub.

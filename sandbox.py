@@ -24,6 +24,9 @@ NOTICE = E("SANDBOX_NOTICE")   # shown in the dialog, e.g. a warning that the ho
 INSTALL_CMD = E("SANDBOX_INSTALL_CMD", "curl -fsSL https://raw.githubusercontent.com/Beastburner/teambus/main/install.sh | sh")
 IP_HEADER, TRUST_HOPS, DEBUG_IP = E("SANDBOX_CLIENT_IP_HEADER", "x-forwarded-for").lower(), max(1, int(E("SANDBOX_TRUST_PROXY_HOPS", 1))), E("SANDBOX_DEBUG_IP") == "1"
 PUBLIC = E("SANDBOX_PUBLIC_URL").rstrip("/")
+# Permanent sandboxes: made only with the operator key, never expire or idle out, keep their data in PERM_DIR (put it on a persistent disk) and are started again whenever this service starts.
+ADMIN_KEY, PERM_SPAN, PERM_MAX_DB = E("SANDBOX_ADMIN_KEY"), 100 * 365 * 86400, int(float(E("SANDBOX_PERM_MAX_DB_MB", 200)) * 1e6)
+PERM_DIR = Path(E("SANDBOX_PERM_DIR", str(DIR / "permanent"))).resolve()
 AGENTS = [("alice-frontend", "frontend"), ("bob-backend", "backend"), ("carol-fullstack", "fullstack")]
 MAX_AGE, IDLE = int(E("SANDBOX_MAX_AGE", 86400)), int(E("SANDBOX_IDLE", 7200))   # hard ceiling on any sandbox's life; and how long without any request before it is dropped
 RESUME, SNAP_SECS, SNAP_MAX = E("SANDBOX_RESUME", "1") != "0", max(5, int(E("SANDBOX_SNAPSHOT_SECS", 60))), 900_000   # snapshot size limit: one Firestore document is 1 MiB
@@ -31,13 +34,13 @@ GOOGLE_ID, JWKS_URL = E("GOOGLE_CLIENT_ID"), E("GOOGLE_JWKS_URL")   # sign-in is
 FB_KEY, FB_PROJECT, FB_DOMAIN = E("FIREBASE_WEB_API_KEY"), E("FIREBASE_PROJECT_ID"), E("FIREBASE_AUTH_DOMAIN")
 VERIFIER, SESSIONS = accounts.Verifier(GOOGLE_ID, JWKS_URL), None       # replaced at startup when Firebase sign-in is configured
 MAX_AGENTS, MAX_ACTIVE_PER_IP = max(2, int(E("SANDBOX_MAX_AGENTS", 5))), max(1, int(E("SANDBOX_MAX_ACTIVE_PER_IP", 3)))
-ID_RE, ROLE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
+ID_RE, ROLE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}"), re.compile(r"[A-Za-z0-9_-]{1,24}")   # strict on purpose: both end up in a shell command and in other agents' context
 
 def clean_agent(a):
     """One {agent_id, role} from user input -> (agent_id, role) or an error string."""
     if not isinstance(a, dict) or not isinstance(a.get("agent_id"), str): return "each agent needs an agent_id"
     aid, role = a["agent_id"].strip(), (a.get("role") or "member"); role = role.strip() if isinstance(role, str) else ""
-    if not ID_RE.fullmatch(aid): return f"agent name {aid[:20]!r}: use 2 to 31 characters, lowercase letters, numbers and dashes, starting with a letter"
+    if not ID_RE.fullmatch(aid): return f"agent name {aid[:20]!r}: use 2 to 31 characters: letters (either case), numbers and dashes, starting with a letter or number"
     if not ROLE_RE.fullmatch(role): return f"role {role[:20]!r}: use 1 to 24 letters, numbers, dashes or underscores (no spaces)"
     return aid, role
 
@@ -48,8 +51,8 @@ def parse_agents(raw):
     for a in raw:
         c = clean_agent(a)
         if isinstance(c, str): return None, c
-        if c[0] in seen: return None, f"agent name {c[0]!r} is used twice"
-        seen.add(c[0]); out.append(c)
+        if c[0].lower() in seen: return None, f"agent name {c[0]!r} is used twice (names are not case-sensitive)"
+        seen.add(c[0].lower()); out.append(c)
     return out, None
 
 def clean_label(v):
@@ -112,6 +115,7 @@ def sha(t): return hashlib.sha256(t.encode()).hexdigest()
 
 def deadline(sb):
     """When this sandbox ends unless something changes: the earliest of its hard ceiling, the lifetime its owner chose, and `idle` seconds after its last request."""
+    if sb.get("permanent"): return sb["hard"]
     return min(sb["hard"], sb["until"], sb["active"] + IDLE)
 
 def touch(sb):
@@ -141,10 +145,11 @@ def free_port():
 
 def db_bytes(sb): return sum(p.stat().st_size for p in sb["dir"].glob("hub.db*") if p.exists())
 
-def destroy_sb(sb):
+def destroy_sb(sb, keep_data=False):
+    """Stop the hub process and delete its folder; keep_data=True (a service shutdown) stops it only, which is how a permanent sandbox survives a restart."""
     try: sb["proc"].terminate(); sb["proc"].wait(timeout=5)
     except Exception: sb["proc"].kill()
-    shutil.rmtree(sb["dir"], ignore_errors=True)
+    if not keep_data: shutil.rmtree(sb["dir"], ignore_errors=True)
 
 def destroy(sid, state="deleted", reason="deleted by its owner"):
     sb = SBX.pop(sid, None)
@@ -176,7 +181,7 @@ async def reg_get(sid):
 def record(sb, state="active", reason="", ended=0):
     sync_tokens(sb)
     return {"id": sb["id"], "label": sb.get("label", ""), "created_at": int(sb.get("created", 0)), "expires_at": int(sb["expires"]), "state": state, "reason": reason, "ended_at": int(ended),
-            "boot_id": BOOT_ID, "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {})), "resumable": False, "owner": sb.get("owner", "")}
+            "boot_id": BOOT_ID, "permanent": bool(sb.get("permanent")), "agents": [{"agent_id": v["agent_id"], "role": v["role"]} for v in sb["tokens"].values()], "joined": dict(sb.get("joined", {})), "resumable": False, "owner": sb.get("owner", "")}
 
 async def hub_agents(sb):
     """{agent_id: seconds since that agent last used the hub, or None if never} straight from the sandbox's own hub."""
@@ -190,7 +195,7 @@ async def observe_joins(sb):
     seen = await hub_agents(sb); joined = sb.setdefault("joined", {}); now = time.time(); new = False
     for aid, ago in seen.items():
         if ago is not None and aid not in joined: joined[aid] = int(now - ago); new = True
-    if new: track(REG.update(sb["id"], joined=dict(joined)))
+    if new: track(REG.update(sb["id"], joined=dict(joined))); save_meta(sb)
     return seen
 
 def end(sb, state, reason):
@@ -200,13 +205,13 @@ def end(sb, state, reason):
 
 async def spawn(): return await launch()
 
-async def launch(sid=None, toks=None, viewer_hash=None, db=None):
+async def launch(sid=None, toks=None, viewer_hash=None, db=None, folder=None):
     """Start one hub process with its own DB and tokens; returns it once /healthz answers, or None.
     A resumed sandbox passes its old id, its stored (hashed) tokens, the hash of the viewer token its owner already holds, and its database file."""
     global SPAWN_SEM
     SPAWN_SEM = SPAWN_SEM or asyncio.Semaphore(SPAWN_PAR)      # limit simultaneous imports: they would starve each other on a small CPU
     async with SPAWN_SEM:
-        sid = sid or secrets.token_hex(6); d = DIR / f"sb-{sid}"; d.mkdir(parents=True, exist_ok=True); port = free_port()
+        sid = sid or secrets.token_hex(6); d = folder or DIR / f"sb-{sid}"; d.mkdir(parents=True, exist_ok=True); port = free_port()
         toks = toks or {secrets.token_urlsafe(24): {"agent_id": a, "role": r} for a, r in AGENTS}; viewer = secrets.token_urlsafe(18)
         (d / "tokens.json").write_text(json.dumps(toks)); (d / "tokens.json").chmod(0o600)
         if db is not None: (d / "hub.db").write_bytes(db)
@@ -239,7 +244,7 @@ def fingerprint(sb):
 
 async def snapshot(sb):
     """Store everything needed to bring this sandbox back: its data, its tokens as hashes only (never the tokens themselves), and how much lifetime it has left. True if stored."""
-    if not can_resume() or "manage_hash" not in sb or sb.get("gone"): return False
+    if not can_resume() or "manage_hash" not in sb or sb.get("gone") or sb.get("permanent"): return False      # a permanent sandbox lives on disk, not in the registry
     sync_tokens(sb)
     fp = fingerprint(sb); data = await asyncio.to_thread(dump_db, sb["dir"] / "hub.db")
     if data is None or len(data) > SNAP_MAX or sb.get("gone"): return False
@@ -303,8 +308,39 @@ async def refill():
 def kick():
     t = asyncio.create_task(refill()); BG.add(t); t.add_done_callback(BG.discard)
 
-async def create(ip, agents=None, label="", lifetime=None, owner=""):
+def save_meta(sb):
+    """What a permanent sandbox needs to come back after a restart (hashes only: the manage and web-view tokens themselves are never stored)."""
+    if not sb.get("permanent"): return
+    m = {k: sb.get(k) for k in ("id", "label", "owner", "created", "manage_hash", "viewer_hash")} | {"joined": dict(sb.get("joined", {}))}
+    tmp = sb["dir"] / "meta.json.tmp"; tmp.write_text(json.dumps(m)); tmp.chmod(0o600); tmp.replace(sb["dir"] / "meta.json")
+
+async def load_permanent(d):
+    """Start a permanent sandbox again from its folder (its meta.json and tokens.json); None if the folder is unusable."""
+    try: m = json.loads((d / "meta.json").read_text()); toks = json.loads((d / "tokens.json").read_text())
+    except (OSError, ValueError): return None
+    sb = await launch(m["id"], toks, m["viewer_hash"], None, d)
+    if not sb: return None
+    now = time.time(); sb.update(ip="", owner=m.get("owner", ""), label=m.get("label", ""), manage_hash=m["manage_hash"], created=m.get("created", now), joined=dict(m.get("joined", {})),
+                                 hard=now + PERM_SPAN, until=now + PERM_SPAN, active=now, permanent=True, resumed=True)
+    sb["expires"] = deadline(sb); SBX[sb["id"]] = sb; track(REG.put(record(sb))); return sb
+
+async def restore_permanent():
+    PERM_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.gather(*(load_permanent(d) for d in sorted(PERM_DIR.iterdir()) if d.is_dir() and (d / "meta.json").exists()), return_exceptions=True)
+
+async def create_permanent(agents, label, owner):
+    if len(SBX) >= MAX: return None, JSONResponse({"error": "sandbox capacity reached"}, 503)
+    PERM_DIR.mkdir(parents=True, exist_ok=True); sid = secrets.token_hex(6)
+    sb = await launch(sid, folder=PERM_DIR / sid)
+    if not sb: return None, JSONResponse({"error": "could not start sandbox"}, 500)
+    if agents is not None: write_tokens(sb, agents)
+    now = time.time(); m = secrets.token_urlsafe(24)
+    sb.update(ip="", owner=owner, label=label, manage=m, manage_hash=sha(m), created=now, joined={}, hard=now + PERM_SPAN, until=now + PERM_SPAN, active=now, permanent=True); sb["expires"] = deadline(sb); SBX[sid] = sb
+    save_meta(sb); track(REG.put(record(sb))); return sb, None
+
+async def create(ip, agents=None, label="", lifetime=None, owner="", permanent=False):
     global SPARE
+    if permanent: return await create_permanent(agents, label, owner)
     now = time.time(); log = NEW_LOG.setdefault(ip, collections.deque())
     while log and now - log[0] > 3600: log.popleft()
     active = sum(1 for b in SBX.values() if b.get("ip") == ip)
@@ -331,7 +367,7 @@ def describe(sb, base):
     sync_tokens(sb)
     url = f"{base}/s/{sb['id']}"
     return {"id": sb["id"], "label": sb.get("label", ""), "hub_url": url, "expires_in_seconds": int(sb["expires"] - time.time()), "expires_at": int(sb["expires"]),
-            "max_expires_at": int(sb["hard"]), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")), "owned": bool(sb.get("owner")),
+            "max_expires_at": int(sb["hard"]), "permanent": bool(sb.get("permanent")), "idle_minutes": IDLE // 60, "max_agents": MAX_AGENTS, "resumed": bool(sb.get("resumed")), "owned": bool(sb.get("owner")),
             **({"web_view": f"{url}/?token={sb['viewer']}", "manage_token": sb["manage"]} if "manage" in sb else {}),    # a resumed sandbox only knows hashes: its owner already holds the real tokens
             "agents": [{"agent_id": v["agent_id"], "role": v["role"], **({} if t.startswith("sha256:") else {"token": t, "join": join_line(url, v["agent_id"], v["role"], t), "join_all": join_lines(url, v["agent_id"], v["role"], t)})} for t, v in sb["tokens"].items()]}
 
@@ -355,8 +391,11 @@ async def new(request: Request):
     if e: return JSONResponse({"error": e}, 400)
     life, e = parse_lifetime(body)
     if e: return JSONResponse({"error": e}, 400)
+    perm = body.get("permanent") is True
+    if perm and not (ADMIN_KEY and len(ADMIN_KEY) >= 16 and secrets.compare_digest(request.headers.get("x-sandbox-admin-key", ""), ADMIN_KEY)):
+        return JSONResponse({"error": "permanent sandboxes need the operator key (header X-Sandbox-Admin-Key = SANDBOX_ADMIN_KEY, 16+ characters, set on the service)"}, 403)
     who = signed_in(request, write=True)      # a signed-in browser owns what it creates; without the CSRF header it is treated as anonymous
-    sb, err = await create(ip_of(request), agents if "agents" in body else None, label, life, who["owner"] if who else "")
+    sb, err = await create(ip_of(request), agents if "agents" in body else None, label, life, who["owner"] if who else "", perm)
     if err: return err
     return JSONResponse(describe(sb, public_base(request)), 201)
 
@@ -493,6 +532,7 @@ async def manage_extend(request: Request):
     if err: return err
     body, err = await body_json(request)
     if err: return err
+    if sb.get("permanent"): return JSONResponse(await describe_live(sb, public_base(request)))      # nothing to extend
     body = body if isinstance(body, dict) else {}; m = body.get("minutes", 30)
     if isinstance(m, bool) or not isinstance(m, (int, float)) or m < 1: return JSONResponse({"error": "minutes must be a number of at least 1"}, 400)
     now = time.time(); new_until = min(sb["hard"], max(sb["until"], now) + m * 60)
@@ -509,7 +549,7 @@ async def manage_add_agent(request: Request):
     if isinstance(c, str): return JSONResponse({"error": c}, 400)
     sync_tokens(sb); cur = [(v["agent_id"], v["role"]) for v in sb["tokens"].values()]
     if len(cur) >= MAX_AGENTS: return JSONResponse({"error": f"a sandbox can have at most {MAX_AGENTS} agents"}, 400)
-    if any(a == c[0] for a, _ in cur): return JSONResponse({"error": f"agent name {c[0]!r} already exists in this sandbox"}, 400)
+    if any(a.lower() == c[0].lower() for a, _ in cur): return JSONResponse({"error": f"agent name {c[0]!r} already exists in this sandbox (names are not case-sensitive)"}, 400)
     add_token(sb, *c); track(REG.update(sb["id"], agents=record(sb)["agents"])); d = describe(sb, public_base(request))
     return JSONResponse(next(a for a in d["agents"] if a["agent_id"] == c[0]), 201)
 
@@ -636,7 +676,9 @@ async def reaper():
         await asyncio.sleep(float(E("SANDBOX_REAP_SECS", 5))); now = time.time()
         for sid, sb in list(SBX.items()):
             why = end_reason(sb) if sb["expires"] < now else ("lost", "its process stopped unexpectedly") if sb["proc"].poll() is not None else \
-                  ("evicted", f"it grew past the {MAX_DB / 1e6:g} MB data limit") if db_bytes(sb) > MAX_DB else None
+                  ("evicted", f"it grew past the {(PERM_MAX_DB if sb.get('permanent') else MAX_DB) / 1e6:g} MB data limit") if db_bytes(sb) > (PERM_MAX_DB if sb.get("permanent") else MAX_DB) else None
+            if why and sb.get("permanent") and why[0] == "lost":       # a permanent sandbox whose process died is started again, never dropped
+                SBX.pop(sid, None); await load_permanent(sb["dir"]); continue
             if why: await observe_joins(sb); destroy(sid, *why)
         global SPARE
         if SPARE and SPARE["proc"].poll() is not None: destroy_sb(SPARE); SPARE = None
@@ -658,7 +700,7 @@ async def lifespan(app):
     project = FB_PROJECT or getattr(REG, "sa", {}).get("project_id", "")
     if FB_KEY and project: VERIFIER = accounts.Verifier(project=project, jwks_url=JWKS_URL)      # Firebase sign-in wins when both are configured
     SESSIONS = accounts.Sessions(accounts.session_key(E("SANDBOX_SESSION_SECRET"), getattr(REG, "sa", {}).get("private_key", "")))
-    track(startup_registry())
+    track(startup_registry()); await restore_permanent()
     task, snap_task = asyncio.create_task(reaper()), asyncio.create_task(snapshotter()); kick()
     yield
     task.cancel(); snap_task.cancel()
@@ -666,7 +708,10 @@ async def lifespan(app):
     async def put_to_sleep(sb):
         """Graceful stop (a deploy, or the host's idle shutdown): save the sandbox, and say it is asleep rather than lost."""
         saved = False
-        if can_resume():
+        if sb.get("permanent"):                                       # its data stays on disk and it starts again with the service
+            try: await observe_joins(sb); save_meta(sb); saved = True
+            except Exception: saved = True
+        elif can_resume():
             try: await observe_joins(sb); saved = await asyncio.wait_for(snapshot(sb), 6)
             except Exception as e: note_registry_error(e)
         try:
@@ -675,7 +720,7 @@ async def lifespan(app):
         except Exception: pass
     try: await asyncio.wait_for(asyncio.gather(*(put_to_sleep(sb) for sb in list(SBX.values())), return_exceptions=True), 8)    # a host gives a stopping service about 30 s: never spend it all waiting for the registry
     except asyncio.TimeoutError: pass
-    for sid in list(SBX): destroy_sb(SBX.pop(sid))
+    for sid in list(SBX): sb = SBX.pop(sid); destroy_sb(sb, keep_data=bool(sb.get("permanent")))
     if SPARE: destroy_sb(SPARE); SPARE = None
     await client.aclose()
 
