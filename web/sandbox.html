@@ -134,7 +134,7 @@ footer .sig{font-size:clamp(46px,5vw,70px);color:#e04a47}footer p{margin:6px 0 0
      <p class="role">Claude Code coordination</p>
      <h1 id="h1" aria-label="Agents should never collide."><span class="l"><span class="a">Agents should</span></span><span class="l"><span class="a">never <span class="rot"><span class="rw" id="rw">collide</span><svg class="scrib" viewBox="0 0 200 18" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><g filter="url(#rough)"><path class="ink" d="M4 12 C30 3 60 16 100 8 S158 13 196 5"/></g></svg></span>.</span></span></h1>
      <p class="sub">It blocks conflicting edits across Claude Code sessions. Try it in a private sandbox.</p>
-     <button class="btn" id="b" type="button" data-run>Create sandbox</button><button class="linkbtn" id="mine" type="button" hidden>Your sandboxes (<span id="mn">0</span>)</button>
+     <button class="btn" id="b" type="button" data-run>Create sandbox</button><button class="linkbtn" id="mine" type="button">Your sandboxes (<span id="mn">0</span>)</button>
      <p class="msg" id="msg" role="status"></p>
      <p class="cap">Private hub. You choose when it is deleted.</p>
     </div>
@@ -224,7 +224,7 @@ const mergeAgents=(old,fresh)=>fresh.map((g)=>({...(old||[]).find((x)=>x.agent_i
 const clock=(ts)=>new Date(ts*1000).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const span=(m)=>m>=120?Math.round(m/60)+" hours":m+" min";
 const minsLeft=(b)=>Math.max(0,Math.round((b.expires_at-nowS())/60));
-function refreshMine(){boxes=boxes.filter((b)=>b.expires_at>nowS());$("mn").textContent=boxes.length;$("mine").hidden=boxes.length===0}
+function refreshMine(){boxes=boxes.filter((b)=>b.expires_at>nowS());$("mn").textContent=boxes.length}
 function showView(v){$("view-new").hidden=v!=="new";$("view-list").hidden=v!=="list";$("ptitle").textContent=v==="new"?"New sandbox":"Your sandboxes";$("backlist").hidden=!boxes.length}
 function openPanel(v){const p=$("panel"),wasHidden=p.hidden;p.hidden=false;showView(v);loadGsi();if(wasHidden)animIn(p);(v==="new"?$("lbl"):$("close")).focus({preventScroll:true})}
 const hidePanel=()=>{$("panel").hidden=true};
@@ -339,7 +339,7 @@ async function openFromAccount(b){try{const r=await fetch("me/sandboxes/"+b.id);
  b.web_view=d.web_view;b.hub_url=d.hub_url;b.expires_at=d.expires_at;b.agents=mergeAgents(b.agents,d.agents);save();renderList()}catch(e){$("o").replaceChildren(mk("p","err","Could not reach the sandbox service."))}}
 async function loadAccount(){try{const c=await(await fetch("auth/config")).json();ME={enabled:!!c.enabled,signed:!!c.signed_in,email:c.email||"",client:c.client_id||"",mode:c.mode||"",fb:c.firebase||null}}catch(e){}renderAcct();if(ME.signed){await syncAccount();refreshMine()}}
 loadAccount();
-async function openList(){if(!boxes.length){resetBuilder();openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden){if(boxes.length)renderList();else{resetBuilder();showView("new")}}}
+async function openList(){if(!boxes.length){resetBuilder();$("nerr").textContent="You have no active sandboxes. Ended ones are listed above with the reason.";openPanel("new");return}renderList();openPanel("list");await verify();if(!$("panel").hidden){if(boxes.length)renderList();else{resetBuilder();showView("new")}}}
 runs.forEach((b)=>b.onclick=()=>{resetBuilder();openPanel("new")});
 $("mine").onclick=openList;$("backlist").onclick=()=>{renderList();showView("list")};$("addrow").onclick=()=>addRow();$("docreate").onclick=doCreate;$("close").onclick=hidePanel;
 $("agrows").addEventListener("keydown",(e)=>{if(e.key==="Enter")doCreate()});
